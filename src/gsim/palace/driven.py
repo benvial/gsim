@@ -58,6 +58,7 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         validate_assignment=True,
         arbitrary_types_allowed=True,
     )
+    simulation_type: Literal["driven"] = "driven"
 
     # Composed objects (from common)
     geometry: Geometry | None = None
@@ -66,6 +67,7 @@ class DrivenSim(PalaceSimMixin, BaseModel):
     # Port configurations
     ports: list[PortConfig] = Field(default_factory=list)
     cpw_ports: list[CPWPortConfig] = Field(default_factory=list)
+    terminals: None = None
 
     # Driven simulation config
     driven: DrivenConfig = Field(default_factory=DrivenConfig)
@@ -88,117 +90,6 @@ class DrivenSim(PalaceSimMixin, BaseModel):
 
     # Cloud job state (set by upload/run)
     _job_id: str | None = PrivateAttr(default=None)
-
-    # -------------------------------------------------------------------------
-    # Port methods
-    # -------------------------------------------------------------------------
-
-    def add_port(
-        self,
-        name: str,
-        *,
-        layer: str | None = None,
-        from_layer: str | None = None,
-        to_layer: str | None = None,
-        length: float | None = None,
-        impedance: float = 50.0,
-        resistance: float | None = None,
-        inductance: float | None = None,
-        capacitance: float | None = None,
-        excited: bool = True,
-        geometry: Literal["inplane", "via"] = "inplane",
-    ) -> None:
-        """Add a single-element lumped port.
-
-        Args:
-            name: Port name (must match component port name)
-            layer: Target layer for inplane ports
-            from_layer: Bottom layer for via ports
-            to_layer: Top layer for via ports
-            length: Port extent along direction (um)
-            impedance: Port impedance (Ohms)
-            resistance: Series resistance (Ohms)
-            inductance: Series inductance (H)
-            capacitance: Shunt capacitance (F)
-            excited: Whether this port is excited
-            geometry: Port geometry type ("inplane" or "via")
-
-        Example:
-            >>> sim.add_port("o1", layer="topmetal2", length=5.0)
-            >>> sim.add_port(
-            ...     "feed", from_layer="metal1", to_layer="topmetal2", geometry="via"
-            ... )
-        """
-        # Remove existing config for this port if any
-        self.ports = [p for p in self.ports if p.name != name]
-
-        self.ports.append(
-            PortConfig(
-                name=name,
-                layer=layer,
-                from_layer=from_layer,
-                to_layer=to_layer,
-                length=length,
-                impedance=impedance,
-                resistance=resistance,
-                inductance=inductance,
-                capacitance=capacitance,
-                excited=excited,
-                geometry=geometry,
-            )
-        )
-
-    def add_cpw_port(
-        self,
-        name: str,
-        *,
-        layer: str,
-        s_width: float,
-        gap_width: float,
-        length: float,
-        offset: float = 0.0,
-        impedance: float = 50.0,
-        excited: bool = True,
-    ) -> None:
-        """Add a coplanar waveguide (CPW) port.
-
-        CPW ports consist of two elements (upper and lower gaps) that are
-        excited with opposite E-field directions to create the CPW mode.
-
-        Place a single gdsfactory port at the center of the signal conductor.
-        The two gap element surfaces are computed from s_width and gap_width.
-
-        Args:
-            name: Port name (must match a component port at the signal center)
-            layer: Target conductor layer (e.g., "topmetal2")
-            s_width: Width of the signal (center) conductor (um)
-            gap_width: Width of each gap between signal and ground (um)
-            length: Port extent along direction (um)
-            offset: Shift the port inward along the waveguide (um).
-                Positive moves away from the boundary, into the conductor.
-            impedance: Port impedance (Ohms)
-            excited: Whether this port is excited
-
-        Example:
-            >>> sim.add_cpw_port(
-            ...     "left", layer="topmetal2", s_width=20, gap_width=15, length=5.0
-            ... )
-        """
-        # Remove existing CPW port with same name if any
-        self.cpw_ports = [p for p in self.cpw_ports if p.name != name]
-
-        self.cpw_ports.append(
-            CPWPortConfig(
-                name=name,
-                layer=layer,
-                s_width=s_width,
-                gap_width=gap_width,
-                length=length,
-                offset=offset,
-                impedance=impedance,
-                excited=excited,
-            )
-        )
 
     # -------------------------------------------------------------------------
     # Driven configuration
