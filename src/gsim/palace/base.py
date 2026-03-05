@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import Field
+
 from gsim.palace.models import (
     CPWPortConfig,
     DrivenConfig,
@@ -46,9 +48,9 @@ class PalaceSimMixin:
     stack: LayerStack | None
     materials: dict[str, MaterialConfig]
     numerical: NumericalConfig
-    driven: DrivenConfig | None
-    ports: list[PortConfig]  # = Field(default_factory=list)
-    cpw_ports: list[CPWPortConfig]  # = Field(default_factory=list)
+    driven: DrivenConfig = Field(default_factory=DrivenConfig)
+    ports: list[PortConfig] = Field(default_factory=list)
+    cpw_ports: list[CPWPortConfig] = Field(default_factory=list)
     _output_dir: Path | None
     _stack_kwargs: dict[str, Any]
 
@@ -559,7 +561,7 @@ class PalaceSimMixin:
             )
 
         # Validate excitation port if specified
-        if self.driven is not None and self.driven.excitation_port is not None:
+        if self.driven.excitation_port is not None:
             port_names = [p.name for p in self.ports]
             cpw_names = [cpw.name for cpw in self.cpw_ports]
             all_port_names = port_names + cpw_names
