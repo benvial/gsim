@@ -58,6 +58,7 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         validate_assignment=True,
         arbitrary_types_allowed=True,
     )
+    simulation_type: Literal["driven"] = "driven"
 
     # Composed objects (from common)
     geometry: Geometry | None = None
@@ -66,6 +67,7 @@ class DrivenSim(PalaceSimMixin, BaseModel):
     # Port configurations
     ports: list[PortConfig] = Field(default_factory=list)
     cpw_ports: list[CPWPortConfig] = Field(default_factory=list)
+    terminals: None = None
 
     # Driven simulation config
     driven: DrivenConfig = Field(default_factory=DrivenConfig)

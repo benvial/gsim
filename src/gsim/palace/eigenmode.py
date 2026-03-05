@@ -7,7 +7,6 @@ frequencies and mode shapes.
 from __future__ import annotations
 
 import logging
-import tempfile
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,11 +18,8 @@ from gsim.palace.models import (
     CPWPortConfig,
     EigenmodeConfig,
     MaterialConfig,
-    MeshConfig,
     NumericalConfig,
     PortConfig,
-    SimulationResult,
-    ValidationResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,7 +57,10 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
         validate_assignment=True,
         arbitrary_types_allowed=True,
     )
+    simulation_type: Literal["eigenmode"] = "eigenmode"
 
+    driven: None = None
+    terminals: None = None
     # Composed objects (from common)
     geometry: Geometry | None = None
     stack: LayerStack | None = None
@@ -84,107 +83,6 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
     # Internal state
     _output_dir: Path | None = PrivateAttr(default=None)
     _configured_ports: bool = PrivateAttr(default=False)
-
-    # -------------------------------------------------------------------------
-    # Port methods (Eigenmode can have ports for Q-factor calculation)
-    # -------------------------------------------------------------------------
-
-    def add_port(
-        self,
-        name: str,
-        *,
-        layer: str | None = None,
-        from_layer: str | None = None,
-        to_layer: str | None = None,
-        length: float | None = None,
-        impedance: float = 50.0,
-        resistance: float | None = None,
-        inductance: float | None = None,
-        capacitance: float | None = None,
-        excited: bool = True,
-        geometry: Literal["inplane", "via"] = "inplane",
-    ) -> None:
-        """Add a single-element lumped port.
-
-        Args:
-            name: Port name (must match component port name)
-            layer: Target layer for inplane ports
-            from_layer: Bottom layer for via ports
-            to_layer: Top layer for via ports
-            length: Port extent along direction (um)
-            impedance: Port impedance (Ohms)
-            resistance: Series resistance (Ohms)
-            inductance: Series inductance (H)
-            capacitance: Shunt capacitance (F)
-            excited: Whether this port is excited
-            geometry: Port geometry type ("inplane" or "via")
-
-        Example:
-            >>> sim.add_port("o1", layer="topmetal2", length=5.0)
-            >>> sim.add_port(
-            ...     "junction", layer="SUPERCONDUCTOR", length=5.0, inductance=10e-9
-            ... )
-        """
-        self.ports = [p for p in self.ports if p.name != name]
-        self.ports.append(
-            PortConfig(
-                name=name,
-                layer=layer,
-                from_layer=from_layer,
-                to_layer=to_layer,
-                length=length,
-                impedance=impedance,
-                resistance=resistance,
-                inductance=inductance,
-                capacitance=capacitance,
-                excited=excited,
-                geometry=geometry,
-            )
-        )
-
-    def add_cpw_port(
-        self,
-        name: str,
-        *,
-        layer: str,
-        s_width: float,
-        gap_width: float,
-        length: float,
-        offset: float = 0.0,
-        impedance: float = 50.0,
-        excited: bool = True,
-    ) -> None:
-        """Add a coplanar waveguide (CPW) port.
-
-        Args:
-            name: Name of the port on the component (at signal center)
-            layer: Target conductor layer
-            s_width: Signal conductor width (um)
-            gap_width: Gap width between signal and ground (um)
-            length: Port extent along direction (um)
-            offset: Shift port inward along the waveguide (um).
-                Positive moves away from the boundary, into the conductor.
-            impedance: Port impedance (Ohms)
-            excited: Whether this port is excited
-
-        Example:
-            >>> sim.add_cpw_port(
-            ...     "o1", layer="topmetal2", s_width=10, gap_width=6, length=5
-            ... )
-        """
-        self.cpw_ports = [p for p in self.cpw_ports if p.name != name]
-        self.cpw_ports.append(
-            CPWPortConfig(
-                name=name,
-                layer=layer,
-                s_width=s_width,
-                gap_width=gap_width,
-                length=length,
-                offset=offset,
-                impedance=impedance,
-                excited=excited,
-            )
-        )
 
     # -------------------------------------------------------------------------
     # Eigenmode configuration

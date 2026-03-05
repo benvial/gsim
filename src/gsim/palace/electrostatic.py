@@ -7,7 +7,6 @@ capacitance matrices between terminals.
 from __future__ import annotations
 
 import logging
-import tempfile
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,11 +17,8 @@ from gsim.palace.base import PalaceSimMixin
 from gsim.palace.models import (
     ElectrostaticConfig,
     MaterialConfig,
-    MeshConfig,
     NumericalConfig,
-    SimulationResult,
     TerminalConfig,
-    ValidationResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,7 +57,11 @@ class ElectrostaticSim(PalaceSimMixin, BaseModel):
         validate_assignment=True,
         arbitrary_types_allowed=True,
     )
+    simulation_type: Literal["electrostatic"] = "electrostatic"
 
+    driven: None = None
+    ports: None = None
+    cpw_ports: None = None
     # Composed objects (from common)
     geometry: Geometry | None = None
     stack: LayerStack | None = None
