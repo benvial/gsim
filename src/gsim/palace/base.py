@@ -1270,7 +1270,8 @@ class PalaceSimMixin:
             ]
 
         if num_threads is not None:
-            cmd.extend(["-nt", str(num_threads), "config.json"])
+            cmd.extend(["-nt", str(num_threads)])
+        cmd.extend(["config.json"])
 
         if verbose:
             if use_apptainer:
