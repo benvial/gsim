@@ -64,6 +64,7 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
     # Composed objects (from common)
     geometry: Geometry | None = None
     stack: LayerStack | None = None
+    absorbing_boundary: bool = False
 
     # Port configurations (eigenmode can have ports for Q-factor calculation)
     ports: list[PortConfig] = Field(default_factory=list)

@@ -71,6 +71,8 @@ class ElectrostaticSim(PalaceSimMixin, BaseModel):
 
     # Electrostatic simulation config
     electrostatic: ElectrostaticConfig = Field(default_factory=ElectrostaticConfig)
+    eigenmode: None = None
+    absorbing_boundary: bool = False
 
     # Material overrides and numerical config
     materials: dict[str, MaterialConfig] = Field(default_factory=dict)
