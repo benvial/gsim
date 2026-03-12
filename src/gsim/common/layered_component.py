@@ -144,10 +144,9 @@ class LayeredComponentBase(BaseModel):
     def get_port_center(self, port: gf.Port) -> tuple[float, float, float]:
         """Return 3D center of a port averaged over its layers."""
         layers = self.get_port_layers(port)
-        return (
-            *port.dcenter,
-            np.mean([self.get_layer_center(layer)[2] for layer in layers]),
-        )
+        x, y = port.dcenter
+        z = float(np.mean([self.get_layer_center(layer)[2] for layer in layers]))
+        return (x, y, z)
 
     def get_port_layers(self, port: gf.Port) -> list[str]:
         """Return layer names associated with a port."""
