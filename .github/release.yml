@@ -1,4 +1,8 @@
 changelog:
+  exclude:
+    authors:
+      - github-actions[bot]
+      - dependabot[bot]
   categories:
     - title: New Features
       labels:
@@ -6,6 +10,9 @@ changelog:
     - title: Bug Fixes
       labels:
         - bug
+    - title: Refactoring
+      labels:
+        - refactor
     - title: Documentation
       labels:
         - documentation
