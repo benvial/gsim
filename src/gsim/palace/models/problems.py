@@ -10,9 +10,12 @@ This module contains Pydantic models for different simulation types:
 
 from __future__ import annotations
 
+import logging
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 class DrivenConfig(BaseModel):
@@ -89,11 +92,44 @@ class DrivenConfig(BaseModel):
         default=None, description="Port to excite (None = first port)"
     )
 
+    save_step: int = Field(
+        default=0,
+        ge=0,
+        description="Save fields every N frequency steps for ParaView. 0 = disabled.",
+    )
+    save_fields_at: list[float] = Field(
+        default_factory=list,
+        description="Specific frequencies (Hz) at which to save fields for ParaView.",
+    )
+
     @model_validator(mode="after")
     def validate_frequency_range(self) -> Self:
-        """Validate that fmin < fmax."""
+        """Validate that fmin < fmax and snap save_fields_at to the sample grid."""
         if self.fmin >= self.fmax:
             raise ValueError(f"fmin ({self.fmin}) must be less than fmax ({self.fmax})")
+
+        # Palace requires Save frequencies to exactly match the sample grid.
+        # Snap to nearest sample point and warn if the shift is significant.
+        if self.save_fields_at:
+            freq_step = (self.fmax - self.fmin) / max(1, self.num_points - 1)
+            snapped: list[float] = []
+            seen: set[int] = set()
+            for freq in self.save_fields_at:
+                step_idx = round((freq - self.fmin) / freq_step)
+                step_idx = max(0, min(step_idx, self.num_points - 1))
+                snapped_freq = self.fmin + step_idx * freq_step
+                if abs(snapped_freq - freq) > freq_step * 0.01:
+                    logger.warning(
+                        "save_fields_at: %.4g GHz snapped to %.4g GHz "
+                        "(nearest sample point)",
+                        freq / 1e9,
+                        snapped_freq / 1e9,
+                    )
+                if step_idx not in seen:
+                    seen.add(step_idx)
+                    snapped.append(snapped_freq)
+            self.__dict__["save_fields_at"] = snapped
+
         return self
 
     def to_palace_config(self) -> dict:
@@ -106,13 +142,15 @@ class DrivenConfig(BaseModel):
                     "MinFreq": self.fmin / 1e9,
                     "MaxFreq": self.fmax / 1e9,
                     "FreqStep": freq_step,
-                    "SaveStep": 0,
+                    "SaveStep": self.save_step,
                 }
             ],
             "AdaptiveTol": max(0, self.adaptive_tol),
         }
         if self.adaptive_tol > 0:
             config["AdaptiveMaxSamples"] = self.adaptive_max_samples
+        if self.save_fields_at:
+            config["Save"] = [freq / 1e9 for freq in self.save_fields_at]
         return config
 
 
@@ -150,6 +188,11 @@ class EigenmodeConfig(BaseModel):
         gt=0,
         description="Eigenvalue solver relative convergence tolerance.",
     )
+    save: int = Field(
+        default=0,
+        ge=0,
+        description="Number of eigenmodes to save as ParaView fields. 0 = disabled.",
+    )
 
     def to_palace_config(self) -> dict:
         """Convert to Palace JSON config format."""
@@ -159,6 +202,8 @@ class EigenmodeConfig(BaseModel):
         }
         if self.target is not None:
             config["Target"] = self.target / 1e9  # Convert to GHz
+        if self.save > 0:
+            config["Save"] = self.save
         return config
 
 

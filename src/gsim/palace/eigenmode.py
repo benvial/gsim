@@ -196,6 +196,7 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
         num_modes: int = 10,
         target: float | None = None,
         tolerance: float = 1e-6,
+        save: int = 0,
     ) -> None:
         """Configure eigenmode simulation.
 
@@ -203,6 +204,7 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
             num_modes: Number of modes to find
             target: Target frequency in Hz for mode search
             tolerance: Eigenvalue solver tolerance
+            save: Number of eigenmodes to save as ParaView fields (0 = disabled)
 
         Example:
             >>> sim.set_eigenmode(num_modes=10, target=50e9)
@@ -211,6 +213,7 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
             num_modes=num_modes,
             target=target,
             tolerance=tolerance,
+            save=save,
         )
 
     # -------------------------------------------------------------------------
