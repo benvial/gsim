@@ -228,6 +228,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         compute_s_params: bool = True,
         reference_impedance: float = 50.0,
         excitation_port: str | None = None,
+        save_step: int = 0,
+        save_fields_at: list[float] | None = None,
     ) -> None:
         """Configure driven (frequency sweep) simulation.
 
@@ -241,6 +243,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
             compute_s_params: Compute S-parameters
             reference_impedance: Reference impedance for S-params (Ohms)
             excitation_port: Port to excite (None = first port)
+            save_step: Save fields every N frequency steps for ParaView (0 = disabled)
+            save_fields_at: Specific frequencies (Hz) at which to save fields
 
         Example:
             >>> sim.set_driven(fmin=1e9, fmax=100e9, num_points=40)
@@ -255,6 +259,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
             compute_s_params=compute_s_params,
             reference_impedance=reference_impedance,
             excitation_port=excitation_port,
+            save_step=save_step,
+            save_fields_at=save_fields_at or [],
         )
 
     # -------------------------------------------------------------------------
