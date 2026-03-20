@@ -1,4 +1,4 @@
-# gsim 0.0.9
+# gsim 0.0.10
 
 > Electromagnetic simulation for photonics and electronics, powered by [GDSFactory+](https://gdsfactory.com)
 
