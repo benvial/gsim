@@ -37,7 +37,6 @@ class Layer(BaseModel):
     layer_type: Literal["conductor", "via", "dielectric", "substrate"]
     sidewall_angle: float = 0.0  # degrees
     mesh_resolution: str | float = "medium"
-    conductor_model: Literal["conductivity", "pec"] = "conductivity"
 
     def get_mesh_size(self, base_size: float = 1.0) -> float:
         """Get mesh size in um for this layer.

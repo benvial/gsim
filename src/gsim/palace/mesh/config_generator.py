@@ -131,30 +131,24 @@ def generate_palace_config(
     # Build boundaries section
     conductors: list[dict[str, object]] = []
 
-    # Handle volumetric conductor surfaces — route to Conductivity or PEC
-    # based on layer.conductor_model (set via sim.set_layer())
-    pec_attrs: list[int] = []
     for name, info in groups["conductor_surfaces"].items():
         # Extract layer name from "layer_xy" or "layer_z"
         layer_name = name.rsplit("_", 1)[0]
         layer = stack.layers.get(layer_name)
         if layer:
-            if getattr(layer, "conductor_model", "conductivity") == "pec":
-                pec_attrs.append(info["phys_group"])
-            else:
-                mat_props = stack.materials.get(layer.material, {})
-                conductors.append(
-                    {
-                        "Attributes": [info["phys_group"]],
-                        "Conductivity": mat_props.get("conductivity", 5.8e7),
-                        "Thickness": layer.zmax - layer.zmin,
-                    }
-                )
+            mat_props = stack.materials.get(layer.material, {})
+            conductors.append(
+                {
+                    "Attributes": [info["phys_group"]],
+                    "Conductivity": mat_props.get("conductivity", 5.8e7),
+                    "Thickness": layer.zmax - layer.zmin,
+                }
+            )
 
-    # Handle PEC surfaces (planar conductors)
-    pec_attrs.extend(
+    # Handle PEC surfaces (planar conductors + PEC blocks)
+    pec_attrs: list[int] = [
         info["phys_group"] for info in groups.get("pec_surfaces", {}).values()
-    )
+    ]
 
     lumped_ports: list[dict[str, object]] = []
     port_idx = 1

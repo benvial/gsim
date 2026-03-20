@@ -96,6 +96,8 @@
 
 ::: gsim.palace.NumericalConfig
 
+::: gsim.palace.PECBlockConfig
+
 ::: gsim.palace.PalacePort
 
 ::: gsim.palace.PortConfig
@@ -159,6 +161,8 @@
 ### Data
 
 ::: gsim.palace.MATERIALS_DB
+
+::: gsim.palace.PEC_LAYER
 
 ---
 
