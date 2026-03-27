@@ -148,28 +148,32 @@ class SParams:
             cols[f"S_{to_p}_{from_p}_deg"] = sp.deg
         return pd.DataFrame(cols)
 
+    def _filtered_entries(self, full: bool) -> list[tuple[str, SParam]]:
+        """Return ``[(label, SParam), ...]`` filtered by excitation port."""
+        from_ports = list(dict.fromkeys(fp for _, fp in self._data))
+        first_from = from_ports[0] if from_ports else None
+        entries: list[tuple[str, SParam]] = []
+        for (to_p, from_p), sp in self._data.items():
+            if not full and len(from_ports) > 1 and from_p != first_from:
+                continue
+            entries.append((f"S({to_p},{from_p})", sp))
+        return entries
+
     def plot(
         self,
         *,
         full: bool = False,
         figsize: tuple[float, float] = (8, 6),
     ) -> None:
-        """Plot magnitude and phase of S-parameters.
+        """Plot magnitude and phase with matplotlib (static).
 
         By default only the first excitation column is plotted
         (e.g. S11, S21 but not S12, S22). Pass ``full=True`` to
         include all entries.
         """
-        # Find unique "from" ports (excitation columns)
-        from_ports = list(dict.fromkeys(fp for _, fp in self._data))
-        first_from = from_ports[0] if from_ports else None
-
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize)
 
-        for (to_p, from_p), sp in self._data.items():
-            if not full and len(from_ports) > 1 and from_p != first_from:
-                continue
-            label = f"S({to_p},{from_p})"
+        for label, sp in self._filtered_entries(full):
             ax1.plot(self._freq, sp.db, label=label)
             ax2.plot(self._freq, sp.deg, label=label)
 
@@ -185,6 +189,48 @@ class SParams:
 
         fig.tight_layout()
         plt.show()
+
+    def plot_plotly(self, *, full: bool = False):
+        """Plot S-parameters with Plotly (interactive).
+
+        Returns a ``plotly.graph_objects.Figure`` that renders interactively
+        in notebooks and can be saved as standalone HTML via
+        ``fig.write_html("sparams.html")``.
+        """
+        from plotly.subplots import make_subplots  # type: ignore[import-untyped]
+
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.08,
+            subplot_titles=("Magnitude (dB)", "Phase (deg)"),
+        )
+        for label, sp in self._filtered_entries(full):
+            fig.add_scatter(
+                x=self._freq,
+                y=sp.db,
+                mode="lines",
+                name=label,
+                legendgroup=label,
+                row=1,
+                col=1,
+            )
+            fig.add_scatter(
+                x=self._freq,
+                y=sp.deg,
+                mode="lines",
+                name=label,
+                legendgroup=label,
+                showlegend=False,
+                row=2,
+                col=1,
+            )
+        fig.update_xaxes(title_text="Frequency (GHz)", row=2, col=1)
+        fig.update_yaxes(title_text="dB", row=1, col=1)
+        fig.update_yaxes(title_text="deg", row=2, col=1)
+        fig.update_layout(title="S-Parameters", height=600)
+        return fig
 
     def __repr__(self) -> str:
         """Return string representation."""
