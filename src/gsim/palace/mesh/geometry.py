@@ -912,7 +912,7 @@ def add_ports(
                 port_info.append(
                     {
                         "portnumber": port_num,
-                    "name": port.name,
+                        "name": port.name,
                         "R0": port.resistance,
                         "L0": port.inductance,
                         "C0": port.capacitance,
