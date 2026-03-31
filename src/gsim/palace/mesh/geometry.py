@@ -374,7 +374,8 @@ def add_dielectrics(
     kernel,
     geometry: GeometryData,
     stack: LayerStack,
-    margin: float,
+    margin_x: float,
+    margin_y: float | None = None,
     air_margin: float = 0.0,
 ) -> dict:
     """Add dielectric volumes to gmsh.
@@ -388,7 +389,9 @@ def add_dielectrics(
         kernel: gmsh OCC kernel
         geometry: Extracted geometry data
         stack: LayerStack with dielectric definitions
-        margin: XY margin around design (um)
+        margin_x: X margin around design (um). Also used as Y margin
+            when *margin_y* is not provided (backward compat).
+        margin_y: Y margin around design (um). Defaults to margin_x.
         air_margin: Extra margin for the surrounding airbox (um).
             When > 0, an enclosing airbox is created.  The boolean
             pipeline will carve the dielectrics out of it
@@ -397,13 +400,16 @@ def add_dielectrics(
     Returns:
         Dict with material_name -> list of volume_tags
     """
+    if margin_y is None:
+        margin_y = margin_x
+
     dielectric_tags: dict[str, list[int]] = {}
 
     xmin, ymin, xmax, ymax = geometry.bbox
-    xmin -= margin
-    ymin -= margin
-    xmax += margin
-    ymax += margin
+    xmin -= margin_x
+    ymin -= margin_y
+    xmax += margin_x
+    ymax += margin_y
 
     z_min_all = math.inf
     z_max_all = -math.inf

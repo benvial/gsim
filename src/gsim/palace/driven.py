@@ -529,6 +529,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
             max_mesh_size=mesh_config.max_mesh_size,
             cells_per_wavelength=mesh_config.cells_per_wavelength,
             margin=mesh_config.margin,
+            margin_x=mesh_config.margin_x,
+            margin_y=mesh_config.margin_y,
             airbox_margin=mesh_config.airbox_margin,
             fmax=effective_fmax,
             show_gui=mesh_config.show_gui,
@@ -587,6 +589,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         refined_mesh_size: float | None = None,
         max_mesh_size: float | None = None,
         margin: float | None = None,
+        margin_x: float | None = None,
+        margin_y: float | None = None,
         airbox_margin: float | None = None,
         fmax: float | None = None,
         planar_conductors: bool | None = None,
@@ -601,6 +605,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
             refined_mesh_size: Mesh size near conductors (um)
             max_mesh_size: Max mesh size in air/dielectric (um)
             margin: XY margin around design (um)
+            margin_x: X-axis margin (um). Overrides margin for X.
+            margin_y: Y-axis margin (um). Overrides margin for Y.
             airbox_margin: Extra airbox around stack (um); 0 = disabled
             fmax: Max frequency for mesh sizing (Hz)
             planar_conductors: Treat conductors as 2D PEC surfaces
@@ -625,6 +631,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
             refined_mesh_size=refined_mesh_size,
             max_mesh_size=max_mesh_size,
             margin=margin,
+            margin_x=margin_x,
+            margin_y=margin_y,
             airbox_margin=airbox_margin,
             fmax=fmax,
             planar_conductors=planar_conductors,
@@ -643,6 +651,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
             max_mesh_size=mesh_config.max_mesh_size,
             cells_per_wavelength=mesh_config.cells_per_wavelength,
             margin=mesh_config.margin,
+            margin_x=mesh_config.margin_x,
+            margin_y=mesh_config.margin_y,
             airbox_margin=mesh_config.airbox_margin,
             fmax=mesh_config.fmax,
             show_gui=show_gui,
@@ -674,6 +684,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         refined_mesh_size: float | None = None,
         max_mesh_size: float | None = None,
         margin: float | None = None,
+        margin_x: float | None = None,
+        margin_y: float | None = None,
         airbox_margin: float | None = None,
         fmax: float | None = None,
         planar_conductors: bool | None = None,
@@ -693,6 +705,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
             refined_mesh_size: Mesh size near conductors (um), overrides preset
             max_mesh_size: Max mesh size in air/dielectric (um), overrides preset
             margin: XY margin around design (um), overrides preset
+            margin_x: X-axis margin (um). Overrides margin for X.
+            margin_y: Y-axis margin (um). Overrides margin for Y.
             airbox_margin: Extra airbox around stack (um); 0 = disabled
             fmax: Max frequency for mesh sizing (Hz), overrides preset
             planar_conductors: Treat conductors as 2D PEC surfaces
@@ -724,6 +738,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
             refined_mesh_size=refined_mesh_size,
             max_mesh_size=max_mesh_size,
             margin=margin,
+            margin_x=margin_x,
+            margin_y=margin_y,
             airbox_margin=airbox_margin,
             fmax=fmax,
             planar_conductors=planar_conductors,
