@@ -29,12 +29,8 @@ from .groups import assign_physical_groups
 
 if TYPE_CHECKING:
     from gsim.common.stack import LayerStack
-<<<<<<< HEAD
-    from gsim.palace.models import DrivenConfig
-    from gsim.palace.models.pec import PECBlockConfig
-=======
     from gsim.palace.models import DrivenConfig, EigenmodeConfig
->>>>>>> 78e833a (feat(palace): add eigenmode simulation support and refactor mesh pipeline)
+    from gsim.palace.models.pec import PECBlockConfig
     from gsim.palace.ports.config import PalacePort
 
 logger = logging.getLogger(__name__)

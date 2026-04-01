@@ -13,12 +13,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from gsim.common.stack import LayerStack
-<<<<<<< HEAD
-    from gsim.palace.models import DrivenConfig
-    from gsim.palace.models.pec import PECBlockConfig
-=======
     from gsim.palace.models import DrivenConfig, EigenmodeConfig
->>>>>>> 78e833a (feat(palace): add eigenmode simulation support and refactor mesh pipeline)
+    from gsim.palace.models.pec import PECBlockConfig
     from gsim.palace.ports.config import PalacePort
 
 from gsim.palace.mesh.generator import generate_mesh as gen_mesh
@@ -189,11 +185,8 @@ def generate_mesh(
     driven_config: DrivenConfig | None = None,
     eigenmode_config: EigenmodeConfig | None = None,
     write_config: bool = True,
-<<<<<<< HEAD
     pec_blocks: list[PECBlockConfig] | None = None,
-=======
     absorbing_boundary: bool = True,
->>>>>>> 78e833a (feat(palace): add eigenmode simulation support and refactor mesh pipeline)
 ) -> MeshResult:
     """Generate mesh for Palace EM simulation.
 
@@ -234,12 +227,9 @@ def generate_mesh(
         write_config=write_config,
         planar_conductors=config.planar_conductors,
         refine_from_curves=config.refine_from_curves,
-<<<<<<< HEAD
         pec_blocks=pec_blocks,
         merge_via_distance=config.merge_via_distance,
-=======
         absorbing_boundary=absorbing_boundary,
->>>>>>> 78e833a (feat(palace): add eigenmode simulation support and refactor mesh pipeline)
     )
 
     # Convert to pipeline's MeshResult format

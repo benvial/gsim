@@ -172,7 +172,6 @@ class EigenmodeConfig(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
 
-<<<<<<< HEAD
     num_modes: int = Field(
         default=10,
         ge=1,
@@ -184,10 +183,6 @@ class EigenmodeConfig(BaseModel):
         description="Target frequency in Hz. Palace searches for modes above "
         "this value. Set near expected resonance for faster convergence.",
     )
-=======
-    num_modes: int = Field(default=10, ge=1, description="Number of modes to find")
-    target: float | None = Field(default=None, description="Target frequency in Hz")
->>>>>>> 78e833a (feat(palace): add eigenmode simulation support and refactor mesh pipeline)
     tolerance: float = Field(
         default=1e-6,
         gt=0,
