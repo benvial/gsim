@@ -187,6 +187,7 @@ def generate_mesh(
     write_config: bool = True,
     pec_blocks: list[PECBlockConfig] | None = None,
     absorbing_boundary: bool = True,
+    verbosity: int = 3,
 ) -> MeshResult:
     """Generate mesh for Palace EM simulation.
 
@@ -230,6 +231,7 @@ def generate_mesh(
         pec_blocks=pec_blocks,
         merge_via_distance=config.merge_via_distance,
         absorbing_boundary=absorbing_boundary,
+        verbosity=verbosity,
     )
 
     # Convert to pipeline's MeshResult format

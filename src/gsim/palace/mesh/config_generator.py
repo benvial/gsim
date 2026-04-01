@@ -82,27 +82,26 @@ def generate_palace_config(
             },
         )
 
-    if simulation_type == "electrostatics":
-        linear_conf: dict[str, object] = {
-            "Type": "Default",
-            "KSPType": "GMRES",
-            "Tol": 1e-6,
-            "MaxIts": 400,
-        }
-    else:
-        linear_conf: dict[str, object] = {
-            "Type": "MUMPS",
-            "KSPType": "GMRES",
-            "Tol": 1e-6,
-            "MaxIts": 1,
-            "MGMaxLevels": 1,
-            "EstimatorMaxIts": 0,
-            "EstimatorTol": 1e-6,
-            "DivFreeTol": 1e-6,
-            "DivFreeMaxIts": 0,
-            "PCMatReal": False,
-            "ComplexCoarseSolve": True,
-        }
+    linear_conf: dict[str, object] = {
+        "Type": "Default",
+        "KSPType": "GMRES",
+        "Tol": 1e-6,
+        "MaxIts": 400,
+    }
+    # TODO: Add MUMPS support
+    # linear_conf: dict[str, object] = {
+    #     "Type": "MUMPS",
+    #     "KSPType": "GMRES",
+    #     "Tol": 1e-6,
+    #     "MaxIts": 1,
+    #     "MGMaxLevels": 1,
+    #     "EstimatorMaxIts": 0,
+    #     "EstimatorTol": 1e-6,
+    #     "DivFreeTol": 1e-6,
+    #     "DivFreeMaxIts": 0,
+    #     "PCMatReal": False,
+    #     "ComplexCoarseSolve": True,
+    # }
 
     solver_conf: dict[str, object] = {
         "Linear": linear_conf,

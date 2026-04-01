@@ -778,6 +778,8 @@ class PalaceSimMixin:
             simulation_type=self.simulation_type,
             write_config=write_config,
             absorbing_boundary=self.absorbing_boundary,
+            pec_blocks=self._pec_blocks or None,
+            verbosity=3,
         )
 
         # Store mesh_result for deferred config generation
@@ -887,6 +889,7 @@ class PalaceSimMixin:
                 eigenmode_config=self.eigenmode,
                 simulation_type=self.simulation_type,
                 absorbing_boundary=self.absorbing_boundary,
+                pec_blocks=self._pec_blocks or None,
             )
 
     # -------------------------------------------------------------------------
@@ -1112,7 +1115,7 @@ class PalaceSimMixin:
     def wait_for_results(
         self,
         *,
-        verbose: bool = True,
+        verbose: Literal["quiet", "status", "full"] = "status",
         parent_dir: str | Path | None = None,
     ) -> Any:
         """Wait for this sim's cloud job, download and parse results.
@@ -1143,7 +1146,7 @@ class PalaceSimMixin:
         self,
         parent_dir: str | Path | None = None,
         *,
-        verbose: bool = True,
+        verbose: Literal["quiet", "status", "full"] = "status",
         wait: bool = True,
     ) -> dict[str, Path] | str:
         """Run simulation on GDSFactory+ cloud.
@@ -1154,7 +1157,8 @@ class PalaceSimMixin:
         Args:
             parent_dir: Where to create the sim directory.
                 Defaults to the current working directory.
-            verbose: Print progress messages.
+            verbose: ``"quiet"`` no output, ``"status"`` status line,
+                ``"full"`` stream solver logs.
             wait: If ``True`` (default), block until results are ready.
                 If ``False``, upload + start and return the ``job_id``.
 
@@ -1171,9 +1175,12 @@ class PalaceSimMixin:
             >>> print(f"S-params saved to: {results['port-S.csv']}")
         """
         self.upload(verbose=False)
-        self.start(verbose=verbose)
+        self.start(verbose=verbose != "quiet")
         if not wait:
-            return self._job_id  # type: ignore[return-value]  # set by upload()
+            if self._job_id is None:
+                msg = "job_id not set — call upload() first"
+                raise RuntimeError(msg)
+            return self._job_id
         return self.wait_for_results(verbose=verbose, parent_dir=parent_dir)
 
     def run_local(
@@ -1449,7 +1456,7 @@ class PalaceSimMixin:
         layer: str,
         s_width: float,
         gap_width: float,
-        length: float,
+        length: float = 0.1,
         offset: float = 0.0,
         impedance: float = 50.0,
         excited: bool = True,
