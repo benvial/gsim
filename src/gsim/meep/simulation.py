@@ -568,9 +568,7 @@ class Simulation(BaseModel):
         _meep_np_est = estimate_meep_np(
             cell_x, cell_y, cell_z, resolution_cfg.pixels_per_um
         )
-        # TODO: use _meep_np_est once Batch vCPU allocation is passed to the
-        # container (lscpu reports host cores, not container vCPUs → OOM).
-        meep_np = 2
+        meep_np = 8
         sim_config.meep_np = meep_np
         logger.info(
             "meep_np=%d (estimated %d, cell %.1f x %.1f x %.1f um, res %d)",
