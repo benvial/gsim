@@ -40,11 +40,17 @@ docs:
 serve:
   uv run mkdocs serve -a localhost:8080
 
-nbrun: ipykernel
-  find nbs -maxdepth 1 -mindepth 1 -name "*.ipynb" -not -path "*/.ipynb_checkpoints/*" -not -path "./.venv/*" | xargs parallel -j `nproc --all` uv run papermill {} {} -k gsim :::
+# Run a notebook for docs (with Plotly HTML renderer): just nbrun-docs nbs/foo.ipynb
+nbrun-docs +notebooks: ipykernel
+  for nb in {{notebooks}}; do \
+    PLOTLY_RENDERER=notebook_connected PYVISTA_OFF_SCREEN=true uv run papermill "$nb" "$nb" -k gsim; \
+  done
 
+# Convert all notebooks to markdown for docs
 nbdocs:
-  find nbs -maxdepth 1 -mindepth 1 -name "*.ipynb" -not -path "*/.ipynb_checkpoints/*" -not -path "./.venv/*" | xargs parallel -j `nproc --all` uv run jupyter nbconvert --to markdown --embed-images {} --output-dir docs/nbs ':::'
+  for nb in nbs/*.ipynb; do \
+    uv run jupyter nbconvert --to markdown --embed-images "$nb" --output-dir docs/nbs; \
+  done
 
 nbclean-all:
   find . -name "*.ipynb" -not -path "*/.ipynb_checkpoints/*" -not -path "./.venv/*" | xargs just nbclean
