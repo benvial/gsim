@@ -43,12 +43,14 @@ serve:
 # Run a notebook for docs (with Plotly HTML renderer): just nbrun-docs nbs/foo.ipynb
 nbrun-docs +notebooks: ipykernel
   for nb in {{notebooks}}; do \
-    PLOTLY_RENDERER=notebook_connected PYVISTA_OFF_SCREEN=true uv run papermill "$nb" "$nb" -k gsim; \
+    PLOTLY_RENDERER=notebook_connected PYVISTA_OFF_SCREEN=true PYVISTA_JUPYTER_BACKEND=static uv run papermill "$nb" "$nb" -k gsim; \
+    uv run python scripts/strip_notebook_paths.py "$nb"; \
+    uv run jupyter nbconvert --to markdown --embed-images "$nb" --output-dir docs/nbs; \
   done
 
-# Convert all notebooks to markdown for docs
-nbdocs:
-  for nb in nbs/*.ipynb; do \
+# Convert notebooks to markdown for docs: just nbdocs nbs/foo.ipynb nbs/bar.ipynb
+nbdocs +notebooks:
+  for nb in {{notebooks}}; do \
     uv run jupyter nbconvert --to markdown --embed-images "$nb" --output-dir docs/nbs; \
   done
 

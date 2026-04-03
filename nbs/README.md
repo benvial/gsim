@@ -8,8 +8,8 @@ Notebooks are committed **with outputs**. CI only converts and deploys — it do
 just nbrun-docs nbs/my_notebook.ipynb
 ```
 
-This executes the notebook with `PLOTLY_RENDERER=notebook_connected` (so Plotly produces self-contained HTML) and
-`PYVISTA_OFF_SCREEN=true` (so PyVista renders static images instead of interactive widgets).
+This executes the notebook, strips absolute paths from outputs, and converts it to markdown. Plotly renders as
+self-contained HTML and PyVista renders as static images.
 
 You can run multiple at once:
 
@@ -17,12 +17,10 @@ You can run multiple at once:
 just nbrun-docs nbs/meep_ybranch.ipynb nbs/palace_demo_cpw.ipynb
 ```
 
-## Build and preview docs locally
+## Preview docs locally
 
 ```bash
-just nbdocs   # convert notebooks to markdown
-just docs     # build mkdocs site
-just serve    # serve at http://localhost:8080/gsim/
+just serve    # http://localhost:8080/gsim/
 ```
 
 ## Add a new notebook
