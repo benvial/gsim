@@ -171,6 +171,27 @@ class Simulation(BaseModel):
                 "No stack configured. Will use active PDK with defaults."
             )
 
+        # Inform about stopping mode
+        s = self.solver
+        if s.stopping == "energy_decay":
+            warnings_list.append(
+                f"Stopping: energy_decay (dt={s.stopping_dt}, "
+                f"decay_by={s.stopping_threshold}, cap={s.max_time})"
+            )
+        elif s.stopping == "field_decay":
+            warnings_list.append(
+                f"Stopping: field_decay (component={s.stopping_component}, "
+                f"dt={s.stopping_dt}, decay_by={s.stopping_threshold}, "
+                f"cap={s.max_time})"
+            )
+        elif s.stopping == "dft_decay":
+            warnings_list.append(
+                f"Stopping: dft_decay (tol={s.stopping_threshold}, "
+                f"min_time={s.stopping_min_time}, cap={s.max_time})"
+            )
+        elif s.stopping == "fixed":
+            warnings_list.append(f"Stopping: fixed (time={s.max_time})")
+
         return ValidationResult(
             valid=len(errors) == 0, errors=errors, warnings=warnings_list
         )
