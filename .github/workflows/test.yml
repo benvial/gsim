@@ -1,0 +1,20 @@
+name: Test
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+      - name: Install UV
+        uses: astral-sh/setup-uv@v6
+      - name: Create environment
+        run: uv sync --dev --all-extras
+      - name: Run tests
+        run: uv run pytest
