@@ -161,15 +161,10 @@ def generate_palace_config(
             mat_entry["Permittivity"] = 1.0
             mat_entry["LossTan"] = 0.0
         elif is_via:
-            # Merged via volumes get anisotropic conductivity:
-            # reduced lateral (xy) conductivity prevents unrealistic
-            # horizontal current flow through the merged block.
-            _VIA_LATERAL_FACTOR = 10
             sigma = mat_props.get("conductivity", 0.0)
             mat_entry["Permittivity"] = 1.0
             if sigma > 0:
-                xy_sigma = sigma / _VIA_LATERAL_FACTOR
-                mat_entry["Conductivity"] = [xy_sigma, xy_sigma, sigma]
+                mat_entry["Conductivity"] = sigma
         else:
             # Use anisotropic tensor values when available
             if "permittivity_diagonal" in mat_props:

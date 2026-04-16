@@ -285,9 +285,51 @@ def add_metals(
         if not surfaces:
             continue
 
-        if layer_type == "conductor" and (planar_conductors or thickness == 0):
-            # Zero-thickness or explicitly planar → 2D PEC surface
+        min_volume_thickness = 0.05  # um — thinner volumes can't mesh as 3D
+        is_planar = (
+            planar_conductors or thickness == 0 or thickness < min_volume_thickness
+        )
+        if layer_type == "conductor" and is_planar:
+            # Zero/thin-thickness or explicitly planar → 2D PEC surface
             metal_tags[layer_name]["surfaces_xy"].extend(surfaces)
+        elif layer_type == "via":
+            # Decide between 3D volume (with conductivity) and 2D PEC fallback
+            material_name = layer_info["material"]
+            mat_props = stack.materials.get(material_name, {})
+            conductivity = mat_props.get("conductivity", 0.0)
+            via_too_thin = thickness == 0 or thickness < min_volume_thickness
+
+            if via_too_thin:
+                logger.warning(
+                    "Via layer '%s' too thin for 3D meshing "
+                    "(%.3f um < %.3f um), falling back to 2D PEC surface",
+                    layer_name,
+                    thickness,
+                    min_volume_thickness,
+                )
+                metal_tags[layer_name]["surfaces_xy"].extend(surfaces)
+            elif conductivity <= 0:
+                logger.warning(
+                    "Via layer '%s' has no conductivity for material '%s', "
+                    "falling back to 2D PEC surface",
+                    layer_name,
+                    material_name,
+                )
+                metal_tags[layer_name]["surfaces_xy"].extend(surfaces)
+            else:
+                # Extrude via as 3D volume with finite conductivity
+                logger.info(
+                    "Via layer '%s': 3D volume (material=%s, "
+                    "\u03c3=%.2e S/m, thickness=%.3f um)",
+                    layer_name,
+                    material_name,
+                    conductivity,
+                    thickness,
+                )
+                for surfacetag in surfaces:
+                    result = kernel.extrude([(2, surfacetag)], 0, 0, thickness)
+                    volumetag = result[1][1]
+                    metal_tags[layer_name]["volumes"].append(volumetag)
         elif thickness > 0:
             # Fuse overlapping same-layer surfaces before extrusion so that
             # overlapping polygons (e.g. ground planes and spines in a GSG
@@ -667,11 +709,15 @@ def build_entities(
 
         # PEC / zero-thickness surfaces
         if tag_info["surfaces_xy"]:
+            # Via PEC surfaces get higher priority (lower mesh_order) so they
+            # are processed first and survive boolean cuts against conductor
+            # shell surfaces that sit at the same z-height.
+            pec_mesh_order = -1 if is_via else 0
             entities.append(
                 Entity(
                     name=f"{layer_name}_pec",
                     dim=2,
-                    mesh_order=0,
+                    mesh_order=pec_mesh_order,
                     tags=tag_info["surfaces_xy"],
                 )
             )
