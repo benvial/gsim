@@ -172,7 +172,7 @@ def configure_cpw_port(
     length: float,
     impedance: float = 50.0,
     excited: bool = True,
-    offset: float = 0.0,
+    offset: float | None = None,
 ):
     """Configure a gdsfactory port as a CPW (multi-element) lumped port.
 
@@ -190,6 +190,7 @@ def configure_cpw_port(
         excited: Whether port is excited (default: True)
         offset: Shift port inward along the waveguide (um).
             Positive moves away from the boundary, into the conductor.
+            Defaults to length/2 (port flush with conductor edge).
 
     Examples:
         ```python
@@ -204,6 +205,9 @@ def configure_cpw_port(
     """
     import numpy as np
 
+    if offset is None:
+        offset = length / 2
+
     center = np.array([float(port.center[0]), float(port.center[1])])
     orientation_rad = np.deg2rad(
         float(port.orientation) if port.orientation is not None else 0.0
@@ -215,7 +219,7 @@ def configure_cpw_port(
     # waveguide (away from the boundary, into the conductor).
     longitudinal = np.array([np.cos(orientation_rad), np.sin(orientation_rad)])
 
-    # Apply longitudinal offset if requested
+    # Apply longitudinal offset
     if offset != 0.0:
         center = center - longitudinal * offset
 

@@ -90,12 +90,21 @@ class CPWPortConfig(BaseModel):
     gap_width: float = Field(
         gt=0, description="Gap width between signal and ground (um)"
     )
-    length: float = Field(gt=0, description="Port extent in um")
-    offset: float = Field(
-        default=0.0,
+    length: float = Field(default=2.0, gt=0, description="Port extent in um")
+    offset: float | None = Field(
+        default=None,
         description="Shift port inward along the waveguide (um). "
-        "Positive = away from boundary, into conductor.",
+        "Positive = away from boundary, into conductor. "
+        "Defaults to length/2 (port flush with conductor edge).",
     )
+
+    @model_validator(mode="after")
+    def _default_offset(self) -> Self:
+        """Default offset to length/2 so the port is flush with the conductor edge."""
+        if self.offset is None:
+            self.offset = self.length / 2
+        return self
+
     impedance: float = Field(default=50.0, gt=0)
     excited: bool = True
 

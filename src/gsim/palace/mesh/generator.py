@@ -72,20 +72,51 @@ def _setup_mesh_fields(
         refine_near_conductor_curves: Refine mesh based on distance to conductor curves
     """
     boundary_lines: list[int] = []
-    if refine_near_conductor_curves:
-        # Collect only curves belonging to conducting materials/surfaces.
-        for surface_info in groups["conductor_surfaces"].values():
-            for tag in surface_info["tags"]:
-                lines = gmsh_utils.get_boundary_lines(tag, kernel)
-                boundary_lines.extend(lines)
+    conductor_line_count = 0
+    port_line_count = 0
+    pec_line_count = 0
 
-        # Include user-defined PEC conductor surfaces when present.
+    # Conductor-surface edges are always refined — the refined_cellsize only
+    # takes effect where boundary curves drive the Threshold field, and metal
+    # edges are the dominant field-concentration sites.
+    for surface_info in groups["conductor_surfaces"].values():
+        for tag in surface_info["tags"]:
+            lines = gmsh_utils.get_boundary_lines(tag, kernel)
+            boundary_lines.extend(lines)
+            conductor_line_count += len(lines)
+
+    # User-defined PEC conductor surfaces: opt-in via refine_near_conductor_curves.
+    if refine_near_conductor_curves:
         for surface_info in groups["pec_surfaces"].values():
             for tag in surface_info["tags"]:
                 lines = gmsh_utils.get_boundary_lines(tag, kernel)
                 boundary_lines.extend(lines)
+                pec_line_count += len(lines)
 
-        boundary_lines = sorted(set(boundary_lines))
+    # Port boundaries are always refined — drives S-parameter / impedance
+    # accuracy regardless of preset.
+    for surface_info in groups["port_surfaces"].values():
+        if surface_info.get("type") == "cpw":
+            for elem in surface_info["elements"]:
+                for tag in elem["tags"]:
+                    lines = gmsh_utils.get_boundary_lines(tag, kernel)
+                    boundary_lines.extend(lines)
+                    port_line_count += len(lines)
+        else:
+            for tag in surface_info["tags"]:
+                lines = gmsh_utils.get_boundary_lines(tag, kernel)
+                boundary_lines.extend(lines)
+                port_line_count += len(lines)
+
+    boundary_lines = sorted(set(boundary_lines))
+
+    logger.info(
+        "Mesh refinement: %d boundary lines (conductor=%d, port=%d, pec=%d)",
+        len(boundary_lines),
+        conductor_line_count,
+        port_line_count,
+        pec_line_count,
+    )
 
     # Setup main refinement field
     field_ids = []

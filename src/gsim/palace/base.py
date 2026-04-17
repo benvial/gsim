@@ -343,6 +343,26 @@ class PalaceSimMixin:
         else:
             mesh_config = MeshConfig.default()
 
+        # For the default preset, scale refined_mesh_size to the smallest
+        # conductor feature when the user didn't specify one explicitly.
+        if preset in (None, "default") and refined_mesh_size is None:
+            component = self.geometry.component if self.geometry else None
+            if component is not None:
+                from gsim.palace.mesh.auto_size import auto_refined_mesh_size
+
+                stack = self._resolve_stack()
+                auto_size = auto_refined_mesh_size(
+                    component, stack, preset_size=mesh_config.refined_mesh_size
+                )
+                if auto_size < mesh_config.refined_mesh_size:
+                    logger.info(
+                        "Auto-sizing refined_mesh_size: %.3f -> %.3f um "
+                        "(min conductor feature / 4)",
+                        mesh_config.refined_mesh_size,
+                        auto_size,
+                    )
+                    mesh_config.refined_mesh_size = auto_size
+
         # Preserve planar_conductors from sim.mesh_config if not
         # explicitly provided via sim.mesh(planar_conductors=...)
         if planar_conductors is None:
@@ -1533,8 +1553,8 @@ class PalaceSimMixin:
         layer: str,
         s_width: float,
         gap_width: float,
-        length: float = 0.1,
-        offset: float = 0.0,
+        length: float = 2.0,
+        offset: float | None = None,
         impedance: float = 50.0,
         excited: bool = True,
     ) -> None:
@@ -1554,6 +1574,7 @@ class PalaceSimMixin:
             length: Port extent along direction (um)
             offset: Shift the port inward along the waveguide (um).
                 Positive moves away from the boundary, into the conductor.
+                Defaults to length/2 (port flush with conductor edge).
             impedance: Port impedance (Ohms)
             excited: Whether this port is excited
 
