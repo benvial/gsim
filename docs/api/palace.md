@@ -86,12 +86,6 @@
         - default
         - fine
 
-::: gsim.palace.GroundPlane
-    options:
-      show_source: false
-      inherited_members: false
-      members: false
-
 ::: gsim.palace.generate_mesh
     options:
       show_source: false
