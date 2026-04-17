@@ -88,12 +88,36 @@ class PalacePort:
         return "-y"  # South
 
 
+def _shift_port_center(port, offset: float) -> None:
+    """Shift a port's center inward along its orientation by `offset` um.
+
+    Positive offset moves the port away from the domain boundary and into
+    the conductor (same convention as configure_cpw_port).
+
+    Args:
+        port: gdsfactory Port whose center will be mutated in-place.
+        offset: Distance in um. Positive = inward (against the outward normal).
+    """
+    import numpy as np
+
+    orientation_rad = np.deg2rad(
+        float(port.orientation) if port.orientation is not None else 0.0
+    )
+    # Port orientation points *outward*; negate so positive offset goes inward.
+    longitudinal = np.array([np.cos(orientation_rad), np.sin(orientation_rad)])
+    shifted = (
+        np.array([float(port.center[0]), float(port.center[1])]) - longitudinal * offset
+    )
+    port.center = (float(shifted[0]), float(shifted[1]))
+
+
 def configure_inplane_port(
     ports,
     layer: str,
     length: float,
     impedance: float = 50.0,
     excited: bool = True,
+    offset: float = 0.0,
 ):
     """Configure gdsfactory port(s) as inplane (lumped) ports for Palace simulation.
 
@@ -106,17 +130,23 @@ def configure_inplane_port(
         length: Port extent along direction in um (perpendicular to port width)
         impedance: Port impedance in Ohms (default: 50)
         excited: Whether port is excited vs just measured (default: True)
+        offset: Shift port inward along the waveguide (um).
+            Positive moves away from the boundary, into the conductor.
 
     Examples:
         ```python
         configure_inplane_port(c.ports["o1"], layer="topmetal2", length=5.0)
         configure_inplane_port(c.ports, layer="topmetal2", length=5.0)  # all ports
+        configure_inplane_port(c.ports["o1"], layer="topmetal2", length=5.0, offset=2.0)
         ```
     """
     # Handle single port or iterable
     port_list = [ports] if hasattr(ports, "info") else ports
 
     for port in port_list:
+        if offset != 0.0:
+            _shift_port_center(port, offset)
+
         port.info["palace_type"] = "lumped"
         port.info["layer"] = layer
         port.info["length"] = length
@@ -130,6 +160,7 @@ def configure_via_port(
     to_layer: str,
     impedance: float = 50.0,
     excited: bool = True,
+    offset: float = 0.0,
 ):
     """Configure gdsfactory port(s) as via (vertical) lumped ports.
 
@@ -144,6 +175,8 @@ def configure_via_port(
         inductance: Series inductance in Henries (default: 0)
         capacitance: Shunt capacitance in Farads (default: 0)
         excited: Whether port is excited vs just measured (default: True)
+        offset: Shift port inward along the waveguide in XY (um).
+            Positive moves away from the boundary, into the conductor.
 
     Examples:
         ```python
@@ -151,12 +184,18 @@ def configure_via_port(
         configure_via_port(
             c.ports, from_layer="metal1", to_layer="topmetal2"
         )  # all ports
+        configure_via_port(
+            c.ports["o1"], from_layer="metal1", to_layer="topmetal2", offset=2.0
+        )
         ```
     """
     # Handle single port or iterable
     port_list = [ports] if hasattr(ports, "info") else ports
 
     for port in port_list:
+        if offset != 0.0:
+            _shift_port_center(port, offset)
+
         port.info["palace_type"] = "lumped"
         port.info["from_layer"] = from_layer
         port.info["to_layer"] = to_layer
