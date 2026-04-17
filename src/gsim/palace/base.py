@@ -230,8 +230,9 @@ class PalaceSimMixin:
 
         The PEC block is a user-drawn polygon on a GDS layer that gets
         extruded between ``from_layer.zmin`` and ``to_layer.zmax`` and
-        treated as a PEC boundary. This is the standard HFSS practice for
-        connecting ground planes across metal layers at port boundaries.
+        treated as a PEC boundary. This is a common practice in commercial
+        EM solvers for connecting ground planes across metal layers at
+        port boundaries.
 
         Args:
             gds_layer: GDS layer tuple where the PEC polygon is drawn.
@@ -321,7 +322,7 @@ class PalaceSimMixin:
 
     def _build_mesh_config(
         self,
-        preset: Literal["coarse", "default", "graded", "fine"] | None,
+        preset: Literal["coarse", "default", "fine"] | None,
         refined_mesh_size: float | None,
         max_mesh_size: float | None,
         margin: float | None,
@@ -336,8 +337,6 @@ class PalaceSimMixin:
         # Build mesh config from preset
         if preset == "coarse":
             mesh_config = MeshConfig.coarse()
-        elif preset == "graded":
-            mesh_config = MeshConfig.graded()
         elif preset == "fine":
             mesh_config = MeshConfig.fine()
         else:
@@ -831,7 +830,6 @@ class PalaceSimMixin:
             show_gui=mesh_config.show_gui,
             preview_only=mesh_config.preview_only,
             planar_conductors=mesh_config.planar_conductors,
-            refine_near_conductor_curves=mesh_config.refine_near_conductor_curves,
         )
 
         # Resolve stack
@@ -883,7 +881,7 @@ class PalaceSimMixin:
     def preview(
         self,
         *,
-        preset: Literal["coarse", "default", "graded", "fine"] | None = None,
+        preset: Literal["coarse", "default", "fine"] | None = None,
         refined_mesh_size: float | None = None,
         max_mesh_size: float | None = None,
         margin: float | None = None,
@@ -899,7 +897,7 @@ class PalaceSimMixin:
         Opens the gmsh GUI to visualize the mesh interactively.
 
         Args:
-            preset: Mesh quality preset ("coarse", "default", "graded", "fine")
+            preset: Mesh quality preset ("coarse", "default", "fine")
             refined_mesh_size: Mesh size near conductors (um)
             max_mesh_size: Max mesh size in air/dielectric (um)
             margin: XY margin around design (um)
@@ -956,7 +954,6 @@ class PalaceSimMixin:
             show_gui=show_gui,
             preview_only=True,
             planar_conductors=mesh_config.planar_conductors,
-            refine_near_conductor_curves=mesh_config.refine_near_conductor_curves,
         )
 
         # Generate mesh in temp directory
@@ -981,7 +978,7 @@ class PalaceSimMixin:
     def mesh(
         self,
         *,
-        preset: Literal["coarse", "default", "graded", "fine"] | None = None,
+        preset: Literal["coarse", "default", "fine"] | None = None,
         refined_mesh_size: float | None = None,
         max_mesh_size: float | None = None,
         margin: float | None = None,
@@ -1002,7 +999,7 @@ class PalaceSimMixin:
         Requires set_output_dir() to be called first.
 
         Args:
-            preset: Mesh quality preset ("coarse", "default", "graded", "fine")
+            preset: Mesh quality preset ("coarse", "default", "fine")
             refined_mesh_size: Mesh size near conductors (um), overrides preset
             max_mesh_size: Max mesh size in air/dielectric (um), overrides preset
             margin: XY margin around design (um), overrides preset

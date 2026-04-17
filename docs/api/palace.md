@@ -85,7 +85,6 @@
         - coarse
         - default
         - fine
-        - graded
 
 ::: gsim.palace.GroundPlane
     options:

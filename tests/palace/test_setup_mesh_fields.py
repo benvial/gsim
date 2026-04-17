@@ -95,10 +95,10 @@ def _groups(
 class TestSetupMeshFields:
     """Tests for line-collection behaviour of `_setup_mesh_fields`."""
 
-    def test_conductor_lines_collected_when_flag_false(
+    def test_conductor_lines_always_collected(
         self, stub_gmsh_utils, empty_stack, geometry
     ):
-        """Conductor-surface edges are always refined (flag off)."""
+        """Conductor-surface edges are always refined."""
         groups = _groups(conductor_tags=[[1, 2]])
 
         _setup_mesh_fields(
@@ -108,7 +108,6 @@ class TestSetupMeshFields:
             stack=empty_stack,
             refined_cellsize=1.0,
             max_cellsize=10.0,
-            refine_near_conductor_curves=False,
         )
 
         calls = stub_gmsh_utils["setup_mesh_refinement_calls"]
@@ -116,8 +115,8 @@ class TestSetupMeshFields:
         # tag 1 -> [10, 11], tag 2 -> [20, 21]; sorted-deduped
         assert calls[0]["boundary_lines"] == [10, 11, 20, 21]
 
-    def test_pec_excluded_when_flag_false(self, stub_gmsh_utils, empty_stack, geometry):
-        """With `refine_near_conductor_curves=False`, PEC lines must NOT be added."""
+    def test_pec_always_refined(self, stub_gmsh_utils, empty_stack, geometry):
+        """PEC surface lines are always included in the refinement field."""
         groups = _groups(conductor_tags=[[1]], pec_tags=[[5]])
 
         _setup_mesh_fields(
@@ -127,30 +126,10 @@ class TestSetupMeshFields:
             stack=empty_stack,
             refined_cellsize=1.0,
             max_cellsize=10.0,
-            refine_near_conductor_curves=False,
         )
 
         lines = stub_gmsh_utils["setup_mesh_refinement_calls"][0]["boundary_lines"]
-        # Conductor tag 1 -> [10, 11]; PEC tag 5 -> [50, 51] must be absent.
-        assert lines == [10, 11]
-        assert 50 not in lines
-        assert 51 not in lines
-
-    def test_pec_included_when_flag_true(self, stub_gmsh_utils, empty_stack, geometry):
-        """With `refine_near_conductor_curves=True`, PEC lines must be added."""
-        groups = _groups(conductor_tags=[[1]], pec_tags=[[5]])
-
-        _setup_mesh_fields(
-            kernel=None,
-            groups=groups,
-            geometry=geometry,
-            stack=empty_stack,
-            refined_cellsize=1.0,
-            max_cellsize=10.0,
-            refine_near_conductor_curves=True,
-        )
-
-        lines = stub_gmsh_utils["setup_mesh_refinement_calls"][0]["boundary_lines"]
+        # Conductor tag 1 -> [10, 11]; PEC tag 5 -> [50, 51]
         assert lines == [10, 11, 50, 51]
 
     def test_ports_simple_shape(self, stub_gmsh_utils, empty_stack, geometry):
@@ -234,7 +213,6 @@ class TestSetupMeshFields:
                 stack=empty_stack,
                 refined_cellsize=1.0,
                 max_cellsize=10.0,
-                refine_near_conductor_curves=True,
             )
 
         matching = [r for r in caplog.records if "Mesh refinement" in r.message]

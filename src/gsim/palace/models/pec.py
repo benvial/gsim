@@ -9,9 +9,9 @@ class PECBlockConfig(BaseModel):
     """Configuration for a PEC (Perfect Electric Conductor) block.
 
     A PEC block is a user-drawn polygon on a GDS layer that gets extruded
-    between two stack layers and treated as a PEC boundary. This is the
-    standard HFSS practice for connecting ground planes across metal layers
-    at port boundaries in terminal-driven simulations.
+    between two stack layers and treated as a PEC boundary. This is a common
+    practice in commercial EM solvers for connecting ground planes across
+    metal layers at port boundaries in terminal-driven simulations.
 
     Attributes:
         gds_layer: GDS layer tuple where the PEC polygon is drawn.

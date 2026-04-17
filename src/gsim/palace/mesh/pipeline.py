@@ -58,7 +58,6 @@ class MeshConfig:
     Use class methods for quick presets:
         MeshConfig.coarse()   - Fast iteration (~2.5 elem/λ)
         MeshConfig.default()  - Balanced (~5 elem/λ)
-        MeshConfig.graded()   - Default sizes + refined near conductor edges
         MeshConfig.fine()     - High accuracy (~10 elem/λ)
 
     Or customize directly:
@@ -88,7 +87,6 @@ class MeshConfig:
 
     # Conductor modeling
     planar_conductors: bool = False  # Treat conductors as 2D PEC surfaces
-    refine_near_conductor_curves: bool = False  # Refine mesh near conductor curves
 
     # Via merging: merge nearby via polygons within this distance (um)
     merge_via_distance: float = 2.0
@@ -113,16 +111,6 @@ class MeshConfig:
             # Default: ABC everywhere
             self.boundary_conditions = ["ABC", "ABC", "ABC", "ABC", "ABC", "ABC"]
 
-    @property
-    def refine_from_curves(self) -> bool:
-        """Backward-compatible alias for refine_near_conductor_curves."""
-        return self.refine_near_conductor_curves
-
-    @refine_from_curves.setter
-    def refine_from_curves(self, value: bool) -> None:
-        """Set refine_near_conductor_curves via legacy alias."""
-        self.refine_near_conductor_curves = value
-
     @classmethod
     def coarse(cls, **kwargs) -> MeshConfig:
         """Fast mesh for quick iteration (~2.5 elements per wavelength)."""
@@ -146,18 +134,6 @@ class MeshConfig:
         )
 
     @classmethod
-    def graded(cls, **kwargs) -> MeshConfig:
-        """Default mesh sizes with refinement near conductor edges."""
-        refined, max_size, cpw = _MESH_PRESETS[MeshPreset.GRADED]
-        return cls(
-            refined_mesh_size=refined,
-            max_mesh_size=max_size,
-            cells_per_wavelength=cpw,
-            refine_near_conductor_curves=True,
-            **kwargs,
-        )
-
-    @classmethod
     def fine(cls, **kwargs) -> MeshConfig:
         """High accuracy mesh (~10 elements per wavelength)."""
         refined, max_size, cpw = _MESH_PRESETS[MeshPreset.FINE]
@@ -165,7 +141,6 @@ class MeshConfig:
             refined_mesh_size=refined,
             max_mesh_size=max_size,
             cells_per_wavelength=cpw,
-            refine_near_conductor_curves=True,
             **kwargs,
         )
 
@@ -250,7 +225,6 @@ def generate_mesh(
         eigenmode_config=eigenmode_config,
         write_config=write_config,
         planar_conductors=config.planar_conductors,
-        refine_near_conductor_curves=config.refine_near_conductor_curves,
         pec_blocks=pec_blocks,
         merge_via_distance=config.merge_via_distance,
         absorbing_boundary=absorbing_boundary,
