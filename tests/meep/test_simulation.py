@@ -703,13 +703,39 @@ class TestXZAutoCrop:
         sim.materials = {"si": 3.47, "SiO2": 1.44}
         sim.solver.is_3d = False
         sim.solver.plane = "xz"
-        # Core zmax is 0.22 (see _xz_trivial_stack), so absolute z=1.42 is
-        # 1.2 um above the core.
+        # Clad zmax is 1.0 (see _xz_trivial_stack), so absolute z=1.42 is
+        # 0.42 um above the top of the physical stack.
         sim.source_fiber(x=0.0, z=1.42, waist=5.4, angle_deg=14.5)
 
         initial_margin = sim.domain.margin_z_above
         sim.build_config()
-        # Margin should grow to at least (z - core_zmax) + waist/2 so the
+        # Margin should grow to at least (z - stack_top) + waist/2 so the
         # fiber beam plane sits inside the simulation cell.
-        assert sim.domain.margin_z_above >= 1.2 + 5.4 / 2
+        assert sim.domain.margin_z_above >= 0.42 + 5.4 / 2
         assert sim.domain.margin_z_above > initial_margin
+
+    def test_xz_auto_crop_preserves_full_box(self):
+        """Auto z-crop must keep the full BOX dielectric intact.
+
+        Regression for the GC notebook where margin_z_below=0.5 µm was
+        chopping a real 2 µm SOI BOX down to 0.5 µm because the crop was
+        referenced to the core layer.
+        """
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        sim.geometry.component = _xz_straight_component()
+        sim.geometry.stack = _xz_trivial_stack()
+        sim.materials = {"si": 3.47, "SiO2": 1.44}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        # Default margin_z_below=0.5 would previously crop the 2 µm BOX
+        # to 0.5 µm. Option A references the full non-air stack extent,
+        # so the BOX stays full thickness.
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
+        sim.build_config()
+
+        assert sim.geometry.stack is not None
+        box = next(d for d in sim.geometry.stack.dielectrics if d["name"] == "box")
+        assert box["zmin"] == -2.0
+        assert box["zmax"] == 0.0

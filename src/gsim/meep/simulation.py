@@ -256,32 +256,50 @@ class Simulation(BaseModel):
     # Internal: fiber-aware z margin
     # -------------------------------------------------------------------------
 
+    def _stack_material_extent(self) -> tuple[float, float] | None:
+        """Return (zmin, zmax) spanning all non-air layers and dielectrics.
+
+        This is the reference used by auto z-crop and by the fiber-aware
+        margin expansion: it preserves the full fabricated stack (BOX,
+        core, cladding, passive, ...) and trims only the synthetic air
+        padding added by the extractor.
+        """
+        stack = self.geometry.stack
+        if stack is None:
+            return None
+        zmins: list[float] = []
+        zmaxs: list[float] = []
+        for layer in stack.layers.values():
+            if layer.material != "air":
+                zmins.append(layer.zmin)
+                zmaxs.append(layer.zmax)
+        for diel in stack.dielectrics:
+            if diel.get("material") != "air":
+                zmins.append(diel["zmin"])
+                zmaxs.append(diel["zmax"])
+        if not zmins:
+            return None
+        return min(zmins), max(zmaxs)
+
     def _expand_margin_z_above_for_fiber(self) -> None:
         """Bump ``domain.margin_z_above`` to include the fiber source plane.
 
         When the user configures ``sim.source_fiber(...)`` the Gaussian beam
         sits at absolute z = ``fs.z``. The z-crop shrinks the stack around
-        the core (reference layer), so ``margin_z_above`` must be large
-        enough that ``core_zmax + margin_z_above`` still sits above the
-        beam plane plus a waist-sized buffer (otherwise the fiber ends up
-        in PML).
+        the physical-stack top, so ``margin_z_above`` must be large enough
+        that ``stack_top + margin_z_above`` still sits above the beam plane
+        plus a waist-sized buffer (otherwise the fiber ends up in PML).
         """
         if self.fiber_source is None:
             return
         fs = self.fiber_source
-        stack = self.geometry.stack
-        if stack is None:
+        extent = self._stack_material_extent()
+        if extent is None:
             return
-
-        from gsim.meep.ports import _find_highest_n_layer
-
-        ref, _ = _find_highest_n_layer(stack)
-        if ref is None:
-            return
-        core_zmax = ref.zmax
+        _, stack_top = extent
         # Room for the beam plane + beam-half-waist so the Gaussian tail
         # is inside the sim cell before PML.
-        needed = (fs.z - core_zmax) + max(fs.waist / 2.0, 0.5)
+        needed = (fs.z - stack_top) + max(fs.waist / 2.0, 0.5)
         if self.domain.margin_z_above < needed:
             self.domain.margin_z_above = needed
 
@@ -299,7 +317,6 @@ class Simulation(BaseModel):
             return
 
         from gsim.common.stack.extractor import Layer, LayerStack
-        from gsim.meep.ports import _find_highest_n_layer
 
         stack = self.geometry.stack
         if stack is None:
@@ -307,20 +324,21 @@ class Simulation(BaseModel):
 
         z_crop_setting = self.geometry.z_crop
 
-        # Find reference layer
-        ref: Layer | None = None
+        # Determine the z-range to preserve ("ref window") before margins.
+        # "auto" uses the full non-air stack extent (BOX through cladding),
+        # so the fabricated stack stays intact and only synthetic air
+        # padding above/below gets trimmed. A named layer restricts the
+        # window to that single layer's z-extent.
         ref_name: str
         if z_crop_setting == "auto":
-            ref, best_n = _find_highest_n_layer(stack)
-            if ref is None or best_n <= 1.5:
+            extent = self._stack_material_extent()
+            if extent is None:
                 raise ValueError(
-                    "Could not auto-detect core layer (no layer with n > 1.5). "
-                    "Set geometry.z_crop to an explicit layer name."
+                    "Could not detect any non-air layers/dielectrics for "
+                    "auto z-crop. Set geometry.z_crop to an explicit layer name."
                 )
-            ref_name = next(
-                (n for n, layer in stack.layers.items() if layer is ref),
-                "auto",
-            )
+            ref_zmin, ref_zmax = extent
+            ref_name = "stack"
         else:
             ref_name = z_crop_setting
             if ref_name not in stack.layers:
@@ -328,10 +346,11 @@ class Simulation(BaseModel):
                     f"Layer '{ref_name}' not found. "
                     f"Available: {list(stack.layers.keys())}"
                 )
-            ref = stack.layers[ref_name]
+            ref: Layer = stack.layers[ref_name]
+            ref_zmin, ref_zmax = ref.zmin, ref.zmax
 
-        z_lo = ref.zmin - self.domain.margin_z_below
-        z_hi = ref.zmax + self.domain.margin_z_above
+        z_lo = ref_zmin - self.domain.margin_z_below
+        z_hi = ref_zmax + self.domain.margin_z_above
 
         # Filter and clip layers
         cropped: dict[str, Layer] = {}
