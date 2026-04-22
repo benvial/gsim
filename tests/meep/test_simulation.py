@@ -310,11 +310,65 @@ class TestWavelengthDerivation:
 
     def test_from_source_custom(self):
         sim = Simulation()
-        sim.source = ModeSource(wavelength=1.31, wavelength_span=0.05, num_freqs=21)
+        sim.source = ModeSource(wavelength=1.31, wavelength_span=0.05)
+        sim.num_freqs = 21
         wl = sim._wavelength_config()
         assert wl.wavelength == 1.31
         assert wl.bandwidth == 0.05
         assert wl.num_freqs == 21
+
+    def test_num_freqs_propagates_with_mode_source(self):
+        sim = Simulation()
+        sim.num_freqs = 51
+        wl = sim._wavelength_config()
+        assert wl.num_freqs == 51
+
+    def test_num_freqs_propagates_with_fiber_source(self):
+        # Regression: sim.source_fiber(num_freqs=51) previously produced
+        # a WavelengthConfig with num_freqs=11 because _wavelength_config
+        # read self.source.num_freqs, ignoring the fiber source.
+        sim = Simulation()
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        sim.source_fiber(
+            x=0.0,
+            z=2.0,
+            waist=5.2,
+            wavelength=1.55,
+            wavelength_span=0.04,
+        )
+        sim.num_freqs = 51
+        wl = sim._wavelength_config()
+        assert wl.num_freqs == 51
+        assert wl.wavelength == 1.55
+        assert wl.bandwidth == 0.04
+
+    def test_wavelength_config_picks_fiber_source_when_active(self):
+        sim = Simulation()
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        sim.source.wavelength = 1.31
+        sim.source.wavelength_span = 0.02
+        sim.source_fiber(
+            x=0.0,
+            z=2.0,
+            waist=5.2,
+            wavelength=1.55,
+            wavelength_span=0.04,
+        )
+        wl = sim._wavelength_config()
+        assert wl.wavelength == 1.55
+        assert wl.bandwidth == 0.04
+
+    def test_both_sources_rejected_at_validate(self):
+        sim = Simulation()
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        sim.source.port = "o1"
+        sim.source_fiber(x=0.0, z=2.0, waist=5.2)
+        result = sim.validate_config()
+        assert not result.valid
+        assert any(("Both" in e) or ("one source" in e.lower()) for e in result.errors)
 
 
 # ---------------------------------------------------------------------------
@@ -501,3 +555,241 @@ class Test2DMode:
         # Ports should have z=0
         for port in config_data["ports"]:
             assert port["center"][2] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# XZ 2D build_config wiring
+# ---------------------------------------------------------------------------
+
+
+def _xz_straight_component():
+    """Build a straight-waveguide component with a port on +X."""
+    import gdsfactory as gf
+
+    c = gf.Component()
+    c.add_polygon(
+        [(-5, -0.25), (5, -0.25), (5, 0.25), (-5, 0.25)],
+        layer=(1, 0),
+    )
+    c.add_port(
+        name="o1",
+        center=(5.0, 0.0),
+        orientation=0.0,
+        width=0.5,
+        layer=(1, 0),
+    )
+    return c
+
+
+def _xz_trivial_stack():
+    """Build a trivial 3-layer stack (substrate / core / clad) for XZ tests."""
+    from gsim.common.stack import Layer, LayerStack
+
+    return LayerStack(
+        pdk_name="test",
+        units="um",
+        layers={
+            "core": Layer(
+                name="core",
+                gds_layer=(1, 0),
+                zmin=0.0,
+                zmax=0.22,
+                thickness=0.22,
+                material="si",
+                layer_type="dielectric",
+            ),
+        },
+        materials={},
+        dielectrics=[
+            {"name": "box", "zmin": -2.0, "zmax": 0.0, "material": "SiO2"},
+            {"name": "clad", "zmin": 0.22, "zmax": 1.0, "material": "SiO2"},
+        ],
+        simulation={},
+    )
+
+
+class TestXZBuildConfig:
+    """Tests for XZ 2D fields wired through Simulation.build_config()."""
+
+    def test_y_cut_defaults_to_bbox_center(self):
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        sim.geometry.component = _xz_straight_component()
+        sim.geometry.stack = _xz_trivial_stack()
+        sim.materials = {"si": 3.47, "SiO2": 1.44}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
+
+        result = sim.build_config()
+
+        # Straight is centered on y=0 → bbox center is 0.
+        assert result.config.y_cut == pytest.approx(0.0, abs=1e-6)
+
+    def test_y_cut_explicit_override(self):
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        sim.geometry.component = _xz_straight_component()
+        sim.geometry.y_cut = 0.1
+        sim.geometry.stack = _xz_trivial_stack()
+        sim.materials = {"si": 3.47, "SiO2": 1.44}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
+
+        result = sim.build_config()
+        assert result.config.y_cut == pytest.approx(0.1)
+
+    def test_xz_plane_serializes(self):
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        sim.geometry.component = _xz_straight_component()
+        sim.geometry.stack = _xz_trivial_stack()
+        sim.materials = {"si": 3.47, "SiO2": 1.44}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
+
+        result = sim.build_config()
+        assert result.config.plane == "xz"
+        assert result.config.is_3d is False
+
+    def test_fiber_source_serialized_with_k_direction(self):
+        import math
+
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        sim.geometry.component = _xz_straight_component()
+        sim.geometry.stack = _xz_trivial_stack()
+        sim.materials = {"si": 3.47, "SiO2": 1.44}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        sim.source_fiber(x=0.0, z=1.22, angle_deg=14.5, waist=5.4)
+
+        result = sim.build_config()
+        fs = result.config.fiber_source
+        assert fs is not None
+        theta = math.radians(14.5)
+        assert fs.k_direction[0] == pytest.approx(math.sin(theta))
+        assert fs.k_direction[1] == pytest.approx(0.0)
+        assert fs.k_direction[2] == pytest.approx(-math.cos(theta))
+        # Absolute z passed through unchanged.
+        assert fs.z == pytest.approx(1.22)
+
+
+class TestXZValidation:
+    """Tests for XZ-only validation in build_config."""
+
+    def test_xz_without_monitors_or_fiber_errors(self):
+        import gdsfactory as gf
+
+        from gsim.common.stack import Layer, LayerStack
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        c = gf.Component()
+        c.add_polygon(
+            [(-5, -0.25), (5, -0.25), (5, 0.25), (-5, 0.25)],
+            layer=(1, 0),
+        )
+        sim.geometry.component = c
+        sim.geometry.stack = LayerStack(
+            pdk_name="test",
+            units="um",
+            layers={
+                "core": Layer(
+                    name="core",
+                    gds_layer=(1, 0),
+                    zmin=0.0,
+                    zmax=0.22,
+                    thickness=0.22,
+                    material="si",
+                    layer_type="dielectric",
+                ),
+            },
+            materials={},
+            dielectrics=[],
+            simulation={},
+        )
+        sim.materials = {"si": 3.47}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+
+        with pytest.raises(ValueError, match="no valid monitors and no fiber source"):
+            sim.build_config()
+
+
+class TestXZAutoCrop:
+    """Tests for XZ 2D auto z-crop + fiber-aware margin."""
+
+    def test_xz_defaults_z_crop_auto(self):
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        sim.geometry.component = _xz_straight_component()
+        sim.geometry.stack = _xz_trivial_stack()
+        sim.materials = {"si": 3.47, "SiO2": 1.44}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
+
+        sim.build_config()
+
+        # build_config resolves z_crop to "auto", applies it, then clears it.
+        assert sim.geometry.z_crop is None
+        # Stack should have been cropped around the core layer.
+        assert sim.geometry.stack is not None
+        z_min = min(l.zmin for l in sim.geometry.stack.layers.values())
+        z_max = max(l.zmax for l in sim.geometry.stack.layers.values())
+        # Core is at [0.0, 0.22]; cropped range should be a few um at most.
+        assert z_max - z_min < 10.0
+
+    def test_xz_fiber_expands_margin_z_above(self):
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        sim.geometry.component = _xz_straight_component()
+        sim.geometry.stack = _xz_trivial_stack()
+        sim.materials = {"si": 3.47, "SiO2": 1.44}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        # Clad zmax is 1.0 (see _xz_trivial_stack), so absolute z=1.42 is
+        # 0.42 um above the top of the physical stack.
+        sim.source_fiber(x=0.0, z=1.42, waist=5.4, angle_deg=14.5)
+
+        initial_margin = sim.domain.margin_z_above
+        sim.build_config()
+        # Margin should grow to at least (z - stack_top) + waist/2 so the
+        # fiber beam plane sits inside the simulation cell.
+        assert sim.domain.margin_z_above >= 0.42 + 5.4 / 2
+        assert sim.domain.margin_z_above > initial_margin
+
+    def test_xz_auto_crop_preserves_full_box(self):
+        """Auto z-crop must keep the full BOX dielectric intact.
+
+        Regression for the GC notebook where margin_z_below=0.5 µm was
+        chopping a real 2 µm SOI BOX down to 0.5 µm because the crop was
+        referenced to the core layer.
+        """
+        from gsim.meep.simulation import Simulation
+
+        sim = Simulation()
+        sim.geometry.component = _xz_straight_component()
+        sim.geometry.stack = _xz_trivial_stack()
+        sim.materials = {"si": 3.47, "SiO2": 1.44}
+        sim.solver.is_3d = False
+        sim.solver.plane = "xz"
+        # Default margin_z_below=0.5 would previously crop the 2 µm BOX
+        # to 0.5 µm. Option A references the full non-air stack extent,
+        # so the BOX stays full thickness.
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
+        sim.build_config()
+
+        assert sim.geometry.stack is not None
+        box = next(d for d in sim.geometry.stack.dielectrics if d["name"] == "box")
+        assert box["zmin"] == -2.0
+        assert box["zmax"] == 0.0

@@ -165,6 +165,8 @@ def build_overlay(
     source_port: str | None = None,
     port_data: list | None = None,
     component_bbox: list[float] | tuple[float, ...] | None = None,
+    fiber_source: Any = None,
+    monitor_z_span: float | None = None,
 ) -> Any:
     """Build a SimOverlay from config, if stack is available.
 
@@ -215,8 +217,10 @@ def build_overlay(
         geometry_model,
         domain_config,
         port_data,
+        z_span=monitor_z_span,
         dielectrics=dielectrics,
         component_bbox=orig_bbox,
+        fiber_source=fiber_source,
     )
 
 
@@ -273,6 +277,8 @@ def plot_2d(
     extend_ports_length: float | None = None,
     port_data: list | None = None,
     component_bbox: list[float] | tuple[float, ...] | None = None,
+    fiber_source: Any = None,
+    monitor_z_span: float | None = None,
 ) -> plt.Axes | None:
     """Plot 2D cross-sections of the MEEP geometry.
 
@@ -309,5 +315,7 @@ def plot_2d(
         source_port,
         port_data=port_data,
         component_bbox=component_bbox,
+        fiber_source=fiber_source,
+        monitor_z_span=monitor_z_span,
     )
     return plot_prism_slices(gm, x, y, z, ax, legend, slices, overlay=overlay)

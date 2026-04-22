@@ -36,7 +36,7 @@ def configured_sim(straight_component):
     sim.source.port = "o1"
     sim.source.wavelength = 1.55
     sim.source.wavelength_span = 0.1
-    sim.source.num_freqs = 11
+    sim.num_freqs = 11
     sim.monitors = ["o2"]
     sim.domain.pml = 1.0
     sim.domain.margin = 0.5

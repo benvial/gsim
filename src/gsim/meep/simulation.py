@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 from gsim.meep.models.api import (
     FDTD,
     Domain,
+    FiberSource,
     Geometry,
     Material,
     ModeSource,
@@ -73,12 +74,29 @@ class Simulation(BaseModel):
     model_config = ConfigDict(
         validate_assignment=True,
         arbitrary_types_allowed=True,
+        extra="forbid",
     )
 
     geometry: Geometry = Field(default_factory=Geometry)
     materials: dict[str, float | Material] = Field(default_factory=dict)
     source: ModeSource = Field(default_factory=ModeSource)
+    fiber_source: FiberSource | None = Field(
+        default=None,
+        description=(
+            "Gaussian-beam fiber source for XZ 2D grating-coupler sims. "
+            "When set, takes precedence over mode-source `source`."
+        ),
+    )
     monitors: list[str] = Field(default_factory=list)
+    num_freqs: int = Field(
+        default=11,
+        ge=1,
+        description=(
+            "Number of frequency points sampled by flux/DFT monitors. "
+            "Orthogonal to source choice — parameterizes the measurement "
+            "grid, not the excitation."
+        ),
+    )
     domain: Domain = Field(default_factory=Domain)
     solver: FDTD = Field(default_factory=FDTD)
 
@@ -128,6 +146,35 @@ class Simulation(BaseModel):
         return out
 
     # -------------------------------------------------------------------------
+    # Fiber source helper
+    # -------------------------------------------------------------------------
+
+    def source_fiber(self, **kwargs: Any) -> FiberSource:
+        """Configure a tilted Gaussian-beam fiber source (XZ 2D only).
+
+        Replaces any previous fiber source. Requires ``solver.is_3d=False``
+        (and eventually ``solver.plane='xz'`` at ``build_config`` time).
+
+        The ``waist`` kwarg is the 1/e² intensity *radius* (= MFD / 2),
+        matching MEEP's ``beam_w0``. Typical SMF-28 values:
+        ``waist ≈ 4.6 um`` at 1310 nm (MFD ≈ 9.2 um) and
+        ``waist ≈ 5.2 um`` at 1550 nm (MFD ≈ 10.4 um).
+
+        Args:
+            **kwargs: Fields forwarded to :class:`FiberSource`.
+
+        Returns:
+            The newly created :class:`FiberSource` instance.
+        """
+        if self.solver.is_3d:
+            raise ValueError(
+                "fiber source requires is_3d=False (and plane='xz') — "
+                "currently is_3d=True"
+            )
+        self.fiber_source = FiberSource(**kwargs)
+        return self.fiber_source
+
+    # -------------------------------------------------------------------------
     # Validation
     # -------------------------------------------------------------------------
 
@@ -147,7 +194,7 @@ class Simulation(BaseModel):
 
         if self.geometry.component is not None:
             ports = list(self.geometry.component.ports)
-            if not ports:
+            if not ports and self.solver.plane != "xz":
                 errors.append("Component has no ports.")
             elif self.source.port is not None:
                 port_names = [p.name for p in ports]
@@ -165,6 +212,18 @@ class Simulation(BaseModel):
                     for m in self.monitors
                     if m not in port_names
                 )
+
+        # TODO: refactor source into a more coherent style. Today `Simulation.source`
+        # is a default-factory ModeSource that's always present, so we detect
+        # "user opted into mode source" via `source.port is not None` (Option A).
+        # A cleaner design would make source selection explicit — e.g. a single
+        # `Simulation.source` union field set by `sim.source(...)` or
+        # `sim.source_fiber(...)`, so "exactly one source" is a type-level invariant.
+        if self.fiber_source is not None and self.source.port is not None:
+            errors.append(
+                "Both `source.port` and `fiber_source` are set. Exactly one source "
+                "drives the sim — unset source.port, or drop the fiber source."
+            )
 
         if self.geometry.stack is None:
             warnings_list.append(
@@ -216,6 +275,57 @@ class Simulation(BaseModel):
             self.geometry.stack = get_stack()
 
     # -------------------------------------------------------------------------
+    # Internal: fiber-aware z margin
+    # -------------------------------------------------------------------------
+
+    def _stack_material_extent(self) -> tuple[float, float] | None:
+        """Return (zmin, zmax) spanning all non-air layers and dielectrics.
+
+        This is the reference used by auto z-crop and by the fiber-aware
+        margin expansion: it preserves the full fabricated stack (BOX,
+        core, cladding, passive, ...) and trims only the synthetic air
+        padding added by the extractor.
+        """
+        stack = self.geometry.stack
+        if stack is None:
+            return None
+        zmins: list[float] = []
+        zmaxs: list[float] = []
+        for layer in stack.layers.values():
+            if layer.material != "air":
+                zmins.append(layer.zmin)
+                zmaxs.append(layer.zmax)
+        for diel in stack.dielectrics:
+            if diel.get("material") != "air":
+                zmins.append(diel["zmin"])
+                zmaxs.append(diel["zmax"])
+        if not zmins:
+            return None
+        return min(zmins), max(zmaxs)
+
+    def _expand_margin_z_above_for_fiber(self) -> None:
+        """Bump ``domain.margin_z_above`` to include the fiber source plane.
+
+        When the user configures ``sim.source_fiber(...)`` the Gaussian beam
+        sits at absolute z = ``fs.z``. The z-crop shrinks the stack around
+        the physical-stack top, so ``margin_z_above`` must be large enough
+        that ``stack_top + margin_z_above`` still sits above the beam plane
+        plus a waist-sized buffer (otherwise the fiber ends up in PML).
+        """
+        if self.fiber_source is None:
+            return
+        fs = self.fiber_source
+        extent = self._stack_material_extent()
+        if extent is None:
+            return
+        _, stack_top = extent
+        # Room for the beam plane + beam-half-waist so the Gaussian tail
+        # is inside the sim cell before PML.
+        needed = (fs.z - stack_top) + max(fs.waist / 2.0, 0.5)
+        if self.domain.margin_z_above < needed:
+            self.domain.margin_z_above = needed
+
+    # -------------------------------------------------------------------------
     # Internal: z-crop
     # -------------------------------------------------------------------------
 
@@ -229,7 +339,6 @@ class Simulation(BaseModel):
             return
 
         from gsim.common.stack.extractor import Layer, LayerStack
-        from gsim.meep.ports import _find_highest_n_layer
 
         stack = self.geometry.stack
         if stack is None:
@@ -237,20 +346,21 @@ class Simulation(BaseModel):
 
         z_crop_setting = self.geometry.z_crop
 
-        # Find reference layer
-        ref: Layer | None = None
+        # Determine the z-range to preserve ("ref window") before margins.
+        # "auto" uses the full non-air stack extent (BOX through cladding),
+        # so the fabricated stack stays intact and only synthetic air
+        # padding above/below gets trimmed. A named layer restricts the
+        # window to that single layer's z-extent.
         ref_name: str
         if z_crop_setting == "auto":
-            ref, best_n = _find_highest_n_layer(stack)
-            if ref is None or best_n <= 1.5:
+            extent = self._stack_material_extent()
+            if extent is None:
                 raise ValueError(
-                    "Could not auto-detect core layer (no layer with n > 1.5). "
-                    "Set geometry.z_crop to an explicit layer name."
+                    "Could not detect any non-air layers/dielectrics for "
+                    "auto z-crop. Set geometry.z_crop to an explicit layer name."
                 )
-            ref_name = next(
-                (n for n, layer in stack.layers.items() if layer is ref),
-                "auto",
-            )
+            ref_zmin, ref_zmax = extent
+            ref_name = "stack"
         else:
             ref_name = z_crop_setting
             if ref_name not in stack.layers:
@@ -258,10 +368,11 @@ class Simulation(BaseModel):
                     f"Layer '{ref_name}' not found. "
                     f"Available: {list(stack.layers.keys())}"
                 )
-            ref = stack.layers[ref_name]
+            ref: Layer = stack.layers[ref_name]
+            ref_zmin, ref_zmax = ref.zmin, ref.zmax
 
-        z_lo = ref.zmin - self.domain.margin_z_below
-        z_hi = ref.zmax + self.domain.margin_z_above
+        z_lo = ref_zmin - self.domain.margin_z_below
+        z_hi = ref_zmax + self.domain.margin_z_above
 
         # Filter and clip layers
         cropped: dict[str, Layer] = {}
@@ -327,13 +438,14 @@ class Simulation(BaseModel):
     # -------------------------------------------------------------------------
 
     def _wavelength_config(self) -> Any:
-        """Derive WavelengthConfig from source."""
+        """Derive WavelengthConfig from the active source + sim-level num_freqs."""
         from gsim.meep.models.config import WavelengthConfig
 
+        active = self.fiber_source if self.fiber_source is not None else self.source
         return WavelengthConfig(
-            wavelength=self.source.wavelength,
-            bandwidth=self.source.wavelength_span,
-            num_freqs=self.source.num_freqs,
+            wavelength=active.wavelength,
+            bandwidth=active.wavelength_span,
+            num_freqs=self.num_freqs,
         )
 
     def _source_config(self) -> Any:
@@ -437,15 +549,27 @@ class Simulation(BaseModel):
         Raises:
             ValueError: If config is invalid.
         """
+        import math
+
         from gsim.meep.materials import resolve_materials
-        from gsim.meep.models.config import LayerStackEntry, SimConfig, SymmetryEntry
-        from gsim.meep.ports import extract_port_info
+        from gsim.meep.models.config import (
+            FiberSourceConfig,
+            LayerStackEntry,
+            SimConfig,
+            SymmetryEntry,
+        )
+        from gsim.meep.ports import (
+            _find_highest_n_layer,
+            extract_port_info,
+            filter_ports_for_xz,
+        )
 
         validation = self.validate_config()
         if not validation.valid:
             raise ValueError("Invalid configuration:\n" + "\n".join(validation.errors))
 
         is_3d = self.solver.is_3d
+        plane = self.solver.plane
 
         # Resolve stack
         self._ensure_stack()
@@ -454,14 +578,36 @@ class Simulation(BaseModel):
         if self.geometry.component is None:
             raise ValueError("No geometry set.")
 
-        # Apply z-crop if requested (only meaningful in 3D)
-        if is_3d:
+        # Apply z-crop for 3D and XZ 2D (both use the vertical dimension).
+        # XY 2D collapses z entirely so cropping is meaningless.
+        if is_3d or plane == "xz":
+            # For XZ 2D, default z_crop to "auto" so users don't end up with
+            # a huge auto-built stack (e.g. the 5 µm air_above) pinning the
+            # cell height. This mirrors what 3D notebooks do explicitly.
+            if plane == "xz" and self.geometry.z_crop is None:
+                self.geometry.z_crop = "auto"
+
+            # When a fiber source is configured in XZ mode, expand
+            # margin_z_above so the cropped stack still contains the beam
+            # plane (and a little PML headroom).
+            self._expand_margin_z_above_for_fiber()
+
             self._apply_z_crop()
 
         import gdsfactory as gf
 
         original_component = self.geometry.component.copy()
         stack = self.geometry.stack
+
+        # Resolve y_cut default for XZ 2D sims.
+        if plane == "xz":
+            if self.geometry.y_cut is None:
+                bbox = original_component.dbbox()
+                y_cut: float | None = (bbox.bottom + bbox.top) / 2.0
+            else:
+                y_cut = self.geometry.y_cut
+        else:
+            y_cut = self.geometry.y_cut
 
         # Build config objects
         domain_cfg = self._domain_config()
@@ -522,6 +668,47 @@ class Simulation(BaseModel):
             original_component, stack, source_port=source_cfg.port, is_3d=is_3d
         )
 
+        # Drop ports that don't intersect the XZ cut.
+        if plane == "xz":
+            port_infos = filter_ports_for_xz(
+                port_infos, y_cut=y_cut if y_cut is not None else 0.0
+            )
+            # When a fiber source drives the sim, no port is the excitation —
+            # demote any auto-tagged source port to a monitor.
+            if self.fiber_source is not None:
+                port_infos = [
+                    p.model_copy(update={"is_source": False}) for p in port_infos
+                ]
+
+        # Build FiberSourceConfig (XZ 2D only) with pre-computed k-direction.
+        fiber_source_cfg: FiberSourceConfig | None = None
+        if self.fiber_source is not None:
+            if self.solver.is_3d:
+                raise ValueError("fiber source requires is_3d=False (and plane='xz')")
+            if plane != "xz":
+                raise ValueError("fiber source requires plane='xz'")
+
+            theta = math.radians(self.fiber_source.angle_deg)
+            k_direction = [math.sin(theta), 0.0, -math.cos(theta)]
+
+            fiber_source_cfg = FiberSourceConfig(
+                x=self.fiber_source.x,
+                z=self.fiber_source.z,
+                angle_deg=self.fiber_source.angle_deg,
+                waist=self.fiber_source.waist,
+                wavelength=self.fiber_source.wavelength,
+                wavelength_span=self.fiber_source.wavelength_span,
+                polarization=self.fiber_source.polarization,
+                k_direction=k_direction,
+            )
+
+        if plane == "xz" and not port_infos and fiber_source_cfg is None:
+            raise ValueError(
+                "XZ 2D sim has no valid monitors and no fiber source — "
+                "nothing to observe. Either add a port intersecting y_cut, "
+                "or call sim.source_fiber(...)."
+            )
+
         # Resolve materials
         material_data = resolve_materials(
             used_materials, overrides=self._material_overrides()
@@ -544,14 +731,31 @@ class Simulation(BaseModel):
                 stacklevel=2,
             )
 
+        # Size waveguide port monitors around the core layer (core
+        # thickness + 2·port_margin) rather than the full stack. For
+        # XZ 2D sims the stack is inflated to hold the fiber beam plane;
+        # using the full stack would make the port monitor unreasonably
+        # tall.
+        core_layer, _ = _find_highest_n_layer(stack)
+        if core_layer is not None:
+            monitor_z_span: float | None = (
+                core_layer.zmax - core_layer.zmin
+            ) + 2 * domain_cfg.port_margin
+        else:
+            monitor_z_span = None
+
         # Build SimConfig
         sim_config = SimConfig(
             is_3d=is_3d,
+            plane=plane,
+            y_cut=y_cut,
+            fiber_source=fiber_source_cfg,
             gds_filename="layout.gds",
             component_bbox=original_bbox,
             layer_stack=layer_stack_entries,
             dielectrics=dielectric_entries,
             ports=port_infos,
+            monitor_z_span=monitor_z_span,
             materials=material_data,
             wavelength=wl_cfg,
             source=source_for_config,
@@ -733,11 +937,19 @@ class Simulation(BaseModel):
         Uses :meth:`build_config` so the plot shows exactly what meep
         processes — including extended ports and PML boundaries.
 
+        In XZ 2D mode (``solver.plane='xz'``), ``slices`` defaults to
+        ``"y"`` and ``y`` defaults to the resolved ``y_cut``.
+
         Accepts the same keyword arguments as :func:`gsim.meep.viz.plot_2d`.
         """
         from gsim.meep.viz import plot_2d
 
         result = self.build_config()
+
+        if self.solver.plane == "xz":
+            kwargs.setdefault("slices", "y")
+            if kwargs.get("slices") == "y":
+                kwargs.setdefault("y", result.config.y_cut)
 
         return plot_2d(
             component=result.component,
@@ -747,6 +959,8 @@ class Simulation(BaseModel):
             extend_ports_length=0,
             port_data=result.config.ports,
             component_bbox=result.config.component_bbox,
+            fiber_source=result.config.fiber_source,
+            monitor_z_span=result.config.monitor_z_span,
             **kwargs,
         )
 

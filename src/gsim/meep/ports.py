@@ -6,6 +6,7 @@ serializable format for the MEEP config JSON.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Literal
 
 from gsim.meep.models.config import PortData
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
     from gdsfactory.component import Component
 
     from gsim.common import LayerStack
+
+logger = logging.getLogger(__name__)
 
 
 def get_port_normal(orientation: float) -> tuple[int, Literal["+", "-"]]:
@@ -111,6 +114,55 @@ def _find_highest_n_layer(layer_stack: LayerStack) -> tuple[Any, float]:
             best_layer = layer
 
     return best_layer, best_n
+
+
+def filter_ports_for_xz(
+    ports: list[PortData],
+    y_cut: float,
+) -> list[PortData]:
+    """Return ports compatible with an XZ 2D cross-section at ``Y=y_cut``.
+
+    Keeps an X-facing port (``normal_axis=0``) only when its Y span
+    ``[center.y - width/2, center.y + width/2]`` contains ``y_cut``.
+
+    Drops:
+      - Y-facing ports (not meaningful in an XZ 2D cell).
+      - X-facing ports whose mode slice misses the cut entirely.
+
+    Emits a ``logger.warning`` for each dropped port.
+
+    Args:
+        ports: List of PortData objects.
+        y_cut: Y coordinate of the XZ cross-section (um).
+
+    Returns:
+        List of PortData that intersect the cross-section.
+    """
+    kept: list[PortData] = []
+    for p in ports:
+        if p.normal_axis != 0:
+            logger.warning(
+                "Dropping port %r for XZ 2D sim (normal_axis=%d != 0)",
+                p.name,
+                p.normal_axis,
+            )
+            continue
+
+        y_center = p.center[1]
+        if abs(y_center - y_cut) > p.width / 2:
+            logger.warning(
+                "Dropping port %r for XZ 2D sim "
+                "(center.y=%.4f, width=%.4f does not intersect y_cut=%.4f)",
+                p.name,
+                y_center,
+                p.width,
+                y_cut,
+            )
+            continue
+
+        kept.append(p)
+
+    return kept
 
 
 def _get_z_center(layer_stack: LayerStack) -> float:

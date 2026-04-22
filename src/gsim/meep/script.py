@@ -195,6 +195,161 @@ def triangulate_polygon_with_holes(polygon):
     return triangles if triangles else [list(polygon.exterior.coords[:-1])]
 
 
+def extract_xz_rectangles_runner(component, layer_stack, y_cut, eps=1e-9):
+    """Inlined XZ cross-section cutter (mirrors gsim.common.cross_section)."""
+    from shapely.geometry import LineString
+    from shapely.ops import unary_union
+
+    dbu = getattr(getattr(component, "kcl", None), "dbu", 0.001)
+
+    rects = []
+    for layer_entry in layer_stack:
+        gds_layer_tuple = tuple(layer_entry["gds_layer"])
+        shapely_polys = _xz_runner_layer_polys(component, gds_layer_tuple, dbu)
+        if not shapely_polys:
+            continue
+
+        merged = unary_union(shapely_polys)
+        if merged.is_empty:
+            continue
+
+        minx, miny, maxx, maxy = merged.bounds
+        if y_cut < miny - eps or y_cut > maxy + eps:
+            continue
+
+        cut_line = LineString([(minx - 1.0, y_cut), (maxx + 1.0, y_cut)])
+        intersection = merged.intersection(cut_line)
+        intervals = _xz_runner_line_intervals(intersection)
+
+        for x0, x1 in intervals:
+            if x1 - x0 <= eps:
+                continue
+            rects.append({
+                "x0": x0,
+                "x1": x1,
+                "zmin": layer_entry["zmin"],
+                "zmax": layer_entry["zmax"],
+                "layer_name": layer_entry["layer_name"],
+                "material": layer_entry["material"],
+            })
+    return rects
+
+
+def _xz_runner_layer_polys(component, gds_layer_tuple, dbu):
+    """Return shapely Polygons (with holes) for one GDS layer of component."""
+    from shapely.geometry import Polygon
+
+    raw = component.get_polygons(layers=(gds_layer_tuple,), merge=True)
+    if not isinstance(raw, dict) or not raw:
+        return []
+
+    polys = []
+    for value in raw.values():
+        items = list(value) if isinstance(value, list) else [value]
+        for obj in items:
+            exterior, holes = _xz_runner_poly_to_coords(obj, dbu)
+            if exterior is None or len(exterior) < 3:
+                continue
+            try:
+                poly = Polygon(exterior, holes=holes)
+            except (ValueError, TypeError):
+                continue
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if poly.is_empty:
+                continue
+            if hasattr(poly, "geoms"):
+                polys.extend(poly.geoms)
+            else:
+                polys.append(poly)
+    return polys
+
+
+def _xz_runner_poly_to_coords(obj, dbu):
+    """Convert a polygon-like object to (exterior, list_of_holes)."""
+    if hasattr(obj, "each_point_hull"):
+        exterior = [(pt.x * dbu, pt.y * dbu) for pt in obj.each_point_hull()]
+        holes = []
+        try:
+            n_holes = obj.holes()
+        except AttributeError:
+            n_holes = 0
+        for i in range(n_holes):
+            try:
+                holes.append(
+                    [(pt.x * dbu, pt.y * dbu) for pt in obj.each_point_hole(i)]
+                )
+            except (AttributeError, IndexError):
+                continue
+        return exterior, holes
+    if hasattr(obj, "__iter__"):
+        try:
+            return [(float(p[0]), float(p[1])) for p in obj], []
+        except (TypeError, IndexError):
+            return None, []
+    return None, []
+
+
+def _xz_runner_line_intervals(intersection):
+    """Extract sorted (x0, x1) intervals from a shapely line intersection."""
+    from shapely.geometry import LineString, MultiLineString
+
+    if intersection.is_empty:
+        return []
+    lines = []
+    if isinstance(intersection, LineString):
+        lines = [intersection]
+    elif isinstance(intersection, MultiLineString):
+        lines = list(intersection.geoms)
+    else:
+        for geom in getattr(intersection, "geoms", []):
+            if isinstance(geom, LineString):
+                lines.append(geom)
+
+    intervals = []
+    for line in lines:
+        xs = [c[0] for c in line.coords]
+        intervals.append((min(xs), max(xs)))
+    intervals.sort()
+    merged = []
+    for x0, x1 in intervals:
+        if merged and x0 <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], x1)
+        else:
+            merged.append([x0, x1])
+    return [(a, b) for a, b in merged]
+
+
+def _build_geometry_xz(config, materials, component):
+    """Build meep geometry from XZ cross-section rectangles."""
+    y_cut = config.get("y_cut")
+    if y_cut is None:
+        y_cut = 0.0
+
+    rects = extract_xz_rectangles_runner(
+        component, config["layer_stack"], y_cut
+    )
+
+    geometry = []
+    for r in rects:
+        mat = materials.get(r["material"], mp.Medium())
+        width_x = r["x1"] - r["x0"]
+        thickness_z = r["zmax"] - r["zmin"]
+        if width_x <= 0 or thickness_z <= 0:
+            continue
+        center_x = (r["x0"] + r["x1"]) / 2.0
+        center_z = (r["zmin"] + r["zmax"]) / 2.0
+        block = mp.Block(
+            size=mp.Vector3(width_x, mp.inf, thickness_z),
+            center=mp.Vector3(center_x, 0.0, center_z),
+            material=mat,
+        )
+        geometry.append(block)
+
+    logger.info("XZ: %d rectangles extracted at y=%.4f", len(geometry), y_cut)
+    return geometry
+
+
 def build_background_slabs(config, materials):
     """Build background mp.Block slabs from dielectric entries.
 
@@ -202,9 +357,13 @@ def build_background_slabs(config, materials):
     the correct cladding/substrate material.  They must come FIRST in the
     geometry list so that patterned prisms (added later) take precedence.
 
-    Skipped entirely in 2D mode (no z-dimension).
+    XY 2D (``plane='xy'``) skips slabs entirely — the z-dimension is
+    collapsed.  XZ 2D (``plane='xz'``) DOES include slabs because they
+    form the vertical stack.  3D always includes slabs.
     """
-    if not config.get("is_3d", True):
+    is_3d = config.get("is_3d", True)
+    plane = config.get("plane", "xy")
+    if not is_3d and plane == "xy":
         return []
 
     slabs = []
@@ -311,15 +470,22 @@ def build_geometry(config, materials):
       2. Extrude to 3D as mp.Prism with correct z-range and material
       3. Handle polygon holes via Delaunay triangulation
 
-    In 2D mode (is_3d=False), all prisms are placed at z=0 and sidewall
-    angles are ignored, matching gplugins behaviour.
+    In XY 2D mode (is_3d=False, plane="xy"), all prisms are placed at z=0
+    and sidewall angles are ignored, matching gplugins behaviour.
+
+    In XZ 2D mode (is_3d=False, plane="xz"), the geometry is built from
+    axis-aligned rectangles sliced at y=y_cut (see _build_geometry_xz).
     """
     gds_filename = config["gds_filename"]
     component = load_gds_component(gds_filename)
 
+    is_3d = config.get("is_3d", True)
+    plane = config.get("plane", "xy")
+    if not is_3d and plane == "xz":
+        return _build_geometry_xz(config, materials, component), component
+
     accuracy = config["accuracy"]
     simplify_tol = accuracy["simplify_tol"]
-    is_3d = config.get("is_3d", True)
 
     geometry = []
     total_vertices = 0
@@ -383,16 +549,117 @@ def build_geometry(config, materials):
 # ---------------------------------------------------------------------------
 
 def get_port_z_span(config):
-    """Get z-span for ports from layer stack.
+    """Get z-span for waveguide port mode monitors.
 
-    In 2D mode returns an arbitrary large value (20 um) since the
+    Prefers the precomputed ``monitor_z_span`` (sized around the core
+    layer: ``core_thickness + 2*port_margin``) so monitors capture the
+    guided mode without spanning the full cell.
+
+    In XY 2D mode returns a large arbitrary value (20 um) since the
     z-dimension is collapsed and the size doesn't affect the simulation.
     """
-    if not config.get("is_3d", True):
+    is_3d = config.get("is_3d", True)
+    plane = config.get("plane", "xy")
+    if not is_3d and plane == "xy":
         return 20
+    mz = config.get("monitor_z_span")
+    if mz is not None:
+        return mz
     zmin = min(l["zmin"] for l in config["layer_stack"])
     zmax = max(l["zmax"] for l in config["layer_stack"])
     return zmax - zmin
+
+
+def _build_fiber_source(config, fiber):
+    """Construct a mp.GaussianBeamSource for XZ 2D fiber coupling.
+
+    Polarization (PIC convention):
+      - TE → E along waveguide width (Ey, out of XZ plane)
+      - TM → E in the XZ plane (Ex)
+    """
+    fdtd = config["fdtd"]
+    fcen = fdtd["fcen"]
+    fwidth = config["source"]["fwidth"]
+
+    k_dir = mp.Vector3(*fiber["k_direction"])
+    if fiber["polarization"] == "TE":
+        e_dir = mp.Vector3(0, 1, 0)
+    else:
+        e_dir = mp.Vector3(1, 0, 0)
+
+    center = mp.Vector3(fiber["x"], 0.0, fiber["z"])
+
+    src_x_size = _estimate_source_x_size(config)
+
+    # beam_x0 is the focus offset *relative to* the source center, not an
+    # absolute position (MEEP docs). Focus sits on the source line → zero.
+    src = mp.GaussianBeamSource(
+        src=mp.GaussianSource(frequency=fcen, fwidth=fwidth, is_integrated=True),
+        center=center,
+        size=mp.Vector3(src_x_size, 0, 0),
+        beam_x0=mp.Vector3(0, 0, 0),
+        beam_kdir=k_dir,
+        beam_w0=fiber["waist"],
+        beam_E0=e_dir,
+    )
+    return [src]
+
+
+def _estimate_source_x_size(config):
+    """Source-line X length for the fiber Gaussian beam.
+
+    The line is centered on ``fiber.x`` (not the cell center). To avoid
+    spilling into PML — which corrupts the launched beam when the fiber
+    sits off-center in the cell — cap the half-size to the distance from
+    ``fiber.x`` to the nearest cell-interior edge (minus a small safety).
+
+    Target length is ``6 * waist`` so the Gaussian envelope is captured
+    well. If the cell is too narrow for that, cap and log a warning —
+    the user should increase ``domain.margin_xy`` or move the fiber.
+    """
+    bbox = config.get("component_bbox")
+    domain = config["domain"]
+    dpml = domain["dpml"]
+    margin_xy = domain["margin_xy"]
+    fiber = config.get("fiber_source")
+
+    if bbox is not None:
+        width = bbox[2] - bbox[0]
+        bbox_left, bbox_right = bbox[0], bbox[2]
+    else:
+        width = 20.0
+        bbox_left, bbox_right = -10.0, 10.0
+
+    interior_width = width + 2 * margin_xy
+    if fiber is None:
+        return max(interior_width, 2.0)
+
+    interior_left = bbox_left - margin_xy
+    interior_right = bbox_right + margin_xy
+    fx = fiber["x"]
+    waist = fiber.get("waist", 0.0)
+
+    safety = max(dpml * 0.1, 0.1)
+    max_half = min(fx - interior_left, interior_right - fx) - safety
+    if max_half <= 0.0:
+        logger.warning(
+            "Fiber x=%.2f is outside or at the cell interior edge "
+            "(interior [%.2f, %.2f]); using minimum source size. "
+            "Increase domain.margin_xy or move the fiber.",
+            fx, interior_left, interior_right,
+        )
+        return 2.0
+
+    target = max(6.0 * waist, 2.0)
+    if target > 2.0 * max_half:
+        logger.warning(
+            "Fiber source line capped at %.2f um (target %.2f = 6*waist); "
+            "cell is too narrow on one side of fiber x=%.2f. "
+            "Increase domain.margin_xy so the Gaussian envelope fits.",
+            2.0 * max_half, target, fx,
+        )
+        return 2.0 * max_half
+    return target
 
 
 def build_sources(config):
@@ -405,7 +672,14 @@ def build_sources(config):
 
     In 2D mode (is_3d=False), enforces transverse-electric parity
     (EVEN_Y + ODD_Z) to match gplugins 2D convention.
+
+    If the config has a fiber_source entry (XZ 2D grating-coupler sim),
+    returns a single GaussianBeamSource instead of port-based EigenModeSources.
     """
+    fiber = config.get("fiber_source")
+    if fiber is not None:
+        return _build_fiber_source(config, fiber)
+
     fdtd = config["fdtd"]
     fcen = fdtd["fcen"]
     df = fdtd["df"]
@@ -414,7 +688,14 @@ def build_sources(config):
     port_margin = config["domain"]["port_margin"]
     source_port_offset = config["domain"].get("source_port_offset", 0.1)
     is_3d = config.get("is_3d", True)
-    eig_parity = mp.NO_PARITY if is_3d else mp.EVEN_Y + mp.ODD_Z
+    plane = config.get("plane", "xy")
+    if is_3d:
+        eig_parity = mp.NO_PARITY
+    elif plane == "xz":
+        # XZ 2D: cell_y=0, invariant axis is Y. Use ODD_Y for TE-like modes.
+        eig_parity = mp.ODD_Y
+    else:
+        eig_parity = mp.EVEN_Y + mp.ODD_Z
 
     sources = []
     for port in config["ports"]:
@@ -460,6 +741,9 @@ def build_sources(config):
     return sources
 
 
+FIBER_FLUX_OFFSET = 0.3  # μm below fiber source center
+
+
 def build_monitors(config, sim):
     """Build mode monitors at all ports and return flux regions.
 
@@ -467,6 +751,14 @@ def build_monitors(config, sim):
     the source) by ``source_port_offset + distance_source_to_monitors``
     so the forward-going mode from the source passes through it at
     full amplitude.  This matches the gplugins approach.
+
+    When ``config["fiber_source"]`` is set, also builds a flux monitor
+    just in front of (below) the Gaussian beam to measure the launched
+    power, used as normalization reference for fiber→waveguide S-params.
+
+    Returns:
+        (port_monitors, fiber_flux) where fiber_flux is None unless a
+        fiber source is configured.
     """
     fdtd = config["fdtd"]
     fcen = fdtd["fcen"]
@@ -512,7 +804,21 @@ def build_monitors(config, sim):
         )
         monitors[port["name"]] = flux
 
-    return monitors
+    fiber_flux = None
+    fiber = config.get("fiber_source")
+    if fiber is not None:
+        src_x_size = _estimate_source_x_size(config)
+        z_monitor = fiber["z"] - FIBER_FLUX_OFFSET
+        fiber_flux = sim.add_flux(
+            fcen, df, nfreq,
+            mp.FluxRegion(
+                center=mp.Vector3(fiber["x"], 0.0, z_monitor),
+                size=mp.Vector3(src_x_size, 0, 0),
+                direction=mp.Z,
+            ),
+        )
+
+    return monitors, fiber_flux
 
 
 # ---------------------------------------------------------------------------
@@ -531,7 +837,7 @@ def _port_kpoint(port):
     return mp.Vector3(y=1)
 
 
-def extract_s_params(config, sim, monitors):
+def extract_s_params(config, sim, monitors, fiber_flux=None):
     """Extract S-parameters via mode decomposition.
 
     Uses MEEP eigenmode coefficients with explicit kpoint_func to anchor
@@ -546,10 +852,17 @@ def extract_s_params(config, sim, monitors):
       "+" -> incoming goes +normal, outgoing (reflected/transmitted) goes -normal
       "-" -> incoming goes -normal, outgoing (reflected/transmitted) goes +normal
 
+    When ``config["fiber_source"]`` is set, the reference is the launched
+    power through ``fiber_flux`` rather than a port eigenmode coefficient;
+    S-params are named ``S{i+1}0`` (fiber indexed as port 0).
+
     Returns:
         (s_params, debug_data) tuple where debug_data contains eigenmode
         diagnostics for post-run analysis.
     """
+    if config.get("fiber_source") is not None:
+        return _extract_s_params_fiber(config, sim, monitors, fiber_flux)
+
     port_names = [p["name"] for p in config["ports"]]
     ports = {p["name"]: p for p in config["ports"]}
     source_port = None
@@ -604,7 +917,14 @@ def extract_s_params(config, sim, monitors):
 
     # Get incident coefficient at source port for normalization
     is_3d = config.get("is_3d", True)
-    eig_parity = mp.NO_PARITY if is_3d else mp.EVEN_Y + mp.ODD_Z
+    plane = config.get("plane", "xy")
+    if is_3d:
+        eig_parity = mp.NO_PARITY
+    elif plane == "xz":
+        # XZ 2D: cell_y=0, invariant axis is Y. Use ODD_Y for TE-like modes.
+        eig_parity = mp.ODD_Y
+    else:
+        eig_parity = mp.EVEN_Y + mp.ODD_Z
 
     src_dir = ports[source_port]["direction"]
     src_kp = _port_kpoint(ports[source_port])
@@ -667,6 +987,110 @@ def extract_s_params(config, sim, monitors):
     debug_data["power_conservation"] = [float(p) for p in power_conservation]
 
     return s_params, debug_data
+
+
+def _extract_s_params_fiber(config, sim, monitors, fiber_flux):
+    """Extract fiber→waveguide S-parameters for a Gaussian-beam source.
+
+    Normalization reference is the net flux through ``fiber_flux`` (placed
+    just in front of the Gaussian beam): P_fiber(f). For each port i,
+    S{i+1}0(f) = alpha_out(f) / sqrt(P_fiber(f)), where alpha_out is the
+    outgoing mode coefficient (away from the GC, into the waveguide).
+    """
+    if fiber_flux is None:
+        logger.warning("fiber_source set but no fiber_flux monitor; skipping S-params")
+        return {}, {}
+
+    port_names = [p["name"] for p in config["ports"]]
+    ports = {p["name"]: p for p in config["ports"]}
+
+    fdtd = config["fdtd"]
+    fcen = fdtd["fcen"]
+    nfreq = fdtd["num_freqs"]
+    df = fdtd["df"]
+    freqs = np.linspace(fcen - df / 2, fcen + df / 2, nfreq)
+
+    # Net power crossing the fiber flux plane (beam propagates toward -Z,
+    # so raw flux is negative; take |·| to get launched power into the chip).
+    p_fiber = np.abs(np.array(mp.get_fluxes(fiber_flux)))
+
+    # 2D XZ: use ODD_Y parity to pick the TE-like waveguide mode.
+    is_3d = config.get("is_3d", True)
+    plane = config.get("plane", "xy")
+    if is_3d:
+        eig_parity = mp.NO_PARITY
+    elif plane == "xz":
+        eig_parity = mp.ODD_Y
+    else:
+        eig_parity = mp.EVEN_Y + mp.ODD_Z
+
+    debug_data = {
+        "eigenmode_info": {},
+        "raw_coefficients": {},
+        "incident_coefficients": {
+            "port": "fiber",
+            "power_flux": [float(p) for p in p_fiber],
+        },
+    }
+
+    s_params = {}
+    sqrt_p_fiber = np.sqrt(np.where(p_fiber > 0, p_fiber, np.nan))
+
+    for i, port_i in enumerate(port_names):
+        port = ports[port_i]
+        port_kp = _port_kpoint(port)
+        ob = sim.get_eigenmode_coefficients(
+            monitors[port_i], [1], eig_parity=eig_parity,
+            kpoint_func=lambda f, n, kp=port_kp: kp,
+        )
+
+        debug_data["eigenmode_info"][port_i] = _collect_eigenmode_debug_basic(
+            ob, freqs
+        )
+        nf = len(freqs)
+        debug_data["raw_coefficients"][port_i] = {
+            "forward_mag": [float(abs(ob.alpha[0, k, 0])) for k in range(nf)],
+            "backward_mag": [float(abs(ob.alpha[0, k, 1])) for k in range(nf)],
+        }
+
+        outgoing_idx = 1 if port["direction"] == "+" else 0
+        alpha_out = ob.alpha[0, :, outgoing_idx]
+        s_params[f"S{i+1}0"] = alpha_out / sqrt_p_fiber
+
+    # Coupling efficiency per frequency: Σ |S|² (fraction of launched power
+    # reaching each port mode).
+    coupling = np.zeros(len(freqs))
+    for s_vals in s_params.values():
+        coupling += np.abs(np.nan_to_num(s_vals)) ** 2
+    debug_data["power_conservation"] = [float(c) for c in coupling]
+
+    return s_params, debug_data
+
+
+def _collect_eigenmode_debug_basic(ob, freqs):
+    """Collect kdom / n_eff / group velocity from an eigenmode coeffs object."""
+    info = {"band": 1}
+    try:
+        kdom = ob.kdom
+        kdom_list = [
+            [float(kdom[i].x), float(kdom[i].y), float(kdom[i].z)]
+            for i in range(len(kdom))
+        ]
+        info["kdom"] = kdom_list
+        info["n_eff"] = [
+            float(np.linalg.norm(kdom_list[i])) / float(freqs[i])
+            if float(freqs[i]) > 0 else 0.0
+            for i in range(min(len(kdom_list), len(freqs)))
+        ]
+    except Exception:
+        info["kdom"] = []
+        info["n_eff"] = []
+    try:
+        cg = ob.cg
+        info["group_velocity"] = [float(cg[i]) for i in range(len(cg))]
+    except Exception:
+        info["group_velocity"] = []
+    return info
 
 
 def save_results(config, s_params, output_path="s_parameters.csv"):
@@ -753,6 +1177,26 @@ def save_geometry_diagnostics(sim, config, cell_center):
         pass
 
     is_3d = config.get("is_3d", True)
+    plane = config.get("plane", "xy")
+    is_xz = plane == "xz"
+
+    if is_xz:
+        # XZ 2D: cell is invariant in Y. Plot the XZ cross-section.
+        try:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+            sim.plot2D(ax=ax)
+            y_cut = config.get("y_cut") or 0.0
+            ax.set_title(f"XZ cross-section at y={y_cut:.3f} um")
+            ax.set_xlabel("x (um)")
+            ax.set_ylabel("z (um)")
+            fig.tight_layout()
+            if mp.am_master():
+                fig.savefig("meep_geometry_xz.png", dpi=150)
+                logger.info("Saved meep_geometry_xz.png")
+            plt.close(fig)
+        except Exception as e:
+            logger.warning("XZ geometry plot failed: %s", e)
+        return
 
     if is_3d:
         z_min = min(l["zmin"] for l in config["layer_stack"])
@@ -831,6 +1275,26 @@ def save_field_snapshot(sim, config, cell_center):
         return
 
     is_3d = config.get("is_3d", True)
+    plane = config.get("plane", "xy")
+    is_xz = plane == "xz"
+
+    if is_xz:
+        try:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+            sim.plot2D(ax=ax, fields=mp.Ey)
+            y_cut = config.get("y_cut") or 0.0
+            ax.set_title(f"Ey field at y={y_cut:.3f} um (post-run)")
+            ax.set_xlabel("x (um)")
+            ax.set_ylabel("z (um)")
+            fig.tight_layout()
+            if mp.am_master():
+                fig.savefig("meep_fields_xz.png", dpi=150)
+                logger.info("Saved meep_fields_xz.png")
+            plt.close(fig)
+        except Exception as e:
+            logger.warning("Field snapshot (XZ) failed: %s", e)
+        return
+
     if is_3d:
         z_min = min(l["zmin"] for l in config["layer_stack"])
         z_max = max(l["zmax"] for l in config["layer_stack"])
@@ -881,12 +1345,15 @@ def save_animation_field(sim, xy_plane, frame_counter):
     return frame_counter + 1
 
 
-def render_animation_frames(eps_data, extent):
+def render_animation_frames(eps_data, extent, axes=("x", "y")):
     """Render saved field .npz files into PNGs with fixed global colorbar.
 
     Two-pass: first finds the global field maximum across all frames,
     then renders every frame with the same vmin/vmax so field decay is
     clearly visible.
+
+    ``axes`` labels the horizontal/vertical axes on the plot (``("x", "y")``
+    for XY slices, ``("x", "z")`` for XZ 2D slices).
 
     Call only on master rank after sim.run().
     """
@@ -940,8 +1407,8 @@ def render_animation_frames(eps_data, extent):
         cax = divider.append_axes("right", size="4%", pad=0.06)
         fig.colorbar(im, cax=cax, label="Ey")
         ax.set_title(f"Ey  t={t:.2f}")
-        ax.set_xlabel("x (um)")
-        ax.set_ylabel("y (um)")
+        ax.set_xlabel(f"{axes[0]} (um)")
+        ax.set_ylabel(f"{axes[1]} (um)")
         fig.tight_layout()
         fig.savefig(f"frames/meep_frame_{i:04d}.png", dpi=150)
         plt.close(fig)
@@ -1054,6 +1521,8 @@ def main():
     resolution = config["resolution"]["pixels_per_um"]
     fdtd = config["fdtd"]
     is_3d = config.get("is_3d", True)
+    plane = config.get("plane", "xy")
+    is_xz = plane == "xz"
 
     # Compute simulation cell from component bounds + layer z-range
     # Use original component bbox if available (port extension changes GDS bbox)
@@ -1073,27 +1542,44 @@ def main():
     cell_x = (bbox_right - bbox_left) + 2 * (margin_xy + dpml)
     cell_y = (bbox_top - bbox_bottom) + 2 * (margin_xy + dpml)
 
-    if is_3d:
-        # Use both layers and dielectrics for z-range so that PDKs without
-        # explicit box/clad layers (e.g. cspdk) still get enough headroom.
-        z_vals = [l["zmin"] for l in config["layer_stack"]] + [
-            l["zmax"] for l in config["layer_stack"]
-        ]
-        for d in config.get("dielectrics", []):
-            z_vals.extend((d["zmin"], d["zmax"]))
+    # Z range for 3D and XZ 2D. Include both layers and dielectrics
+    # so PDKs without explicit box/clad layers still have headroom.
+    z_vals = [l["zmin"] for l in config["layer_stack"]] + [
+        l["zmax"] for l in config["layer_stack"]
+    ]
+    for d in config.get("dielectrics", []):
+        z_vals.extend((d["zmin"], d["zmax"]))
+    if z_vals:
         z_min = min(z_vals)
         z_max = max(z_vals)
+    else:
+        z_min, z_max = 0.0, 0.0
 
-        # Z: margin_z_above/below is already baked into the stack via z_crop,
-        #    so only add dpml beyond the stack extent
+    margin_z_above = domain.get("margin_z_above", 0.0)
+    margin_z_below = domain.get("margin_z_below", 0.0)
+
+    if is_3d:
+        # 3D: z-margins are already baked via z_crop; just add dpml.
         cell_z = (z_max - z_min) + 2 * dpml
         cell_center = mp.Vector3(
             (bbox_right + bbox_left) / 2,
             (bbox_top + bbox_bottom) / 2,
             (z_max + z_min) / 2,
         )
+    elif is_xz:
+        # XZ 2D: cell_y collapsed; cell_z spans the full stack with
+        # z-margins and PML added (there is no z_crop in 2D).
+        cell_y = 0.0
+        z_lo = z_min - margin_z_below
+        z_hi = z_max + margin_z_above
+        cell_z = (z_hi - z_lo) + 2 * dpml
+        cell_center = mp.Vector3(
+            (bbox_right + bbox_left) / 2,
+            0.0,
+            (z_hi + z_lo) / 2,
+        )
     else:
-        # 2D mode: collapse z-dimension
+        # XY 2D: collapse z-dimension entirely.
         cell_z = 0
         cell_center = mp.Vector3(
             (bbox_right + bbox_left) / 2,
@@ -1129,13 +1615,26 @@ def main():
                      "Symmetries are only used in preview-only mode.")
     use_symmetries = build_symmetries(config) if preview_only else []
 
+    if is_xz:
+        pml_layers = [
+            mp.PML(thickness=dpml, direction=mp.X),
+            mp.PML(thickness=dpml, direction=mp.Z),
+        ]
+    elif not is_3d:
+        pml_layers = [
+            mp.PML(thickness=dpml, direction=mp.X),
+            mp.PML(thickness=dpml, direction=mp.Y),
+        ]
+    else:
+        pml_layers = [mp.PML(dpml)]
+
     sim_kwargs = dict(
         cell_size=mp.Vector3(cell_x, cell_y, cell_z),
         geometry_center=cell_center,
         geometry=geometry,
         sources=sources,
         resolution=resolution,
-        boundary_layers=[mp.PML(dpml)],
+        boundary_layers=pml_layers,
         symmetries=use_symmetries,
         split_chunks_evenly=config["split_chunks_evenly"],
         eps_averaging=eps_avg,
@@ -1169,7 +1668,7 @@ def main():
         sys.exit(0)
 
     logger.info("Building monitors...")
-    monitors = build_monitors(config, sim)
+    monitors, fiber_flux = build_monitors(config, sim)
 
     stopping = config["stopping"]
     run_after = stopping["run_after_sources"]
@@ -1199,18 +1698,28 @@ def main():
     animation_interval = diagnostics["animation_interval"]
     _frame_counter = [0]  # mutable container for closure
     _anim_plane = None
+    _anim_axes = ("x", "y")
 
     if diag_animation:
-        if is_3d:
-            z_min_anim = min(l["zmin"] for l in config["layer_stack"])
-            z_max_anim = max(l["zmax"] for l in config["layer_stack"])
-            z_core_anim = (z_min_anim + z_max_anim) / 2
+        if is_xz:
+            # XZ 2D: slice is the whole simulation plane (cell_y is already 0).
+            _anim_plane = mp.Volume(
+                center=cell_center,
+                size=mp.Vector3(sim.cell_size.x, 0, sim.cell_size.z),
+            )
+            _anim_axes = ("x", "z")
         else:
-            z_core_anim = 0
-        _anim_plane = mp.Volume(
-            center=mp.Vector3(cell_center.x, cell_center.y, z_core_anim),
-            size=mp.Vector3(sim.cell_size.x, sim.cell_size.y, 0),
-        )
+            if is_3d:
+                z_min_anim = min(l["zmin"] for l in config["layer_stack"])
+                z_max_anim = max(l["zmax"] for l in config["layer_stack"])
+                z_core_anim = (z_min_anim + z_max_anim) / 2
+            else:
+                z_core_anim = 0
+            _anim_plane = mp.Volume(
+                center=mp.Vector3(cell_center.x, cell_center.y, z_core_anim),
+                size=mp.Vector3(sim.cell_size.x, sim.cell_size.y, 0),
+            )
+            _anim_axes = ("x", "y")
 
         def _capture_frame(sim_obj):
             _frame_counter[0] = save_animation_field(
@@ -1303,15 +1812,21 @@ def main():
         if mp.am_master():
             _ctr = _anim_plane.center
             _sz = _anim_plane.size
-            _extent = [
-                _ctr.x - _sz.x / 2, _ctr.x + _sz.x / 2,
-                _ctr.y - _sz.y / 2, _ctr.y + _sz.y / 2,
-            ]
-            render_animation_frames(eps_data, _extent)
+            if _anim_axes == ("x", "z"):
+                _extent = [
+                    _ctr.x - _sz.x / 2, _ctr.x + _sz.x / 2,
+                    _ctr.z - _sz.z / 2, _ctr.z + _sz.z / 2,
+                ]
+            else:
+                _extent = [
+                    _ctr.x - _sz.x / 2, _ctr.x + _sz.x / 2,
+                    _ctr.y - _sz.y / 2, _ctr.y + _sz.y / 2,
+                ]
+            render_animation_frames(eps_data, _extent, axes=_anim_axes)
             compile_animation_mp4()
 
     logger.info("Extracting S-parameters...")
-    s_params, debug_data = extract_s_params(config, sim, monitors)
+    s_params, debug_data = extract_s_params(config, sim, monitors, fiber_flux)
 
     # Attach simulation metadata to debug_data
     debug_data["_meep_time"] = sim.meep_time()

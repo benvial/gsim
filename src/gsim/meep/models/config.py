@@ -300,6 +300,28 @@ class MaterialData(BaseModel):
     extinction_coeff: float = Field(default=0.0, ge=0)
 
 
+class FiberSourceConfig(BaseModel):
+    """Serialized Gaussian-beam fiber source for XZ 2D sims.
+
+    Mirrors :class:`gsim.meep.models.api.FiberSource` but with the k-vector
+    pre-computed on the client so the runner doesn't need to know about
+    polarization conventions or angle sign.
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    x: float
+    z: float = Field(description="Absolute Z of the beam-plane line source (um)")
+    angle_deg: float
+    waist: float = Field(gt=0)
+    wavelength: float = Field(gt=0)
+    wavelength_span: float = Field(ge=0)
+    polarization: Literal["TE", "TM"]
+    k_direction: list[float] = Field(
+        description="Unit k-vector in the XZ plane: [sin(theta), 0, -cos(theta)]"
+    )
+
+
 class SimConfig(BaseModel):
     """Complete serializable simulation config written as JSON.
 
@@ -320,6 +342,26 @@ class SimConfig(BaseModel):
             "eigenmode sources."
         ),
     )
+    plane: Literal["xy", "xz"] = Field(
+        default="xy",
+        description=(
+            "2D simulation plane when is_3d=False. 'xy' → effective-index "
+            "top-down; 'xz' → vertical cross-section at y=y_cut."
+        ),
+    )
+    y_cut: float | None = Field(
+        default=None,
+        description=(
+            "Y coordinate of the XZ cross-section (um). Required when plane='xz'."
+        ),
+    )
+    fiber_source: FiberSourceConfig | None = Field(
+        default=None,
+        description=(
+            "Gaussian-beam fiber source (XZ 2D only). When set, the runner "
+            "uses this instead of the EigenModeSource from `source`."
+        ),
+    )
     gds_filename: str = Field(description="GDS file with 2D layout")
     component_bbox: list[float] | None = Field(
         default=None,
@@ -330,6 +372,15 @@ class SimConfig(BaseModel):
     layer_stack: list[LayerStackEntry]
     dielectrics: list[dict[str, Any]]
     ports: list[PortData]
+    monitor_z_span: float | None = Field(
+        default=None,
+        description=(
+            "Z extent of waveguide port mode monitors (um). Sized around the "
+            "core layer (core thickness + 2·port_margin) so the monitor "
+            "captures the guided mode without spanning the full cell. When "
+            "None, the runner falls back to the full stack z-extent."
+        ),
+    )
     materials: dict[str, MaterialData]
     wavelength: WavelengthConfig = Field(serialization_alias="fdtd")
     source: SourceConfig
