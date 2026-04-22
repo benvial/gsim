@@ -549,13 +549,22 @@ def build_geometry(config, materials):
 # ---------------------------------------------------------------------------
 
 def get_port_z_span(config):
-    """Get z-span for ports from layer stack.
+    """Get z-span for waveguide port mode monitors.
 
-    In 2D mode returns an arbitrary large value (20 um) since the
+    Prefers the precomputed ``monitor_z_span`` (sized around the core
+    layer: ``core_thickness + 2*port_margin``) so monitors capture the
+    guided mode without spanning the full cell.
+
+    In XY 2D mode returns a large arbitrary value (20 um) since the
     z-dimension is collapsed and the size doesn't affect the simulation.
     """
-    if not config.get("is_3d", True):
+    is_3d = config.get("is_3d", True)
+    plane = config.get("plane", "xy")
+    if not is_3d and plane == "xy":
         return 20
+    mz = config.get("monitor_z_span")
+    if mz is not None:
+        return mz
     zmin = min(l["zmin"] for l in config["layer_stack"])
     zmax = max(l["zmax"] for l in config["layer_stack"])
     return zmax - zmin
@@ -578,7 +587,7 @@ def _build_fiber_source(config, fiber):
     else:
         e_dir = mp.Vector3(1, 0, 0)
 
-    center = mp.Vector3(fiber["x"], 0.0, fiber["center_z"])
+    center = mp.Vector3(fiber["x"], 0.0, fiber["z"])
 
     src_x_size = _estimate_source_x_size(config)
 

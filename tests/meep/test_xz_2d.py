@@ -70,7 +70,7 @@ def _build_minimal_gc_sim():
     sim.solver.stop_when_energy_decayed()
     sim.source_fiber(
         x=1.2,
-        z_offset=1.0,
+        z=1.22,
         angle_deg=14.5,
         waist=5.4,
         wavelength=1.55,

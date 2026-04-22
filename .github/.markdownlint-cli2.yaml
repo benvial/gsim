@@ -16,5 +16,3 @@ ignores:
   - "**/.venv/**"
   - "docs/nbs/*.md"
   - "docs/api.md"
-  # Superpowers plans/specs are auto-generated planning artifacts, not prose docs.
-  - "docs/superpowers/**"

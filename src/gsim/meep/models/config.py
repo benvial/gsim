@@ -303,15 +303,15 @@ class MaterialData(BaseModel):
 class FiberSourceConfig(BaseModel):
     """Serialized Gaussian-beam fiber source for XZ 2D sims.
 
-    Mirrors :class:`gsim.meep.models.api.FiberSource` but with k-direction
-    and center-z pre-computed on the client so the runner doesn't need the
-    stack-resolution logic.
+    Mirrors :class:`gsim.meep.models.api.FiberSource` but with the k-vector
+    pre-computed on the client so the runner doesn't need to know about
+    polarization conventions or angle sign.
     """
 
     model_config = ConfigDict(validate_assignment=True)
 
     x: float
-    z_offset: float = Field(ge=0)
+    z: float = Field(description="Absolute Z of the beam-plane line source (um)")
     angle_deg: float
     waist: float = Field(gt=0)
     wavelength: float = Field(gt=0)
@@ -321,7 +321,6 @@ class FiberSourceConfig(BaseModel):
     k_direction: list[float] = Field(
         description="Unit k-vector in the XZ plane: [sin(theta), 0, -cos(theta)]"
     )
-    center_z: float = Field(description="Absolute Z of the beam-plane line source (um)")
 
 
 class SimConfig(BaseModel):
@@ -374,6 +373,15 @@ class SimConfig(BaseModel):
     layer_stack: list[LayerStackEntry]
     dielectrics: list[dict[str, Any]]
     ports: list[PortData]
+    monitor_z_span: float | None = Field(
+        default=None,
+        description=(
+            "Z extent of waveguide port mode monitors (um). Sized around the "
+            "core layer (core thickness + 2·port_margin) so the monitor "
+            "captures the guided mode without spanning the full cell. When "
+            "None, the runner falls back to the full stack z-extent."
+        ),
+    )
     materials: dict[str, MaterialData]
     wavelength: WavelengthConfig = Field(serialization_alias="fdtd")
     source: SourceConfig

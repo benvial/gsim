@@ -566,7 +566,7 @@ class TestXZBuildConfig:
         sim.materials = {"si": 3.47, "SiO2": 1.44}
         sim.solver.is_3d = False
         sim.solver.plane = "xz"
-        sim.source_fiber(x=0.0, z_offset=1.0, waist=5.4)
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
 
         result = sim.build_config()
 
@@ -583,7 +583,7 @@ class TestXZBuildConfig:
         sim.materials = {"si": 3.47, "SiO2": 1.44}
         sim.solver.is_3d = False
         sim.solver.plane = "xz"
-        sim.source_fiber(x=0.0, z_offset=1.0, waist=5.4)
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
 
         result = sim.build_config()
         assert result.config.y_cut == pytest.approx(0.1)
@@ -597,7 +597,7 @@ class TestXZBuildConfig:
         sim.materials = {"si": 3.47, "SiO2": 1.44}
         sim.solver.is_3d = False
         sim.solver.plane = "xz"
-        sim.source_fiber(x=0.0, z_offset=1.0, waist=5.4)
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
 
         result = sim.build_config()
         assert result.config.plane == "xz"
@@ -614,7 +614,7 @@ class TestXZBuildConfig:
         sim.materials = {"si": 3.47, "SiO2": 1.44}
         sim.solver.is_3d = False
         sim.solver.plane = "xz"
-        sim.source_fiber(x=0.0, z_offset=1.0, angle_deg=14.5, waist=5.4)
+        sim.source_fiber(x=0.0, z=1.22, angle_deg=14.5, waist=5.4)
 
         result = sim.build_config()
         fs = result.config.fiber_source
@@ -623,8 +623,8 @@ class TestXZBuildConfig:
         assert fs.k_direction[0] == pytest.approx(math.sin(theta))
         assert fs.k_direction[1] == pytest.approx(0.0)
         assert fs.k_direction[2] == pytest.approx(-math.cos(theta))
-        # clad top is at z=0.22 (only layer in stack.layers) → center_z = 0.22 + 1.0
-        assert fs.center_z == pytest.approx(1.22)
+        # Absolute z passed through unchanged.
+        assert fs.z == pytest.approx(1.22)
 
 
 class TestXZValidation:
@@ -681,7 +681,7 @@ class TestXZAutoCrop:
         sim.materials = {"si": 3.47, "SiO2": 1.44}
         sim.solver.is_3d = False
         sim.solver.plane = "xz"
-        sim.source_fiber(x=0.0, z_offset=1.0, waist=5.4)
+        sim.source_fiber(x=0.0, z=1.22, waist=5.4)
 
         sim.build_config()
 
@@ -703,11 +703,13 @@ class TestXZAutoCrop:
         sim.materials = {"si": 3.47, "SiO2": 1.44}
         sim.solver.is_3d = False
         sim.solver.plane = "xz"
-        sim.source_fiber(x=0.0, z_offset=1.2, waist=5.4, angle_deg=14.5)
+        # Core zmax is 0.22 (see _xz_trivial_stack), so absolute z=1.42 is
+        # 1.2 um above the core.
+        sim.source_fiber(x=0.0, z=1.42, waist=5.4, angle_deg=14.5)
 
         initial_margin = sim.domain.margin_z_above
         sim.build_config()
-        # Margin should grow to at least z_offset + waist/2 so the fiber
-        # beam plane sits inside the simulation cell.
+        # Margin should grow to at least (z - core_zmax) + waist/2 so the
+        # fiber beam plane sits inside the simulation cell.
         assert sim.domain.margin_z_above >= 1.2 + 5.4 / 2
         assert sim.domain.margin_z_above > initial_margin

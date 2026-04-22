@@ -181,7 +181,7 @@ def build_sim_overlay(
     if fiber_source is not None:
         fiber_overlay = FiberOverlay(
             x=fiber_source.x,
-            z=fiber_source.center_z,
+            z=fiber_source.z,
             angle_deg=fiber_source.angle_deg,
             waist=fiber_source.waist,
             polarization=fiber_source.polarization,

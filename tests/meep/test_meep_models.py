@@ -1510,9 +1510,9 @@ class TestFiberSource:
     def test_construct_minimal(self):
         from gsim.meep.models.api import FiberSource
 
-        fs = FiberSource(x=0.0, z_offset=1.0, waist=5.4)
+        fs = FiberSource(x=0.0, z=1.0, waist=5.4)
         assert fs.x == 0.0
-        assert fs.z_offset == 1.0
+        assert fs.z == 1.0
         assert fs.waist == 5.4
         assert fs.angle_deg == 0.0
         assert fs.wavelength == 1.55
@@ -1523,7 +1523,7 @@ class TestFiberSource:
 
         fs = FiberSource(
             x=0.0,
-            z_offset=1.0,
+            z=1.0,
             angle_deg=14.5,
             waist=5.4,
             wavelength=1.55,
@@ -1538,13 +1538,7 @@ class TestFiberSource:
         from gsim.meep.models.api import FiberSource
 
         with pytest.raises(ValidationError):
-            FiberSource(x=0.0, z_offset=1.0, waist=0.0)
-
-    def test_z_offset_must_be_non_negative(self):
-        from gsim.meep.models.api import FiberSource
-
-        with pytest.raises(ValidationError):
-            FiberSource(x=0.0, z_offset=-0.1, waist=5.4)
+            FiberSource(x=0.0, z=1.0, waist=0.0)
 
 
 class TestSimulationFiberSource:
@@ -1560,7 +1554,7 @@ class TestSimulationFiberSource:
 
         sim.source_fiber(
             x=0.0,
-            z_offset=1.0,
+            z=1.0,
             angle_deg=14.5,
             waist=5.4,
             wavelength=1.55,
@@ -1579,7 +1573,7 @@ class TestSimulationFiberSource:
 
         sim = Simulation()  # defaults: is_3d=True
         with pytest.raises(ValueError, match="fiber source requires is_3d=False"):
-            sim.source_fiber(x=0.0, z_offset=1.0, waist=5.4)
+            sim.source_fiber(x=0.0, z=1.0, waist=5.4)
 
 
 class TestSimConfigXZ:
@@ -1650,7 +1644,7 @@ class TestSimConfigXZ:
 
         fs = FiberSourceConfig(
             x=0.0,
-            z_offset=1.0,
+            z=2.68,
             angle_deg=14.5,
             waist=5.4,
             wavelength=1.55,
@@ -1658,7 +1652,6 @@ class TestSimConfigXZ:
             num_freqs=21,
             polarization="TE",
             k_direction=[0.25, 0.0, -0.97],
-            center_z=2.68,
         )
         cfg = SimConfig(
             **self._minimal_config_kwargs(),

@@ -145,6 +145,11 @@ class Simulation(BaseModel):
         Replaces any previous fiber source. Requires ``solver.is_3d=False``
         (and eventually ``solver.plane='xz'`` at ``build_config`` time).
 
+        The ``waist`` kwarg is the 1/e² intensity *radius* (= MFD / 2),
+        matching MEEP's ``beam_w0``. Typical SMF-28 values:
+        ``waist ≈ 4.6 um`` at 1310 nm (MFD ≈ 9.2 um) and
+        ``waist ≈ 5.2 um`` at 1550 nm (MFD ≈ 10.4 um).
+
         Args:
             **kwargs: Fields forwarded to :class:`FiberSource`.
 
@@ -255,17 +260,28 @@ class Simulation(BaseModel):
         """Bump ``domain.margin_z_above`` to include the fiber source plane.
 
         When the user configures ``sim.source_fiber(...)`` the Gaussian beam
-        sits ``z_offset`` above the cladding top. The z-crop shrinks the
-        stack around the core, so the current ``margin_z_above`` (default
-        0.5 µm) would put the fiber above the cell. Here we enlarge the
-        margin to hold the beam plane plus a waist-sized buffer.
+        sits at absolute z = ``fs.z``. The z-crop shrinks the stack around
+        the core (reference layer), so ``margin_z_above`` must be large
+        enough that ``core_zmax + margin_z_above`` still sits above the
+        beam plane plus a waist-sized buffer (otherwise the fiber ends up
+        in PML).
         """
         if self.fiber_source is None:
             return
         fs = self.fiber_source
+        stack = self.geometry.stack
+        if stack is None:
+            return
+
+        from gsim.meep.ports import _find_highest_n_layer
+
+        ref, _ = _find_highest_n_layer(stack)
+        if ref is None:
+            return
+        core_zmax = ref.zmax
         # Room for the beam plane + beam-half-waist so the Gaussian tail
         # is inside the sim cell before PML.
-        needed = fs.z_offset + max(fs.waist / 2.0, 0.5)
+        needed = (fs.z - core_zmax) + max(fs.waist / 2.0, 0.5)
         if self.domain.margin_z_above < needed:
             self.domain.margin_z_above = needed
 
@@ -500,7 +516,11 @@ class Simulation(BaseModel):
             SimConfig,
             SymmetryEntry,
         )
-        from gsim.meep.ports import extract_port_info, filter_ports_for_xz
+        from gsim.meep.ports import (
+            _find_highest_n_layer,
+            extract_port_info,
+            filter_ports_for_xz,
+        )
 
         validation = self.validate_config()
         if not validation.valid:
@@ -629,12 +649,9 @@ class Simulation(BaseModel):
             theta = math.radians(self.fiber_source.angle_deg)
             k_direction = [math.sin(theta), 0.0, -math.cos(theta)]
 
-            cladding_top = max(layer.zmax for layer in stack.layers.values())
-            center_z = cladding_top + self.fiber_source.z_offset
-
             fiber_source_cfg = FiberSourceConfig(
                 x=self.fiber_source.x,
-                z_offset=self.fiber_source.z_offset,
+                z=self.fiber_source.z,
                 angle_deg=self.fiber_source.angle_deg,
                 waist=self.fiber_source.waist,
                 wavelength=self.fiber_source.wavelength,
@@ -642,7 +659,6 @@ class Simulation(BaseModel):
                 num_freqs=self.fiber_source.num_freqs,
                 polarization=self.fiber_source.polarization,
                 k_direction=k_direction,
-                center_z=center_z,
             )
 
         if plane == "xz" and not port_infos and fiber_source_cfg is None:
@@ -674,6 +690,19 @@ class Simulation(BaseModel):
                 stacklevel=2,
             )
 
+        # Size waveguide port monitors around the core layer (core
+        # thickness + 2·port_margin) rather than the full stack. For
+        # XZ 2D sims the stack is inflated to hold the fiber beam plane;
+        # using the full stack would make the port monitor unreasonably
+        # tall.
+        core_layer, _ = _find_highest_n_layer(stack)
+        if core_layer is not None:
+            monitor_z_span: float | None = (
+                core_layer.zmax - core_layer.zmin
+            ) + 2 * domain_cfg.port_margin
+        else:
+            monitor_z_span = None
+
         # Build SimConfig
         sim_config = SimConfig(
             is_3d=is_3d,
@@ -685,6 +714,7 @@ class Simulation(BaseModel):
             layer_stack=layer_stack_entries,
             dielectrics=dielectric_entries,
             ports=port_infos,
+            monitor_z_span=monitor_z_span,
             materials=material_data,
             wavelength=wl_cfg,
             source=source_for_config,
@@ -889,6 +919,7 @@ class Simulation(BaseModel):
             port_data=result.config.ports,
             component_bbox=result.config.component_bbox,
             fiber_source=result.config.fiber_source,
+            monitor_z_span=result.config.monitor_z_span,
             **kwargs,
         )
 

@@ -101,20 +101,42 @@ class ModeSource(BaseModel):
 class FiberSource(BaseModel):
     """Tilted Gaussian-beam source above the chip (fiber-to-chip coupling).
 
-    The beam center sits ``z_offset`` above the top of the cladding at
-    X=``x``. The beam tilts from the +Z normal by ``angle_deg`` toward +X.
-    Only valid in XZ 2D mode (``solver.is_3d=False, solver.plane='xz'``).
+    The beam center sits at (``x``, ``z``) in the XZ plane — ``z`` is the
+    absolute Z coordinate of the beam plane (um). The beam tilts from the
+    +Z normal by ``angle_deg`` toward +X. Only valid in XZ 2D mode
+    (``solver.is_3d=False, solver.plane='xz'``).
+
+    Beam waist convention (matches MEEP's ``beam_w0``):
+
+    - ``waist`` is the 1/e² intensity *radius* — i.e. MFD / 2.
+    - MFD (mode-field diameter) = 2 · ``waist``.
+
+    Typical single-mode fibers:
+
+    ============  ==========  =========  ==============
+    Fiber         Wavelength  MFD (µm)   waist w₀ (µm)
+    ============  ==========  =========  ==============
+    SMF-28        1310 nm     ~9.2       ~4.6
+    SMF-28        1550 nm     ~10.4      ~5.2
+    UHNA4         1550 nm     ~4.0       ~2.0
+    ============  ==========  =========  ==============
     """
 
     model_config = ConfigDict(validate_assignment=True)
 
     x: float = Field(description="Beam-center X on the chip plane (um)")
-    z_offset: float = Field(ge=0, description="Distance above cladding top (um)")
+    z: float = Field(description="Absolute Z of the beam plane (um)")
     angle_deg: float = Field(
         default=0.0,
         description="Tilt from +Z normal; positive tilts toward +X (degrees)",
     )
-    waist: float = Field(gt=0, description="Gaussian beam waist w0 (um)")
+    waist: float = Field(
+        gt=0,
+        description=(
+            "Gaussian beam waist w0 (um) — 1/e² intensity radius = MFD / 2. "
+            "Standard SMF-28 at 1550 nm: w0 ≈ 5.2 um (MFD ≈ 10.4 um)."
+        ),
+    )
     wavelength: float = Field(default=1.55, gt=0, description="Center wavelength (um)")
     wavelength_span: float = Field(
         default=0.05, ge=0, description="Wavelength span (um)"
