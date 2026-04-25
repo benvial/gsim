@@ -2,26 +2,17 @@
 
 These tests verify the full local workflow for each sim type:
 configure -> validate -> mesh -> write_config, stopping before cloud submission.
-
-Note: gmsh segfaults on macOS (headless OpenGL issue), so mesh tests
-only run on Linux (CI).
 """
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import gdsfactory as gf
 import pytest
 
 from gsim.palace import DrivenSim, EigenmodeSim, ElectrostaticSim
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "darwin", reason="gmsh segfaults on macOS"
-)
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
