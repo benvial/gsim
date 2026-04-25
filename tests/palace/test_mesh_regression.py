@@ -39,13 +39,16 @@ def _groups_snapshot(sim) -> dict:
 
 
 def _mesh_counts(sim) -> dict:
-    """Return mesh statistics as lists for num_regression (platform-variable)."""
+    """Return mesh statistics as floats for num_regression (platform-variable).
+
+    Must be float — num_regression only applies rtol to inexact (float) columns.
+    """
     stats = sim._last_mesh_result.mesh_stats
     return {
-        "elements": [stats.get("elements")],
-        "invalid_elements": [stats.get("sicn", {}).get("invalid", 0)],
-        "nodes": [stats.get("nodes")],
-        "tetrahedra": [stats.get("tetrahedra")],
+        "elements": [float(stats.get("elements"))],
+        "invalid_elements": [float(stats.get("sicn", {}).get("invalid", 0))],
+        "nodes": [float(stats.get("nodes"))],
+        "tetrahedra": [float(stats.get("tetrahedra"))],
     }
 
 
