@@ -2,15 +2,11 @@
 
 These tests verify that mesh generation produces correct physical groups
 and Palace config without actually running Palace.
-
-Note: gmsh segfaults on macOS (headless OpenGL issue), so these tests
-only run on Linux (CI).
 """
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import gdsfactory as gf
@@ -18,10 +14,6 @@ import pytest
 
 from gsim.common import Layer, LayerStack
 from gsim.palace import DrivenSim
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "darwin", reason="gmsh segfaults on macOS"
-)
 
 
 def _make_cpw_component():

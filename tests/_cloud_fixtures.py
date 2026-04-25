@@ -11,28 +11,6 @@ from pathlib import Path
 import gdsfactory as gf
 import pytest
 
-
-def require_regression_reference(request: pytest.FixtureRequest) -> None:
-    """Fail fast if the ``ndarrays_regression`` reference file is missing.
-
-    pytest-regressions' default is to run the test, write the reference,
-    then fail. Cloud sims are expensive, so we refuse to run when the
-    baseline is missing — pass ``--force-regen`` to generate it deliberately.
-    """
-    if request.config.getoption("--force-regen", default=False):
-        return
-    test_file: Path = request.node.path
-    func_name = request.node.originalname or request.node.name
-    ref_path = test_file.parent / test_file.stem / f"{func_name}.npz"
-    if not ref_path.exists():
-        rel = ref_path.relative_to(test_file.parent.parent.parent)
-        pytest.fail(
-            f"Reference file missing: {rel}\n"
-            "Refusing to run cloud simulation without a baseline. "
-            "Run with --force-regen to generate it."
-        )
-
-
 # ---------------------------------------------------------------------------
 # Meep fixtures
 # ---------------------------------------------------------------------------
@@ -370,5 +348,4 @@ __all__ = [
     "make_driven_cpw_waveport_sim",
     "make_eigenmode_cavity_sim",
     "make_sbend_sim",
-    "require_regression_reference",
 ]

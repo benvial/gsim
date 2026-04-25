@@ -1,9 +1,8 @@
 """Cloud DrivenSim with wave ports — compares S-params against reference.
 
 Reference data lives next to this file at
-``test_cloud_driven_waveport/test_driven_cpw_waveport.npz``. Run
-``uv run pytest tests/palace/test_cloud_driven_waveport.py --force-regen``
-to regenerate.
+``test_cloud_driven_waveport/test_driven_cpw_waveport.npz``.  On the first
+run the file is generated automatically; use ``--force-regen`` to overwrite.
 """
 
 from __future__ import annotations
@@ -12,10 +11,7 @@ import numpy as np
 import pytest
 from pytest_regressions.ndarrays_regression import NDArraysRegressionFixture
 
-from tests._cloud_fixtures import (
-    make_driven_cpw_waveport_sim,
-    require_regression_reference,
-)
+from tests._cloud_fixtures import make_driven_cpw_waveport_sim
 
 pytestmark = pytest.mark.cloud
 
@@ -23,9 +19,7 @@ pytestmark = pytest.mark.cloud
 def test_driven_cpw_waveport(
     ndarrays_regression: NDArraysRegressionFixture,
     tmp_path,
-    request: pytest.FixtureRequest,
 ) -> None:
-    require_regression_reference(request)
     sim = make_driven_cpw_waveport_sim(tmp_path / "palace-sim")
     sim.mesh(
         refined_mesh_size=2.0,

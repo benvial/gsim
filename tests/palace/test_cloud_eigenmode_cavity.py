@@ -7,9 +7,8 @@ CSV and regression-checks the real and imaginary parts of each mode's
 complex frequency.
 
 Reference data lives next to this file at
-``test_cloud_eigenmode_cavity/test_eigenmode_cavity.npz``. Run
-``uv run pytest tests/palace/test_cloud_eigenmode_cavity.py --force-regen``
-to regenerate.
+``test_cloud_eigenmode_cavity/test_eigenmode_cavity.npz``.  On the first run
+the file is generated automatically; use ``--force-regen`` to overwrite it.
 """
 
 from __future__ import annotations
@@ -21,10 +20,7 @@ import pandas as pd
 import pytest
 from pytest_regressions.ndarrays_regression import NDArraysRegressionFixture
 
-from tests._cloud_fixtures import (
-    make_eigenmode_cavity_sim,
-    require_regression_reference,
-)
+from tests._cloud_fixtures import make_eigenmode_cavity_sim
 
 pytestmark = pytest.mark.cloud
 
@@ -63,9 +59,7 @@ def _parse_eigenvalues(csv_path: Path) -> tuple[np.ndarray, np.ndarray]:
 def test_eigenmode_cavity(
     ndarrays_regression: NDArraysRegressionFixture,
     tmp_path,
-    request: pytest.FixtureRequest,
 ) -> None:
-    require_regression_reference(request)
     sim = make_eigenmode_cavity_sim(tmp_path / "palace-sim")
     sim.mesh(preset="default", margin=0)
     result = sim.run(parent_dir=tmp_path, verbose="quiet")
