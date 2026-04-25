@@ -16,8 +16,3 @@ groups:
   - SiO2
   - air
   - passive
-mesh:
-  elements: 21821
-  invalid_elements: 0
-  nodes: 2846
-  tetrahedra: 15241

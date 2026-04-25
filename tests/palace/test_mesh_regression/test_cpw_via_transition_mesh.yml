@@ -18,8 +18,3 @@ groups:
   - passive
   - topvia1
   - topvia2
-mesh:
-  elements: 14572
-  invalid_elements: 0
-  nodes: 1807
-  tetrahedra: 9878
