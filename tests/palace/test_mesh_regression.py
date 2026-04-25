@@ -1,14 +1,14 @@
 """Mesh generation regression tests for real-world Palace geometries.
 
 Each test meshes a geometry taken directly from the Palace notebooks and
-snapshots the physical-group names via ``data_regression`` (exact match) and
-mesh element counts via ``num_regression`` (1% tolerance).  Group names are
-fully deterministic (they don't depend on gmsh version or mesh density), so
-any labelling regression — wrong layer mapping, missing conductor surface,
-lost port — will be caught immediately.  Element counts are platform-variable
-at the ~0.2% level due to GMSH non-determinism across OS/hardware.
+snapshots the physical-group names (exact match) and mesh element counts
+(1% tolerance) via the ``mesh_regression`` fixture.  Group names are fully
+deterministic (they don't depend on gmsh version or mesh density), so any
+labelling regression — wrong layer mapping, missing conductor surface, lost
+port — will be caught immediately.  Element counts are platform-variable at
+the ~0.2% level due to GMSH non-determinism across OS/hardware.
 
-Generate / refresh reference YAML and CSV files:
+Generate / refresh reference YAML files:
 
     uv run pytest tests/palace/test_mesh_regression.py --force-regen
 
@@ -24,9 +24,11 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _groups_snapshot(sim) -> dict:
-    """Return group names from _last_mesh_result (fully deterministic)."""
-    groups = sim._last_mesh_result.groups
+def _mesh_snapshot(sim) -> dict:
+    """Return group names and mesh counts from _last_mesh_result."""
+    result = sim._last_mesh_result
+    groups = result.groups
+    stats = result.mesh_stats
     return {
         "groups": {
             "volumes": sorted(groups["volumes"].keys()),
@@ -35,28 +37,13 @@ def _groups_snapshot(sim) -> dict:
             "port_surfaces": sorted(groups["port_surfaces"].keys()),
             "boundary_surfaces": sorted(groups["boundary_surfaces"].keys()),
         },
+        "mesh": {
+            "nodes": stats.get("nodes"),
+            "elements": stats.get("elements"),
+            "tetrahedra": stats.get("tetrahedra"),
+            "invalid_elements": stats.get("sicn", {}).get("invalid", 0),
+        },
     }
-
-
-def _mesh_counts(sim) -> dict:
-    """Return mesh statistics as floats for num_regression (platform-variable).
-
-    Must be float — num_regression only applies rtol to inexact (float) columns.
-    """
-    stats = sim._last_mesh_result.mesh_stats
-    return {
-        "elements": [float(stats.get("elements"))],
-        "invalid_elements": [float(stats.get("sicn", {}).get("invalid", 0))],
-        "nodes": [float(stats.get("nodes"))],
-        "tetrahedra": [float(stats.get("tetrahedra"))],
-    }
-
-
-_MESH_TOLERANCES = {
-    "elements": {"rtol": 0.01},
-    "nodes": {"rtol": 0.01},
-    "tetrahedra": {"rtol": 0.01},
-}
 
 
 # ---------------------------------------------------------------------------
@@ -127,9 +114,8 @@ def cpw_waveport_sim(tmp_path_factory):
     return sim
 
 
-def test_cpw_waveport_mesh(data_regression, num_regression, cpw_waveport_sim):
-    data_regression.check(_groups_snapshot(cpw_waveport_sim))
-    num_regression.check(_mesh_counts(cpw_waveport_sim), tolerances=_MESH_TOLERANCES)
+def test_cpw_waveport_mesh(mesh_regression, cpw_waveport_sim):
+    mesh_regression.check(_mesh_snapshot(cpw_waveport_sim))
 
 
 # ---------------------------------------------------------------------------
@@ -291,13 +277,8 @@ def cpw_via_transition_sim(tmp_path_factory):
     return sim
 
 
-def test_cpw_via_transition_mesh(
-    data_regression, num_regression, cpw_via_transition_sim
-):
-    data_regression.check(_groups_snapshot(cpw_via_transition_sim))
-    num_regression.check(
-        _mesh_counts(cpw_via_transition_sim), tolerances=_MESH_TOLERANCES
-    )
+def test_cpw_via_transition_mesh(mesh_regression, cpw_via_transition_sim):
+    mesh_regression.check(_mesh_snapshot(cpw_via_transition_sim))
 
 
 # ---------------------------------------------------------------------------
@@ -345,9 +326,8 @@ def microstrip_sim(tmp_path_factory):
     return sim
 
 
-def test_microstrip_mesh(data_regression, num_regression, microstrip_sim):
-    data_regression.check(_groups_snapshot(microstrip_sim))
-    num_regression.check(_mesh_counts(microstrip_sim), tolerances=_MESH_TOLERANCES)
+def test_microstrip_mesh(mesh_regression, microstrip_sim):
+    mesh_regression.check(_mesh_snapshot(microstrip_sim))
 
 
 # ---------------------------------------------------------------------------
@@ -513,10 +493,5 @@ def branch_line_coupler_sim(tmp_path_factory):
     return sim
 
 
-def test_branch_line_coupler_mesh(
-    data_regression, num_regression, branch_line_coupler_sim
-):
-    data_regression.check(_groups_snapshot(branch_line_coupler_sim))
-    num_regression.check(
-        _mesh_counts(branch_line_coupler_sim), tolerances=_MESH_TOLERANCES
-    )
+def test_branch_line_coupler_mesh(mesh_regression, branch_line_coupler_sim):
+    mesh_regression.check(_mesh_snapshot(branch_line_coupler_sim))
