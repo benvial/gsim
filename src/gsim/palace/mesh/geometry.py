@@ -1105,7 +1105,15 @@ def add_ports(
                     }
                 )
             else:
+                # Build a robust z-envelope for waveports. When synthetic
+                # dielectric boxes are disabled, stack.get_z_range() can miss
+                # patterned core levels; include layer extents as well.
                 layer_zmin, layer_zmax = stack.get_z_range()
+                if stack.layers:
+                    zmin_layers = min(layer.zmin for layer in stack.layers.values())
+                    zmax_layers = max(layer.zmax for layer in stack.layers.values())
+                    layer_zmin = min(layer_zmin, zmin_layers)
+                    layer_zmax = max(layer_zmax, zmax_layers)
 
                 if port.max_size:
                     # Fill the full simulation domain
@@ -1116,6 +1124,13 @@ def add_ports(
                     zmax = zmax + port.z_margin
                     zmin = max(zmin, layer_zmin)
                     zmax = min(zmax, layer_zmax)
+
+                # Guard against inverted/degenerate z extents.
+                if zmax <= zmin:
+                    z_center = target_layer.zmin + 0.5 * target_layer.thickness
+                    z_half = max(port.z_margin, 0.01)
+                    zmin = z_center - z_half
+                    zmax = z_center + z_half
 
                 angle = port.orientation % 360
                 is_y_axis = 45 <= angle < 135 or 225 <= angle < 315

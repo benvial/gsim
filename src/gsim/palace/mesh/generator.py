@@ -74,6 +74,7 @@ def _setup_mesh_fields(
     conductor_line_count = 0
     port_line_count = 0
     pec_line_count = 0
+    dielectric_line_count = 0
 
     # Conductor-surface edges are always refined — the refined_cellsize only
     # takes effect where boundary curves drive the Threshold field, and metal
@@ -108,14 +109,57 @@ def _setup_mesh_fields(
                 boundary_lines.extend(lines)
                 port_line_count += len(lines)
 
+    # Dielectric interfaces are also field-concentration regions for
+    # photonic structures; refine high-permittivity dielectric boundaries
+    # (for example, core/air interfaces) when they exist as volume groups.
+    for volume_name, volume_info in groups.get("volumes", {}).items():
+        if volume_info.get("is_via", False):
+            continue
+
+        layer = stack.layers.get(volume_name)
+        material_name = layer.material if layer is not None else volume_name
+        material_props = stack.materials.get(material_name, {})
+        permittivity = material_props.get("permittivity", 1.0)
+        if isinstance(permittivity, list):
+            try:
+                permittivity = max(float(v) for v in permittivity)
+            except (TypeError, ValueError):
+                permittivity = 1.0
+        if not isinstance(permittivity, int | float) or permittivity <= 1.0:
+            continue
+
+        for vtag in volume_info.get("tags", []):
+            try:
+                boundaries = gmsh.model.getBoundary(
+                    [(3, vtag)],
+                    combined=False,
+                    oriented=False,
+                    recursive=False,
+                )
+            except Exception:
+                logger.debug(
+                    "Skipping dielectric boundary refinement for stale volume tag %s",
+                    vtag,
+                )
+                continue
+
+            for dim, stag in boundaries:
+                if dim != 2:
+                    continue
+                lines = gmsh_utils.get_boundary_lines(stag, kernel)
+                boundary_lines.extend(lines)
+                dielectric_line_count += len(lines)
+
     boundary_lines = sorted(set(boundary_lines))
 
     logger.info(
-        "Mesh refinement: %d boundary lines (conductor=%d, port=%d, pec=%d)",
+        "Mesh refinement: %d boundary lines "
+        "(conductor=%d, port=%d, pec=%d, dielectric=%d)",
         len(boundary_lines),
         conductor_line_count,
         port_line_count,
         pec_line_count,
+        dielectric_line_count,
     )
 
     # Setup main refinement field
