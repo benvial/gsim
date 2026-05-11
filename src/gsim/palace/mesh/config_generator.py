@@ -145,21 +145,20 @@ def generate_palace_config(
 
     # Build domains section
     materials: list[dict[str, object]] = []
-    for material_name, info in groups["volumes"].items():
+    for volume_name, info in groups["volumes"].items():
         is_via = info.get("is_via", False)
+        layer = stack.layers.get(volume_name)
 
-        if is_via:
-            # Via volumes: look up material from the layer stack
-            layer = stack.layers.get(material_name)
-            if layer is None:
-                continue
+        # Volume names can be either material names (SiO2, airbox) or
+        # layer names (for via/patterned-dielectric volumes).
+        if layer is not None:
             mat_props = stack.materials.get(layer.material, {})
         else:
-            mat_props = stack.materials.get(material_name, {})
+            mat_props = stack.materials.get(volume_name, {})
 
         mat_entry: dict[str, object] = {"Attributes": [info["phys_group"]]}
 
-        if material_name == "airbox":
+        if volume_name == "airbox":
             mat_entry["Permittivity"] = 1.0
             mat_entry["LossTan"] = 0.0
         elif is_via:

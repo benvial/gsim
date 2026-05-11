@@ -61,10 +61,13 @@ def get_stack(
             - substrate_thickness: Thickness below z=0 in um (default: 2.0)
             - air_above: Air box height above top metal in um (default: 5).
               Palace RF sims typically override to 200+ for far-field radiation.
-                        - air_below: Air box height below substrate/oxide in um
-                            (default: 0)
+            - air_below: Air box height below substrate/oxide in um (default: 0)
             - include_substrate: Include lossy silicon substrate (default: False).
               When False, omits substrate for RF simulation.
+            - add_oxide_dielectric: Add synthetic oxide dielectric background
+              region (default: True).
+            - add_passivation_dielectric: Add synthetic passivation dielectric
+              cap (default: True).
 
     Returns:
         LayerStack object

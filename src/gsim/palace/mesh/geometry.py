@@ -533,6 +533,85 @@ def add_dielectrics(
     return dielectric_tags
 
 
+def add_patterned_dielectrics(
+    kernel,
+    geometry: GeometryData,
+    stack: LayerStack,
+    min_volume_thickness: float = 0.05,
+) -> dict[str, list[int]]:
+    """Add patterned dielectric volumes from stack dielectric layers.
+
+    This extrudes component polygons for stack layers classified as
+    ``dielectric`` so patterned optical/routing cores become explicit
+    3D dielectric regions in the boolean pipeline.
+
+    Args:
+        kernel: gmsh OCC kernel
+        geometry: Extracted geometry data
+        stack: LayerStack with layer definitions
+        min_volume_thickness: Skip very thin dielectric layers that cannot
+            be robustly meshed as 3D volumes.
+
+    Returns:
+        Dict mapping dielectric layer name -> list of volume tags.
+    """
+    patterned_tags: dict[str, list[int]] = {}
+
+    polygons_by_layer: dict[int, list[tuple[list[float], list[float], list]]] = {}
+    for layernum, pts_x, pts_y, holes in geometry.polygons:
+        polygons_by_layer.setdefault(layernum, []).append((pts_x, pts_y, holes))
+
+    for layernum, polys in polygons_by_layer.items():
+        layer_info = get_layer_info(stack, layernum)
+        if layer_info is None or layer_info["type"] != "dielectric":
+            continue
+
+        layer_name = layer_info["name"]
+        zmin = layer_info["zmin"]
+        thickness = layer_info["thickness"]
+
+        if thickness <= 0 or thickness < min_volume_thickness:
+            logger.debug(
+                "Skipping patterned dielectric layer '%s' with thickness %.3f um",
+                layer_name,
+                thickness,
+            )
+            continue
+
+        surfaces = []
+        for pts_x, pts_y, holes in polys:
+            surfacetag = gmsh_utils.create_polygon_surface(
+                kernel, pts_x, pts_y, zmin, holes=holes
+            )
+            if surfacetag is not None:
+                surfaces.append(surfacetag)
+
+        if not surfaces:
+            continue
+
+        if len(surfaces) > 1:
+            dimtags = [(2, s) for s in surfaces]
+            fused, _ = kernel.fuse(
+                [dimtags[0]],
+                dimtags[1:],
+                removeObject=True,
+                removeTool=True,
+            )
+            kernel.synchronize()
+            surfaces = [t for d, t in fused if d == 2]
+
+        volumes = []
+        for surfacetag in surfaces:
+            result = kernel.extrude([(2, surfacetag)], 0, 0, thickness)
+            volumes.append(result[1][1])
+
+        if volumes:
+            patterned_tags.setdefault(layer_name, []).extend(volumes)
+
+    kernel.synchronize()
+    return patterned_tags
+
+
 def extract_pec_polygons(component, gds_layer: tuple[int, int]) -> list:
     """Extract polygons from an arbitrary GDS layer on a component.
 
@@ -677,6 +756,7 @@ def add_pec_blocks(
 def build_entities(
     metal_tags: dict,
     dielectric_tags: dict,
+    patterned_dielectric_tags: dict | None,
     port_tags: dict,
     port_info: list,
     pec_block_tags: dict | None = None,
@@ -687,12 +767,14 @@ def build_entities(
     Mesh-order convention (lower = higher priority, gets cut first):
         0  - conductor (2D PEC) surfaces and PEC block surfaces
         1  - via volumes (3D, higher priority than dielectrics) and port surfaces
-        2  - dielectrics (non-airbox volumes)
-        3  - airbox volume (lowest priority, carved by everything else)
+        2  - patterned dielectric volumes from stack layers
+        3  - background dielectric boxes (non-airbox volumes)
+        4  - airbox volume (lowest priority, carved by everything else)
 
     Args:
         metal_tags: from ``add_metals()``
         dielectric_tags: from ``add_dielectrics()``
+        patterned_dielectric_tags: from ``add_patterned_dielectrics()``
         port_tags: from ``add_ports()``
         port_info: metadata list from ``add_ports()``
         pec_block_tags: from ``add_pec_blocks()``, optional
@@ -827,8 +909,19 @@ def build_entities(
             )
 
     # --- Dielectric volumes (dim=3) ---
+    if patterned_dielectric_tags:
+        for layer_name, vol_tags in patterned_dielectric_tags.items():
+            entities.append(
+                Entity(
+                    name=layer_name,
+                    dim=3,
+                    mesh_order=2,
+                    tags=vol_tags,
+                )
+            )
+
     for material, vol_tags in dielectric_tags.items():
-        order = 3 if material == "airbox" else 2
+        order = 4 if material == "airbox" else 3
         entities.append(
             Entity(
                 name=material,

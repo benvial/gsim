@@ -20,6 +20,7 @@ from .geometry import (
     GeometryData,
     add_dielectrics,
     add_metals,
+    add_patterned_dielectrics,
     add_pec_blocks,
     add_ports,
     build_entities,
@@ -256,11 +257,21 @@ def generate_mesh(
             kernel, geometry, stack, margin_x, margin_y, air_margin
         )
 
+        logger.info("Adding patterned dielectric layers...")
+        patterned_dielectric_tags = add_patterned_dielectrics(kernel, geometry, stack)
+
+        all_dielectric_tags = {
+            name: list(tags) for name, tags in dielectric_tags.items()
+        }
+        for layer_name, vol_tags in patterned_dielectric_tags.items():
+            all_dielectric_tags.setdefault(layer_name, []).extend(vol_tags)
+
         # Build entities and run boolean pipeline
         logger.info("Running boolean pipeline...")
         entities = build_entities(
             metal_tags,
             dielectric_tags,
+            patterned_dielectric_tags,
             port_tags,
             port_info,
             pec_block_tags=pec_block_tags or None,
@@ -273,7 +284,7 @@ def generate_mesh(
         groups = assign_physical_groups(
             kernel,
             metal_tags,
-            dielectric_tags,
+            all_dielectric_tags,
             port_tags,
             port_info,
             entities,

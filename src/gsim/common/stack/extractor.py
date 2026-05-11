@@ -331,6 +331,8 @@ def extract_layer_stack(
     air_below: float = 0.0,
     boundary_margin: float = 30.0,
     include_substrate: bool = False,
+    add_oxide_dielectric: bool = True,
+    add_passivation_dielectric: bool = True,
 ) -> LayerStack:
     """Extract layer stack from a gdsfactory LayerStack.
 
@@ -343,6 +345,10 @@ def extract_layer_stack(
         air_below: Height of air box below substrate/oxide in um (default: 0)
         boundary_margin: Lateral margin from GDS bbox in um (default: 30)
         include_substrate: Whether to include lossy substrate (default: False)
+        add_oxide_dielectric: Add synthetic oxide background dielectric region.
+            Set False to rely on dielectric regions/layers provided by the PDK.
+        add_passivation_dielectric: Add synthetic passivation dielectric above the
+            highest stack layer. Set False to rely on PDK-provided dielectrics.
 
     Returns:
         LayerStack object for Palace simulation
@@ -416,32 +422,36 @@ def extract_layer_stack(
     else:
         oxide_zmin = -substrate_thickness
 
-    stack.dielectrics.append(
-        {
-            "name": "oxide",
-            "zmin": oxide_zmin,
-            "zmax": z_max_overall,
-            "material": "SiO2",
-        }
-    )
+    if add_oxide_dielectric:
+        stack.dielectrics.append(
+            {
+                "name": "oxide",
+                "zmin": oxide_zmin,
+                "zmax": z_max_overall,
+                "material": "SiO2",
+            }
+        )
 
-    passive_thickness = 0.4
-    stack.dielectrics.append(
-        {
-            "name": "passive",
-            "zmin": z_max_overall,
-            "zmax": z_max_overall + passive_thickness,
-            "material": "passive",
-        }
-    )
-    if "passive" not in stack.materials:
-        stack.materials["passive"] = MATERIALS_DB["passive"].to_dict()
+    air_box_zmin = z_max_overall
+    if add_passivation_dielectric:
+        passive_thickness = 0.4
+        stack.dielectrics.append(
+            {
+                "name": "passive",
+                "zmin": z_max_overall,
+                "zmax": z_max_overall + passive_thickness,
+                "material": "passive",
+            }
+        )
+        if "passive" not in stack.materials:
+            stack.materials["passive"] = MATERIALS_DB["passive"].to_dict()
+        air_box_zmin = z_max_overall + passive_thickness
 
     stack.dielectrics.append(
         {
             "name": "air_box",
-            "zmin": z_max_overall + passive_thickness,
-            "zmax": z_max_overall + passive_thickness + air_above,
+            "zmin": air_box_zmin,
+            "zmax": air_box_zmin + air_above,
             "material": "air",
         }
     )
@@ -462,6 +472,8 @@ def extract_layer_stack(
         "air_below": air_below,
         "substrate_thickness": substrate_thickness,
         "include_substrate": include_substrate,
+        "add_oxide_dielectric": add_oxide_dielectric,
+        "add_passivation_dielectric": add_passivation_dielectric,
     }
 
     return stack
