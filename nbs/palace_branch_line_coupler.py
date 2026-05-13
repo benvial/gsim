@@ -238,7 +238,6 @@ sim.set_stack(stack)
 
 # Configure via ports (Metal3 ground plane to TopMetal2 signal)
 for port in c.ports:
-    assert port.name is not None
     sim.add_port(port.name, from_layer="metal3", to_layer="topmetal2", geometry="via")
 
 # Configure driven simulation (frequency sweep for S-parameters)

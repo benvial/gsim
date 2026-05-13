@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
@@ -93,23 +93,7 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
     # Cloud run (narrowed return type)
     # -------------------------------------------------------------------------
 
-    @overload
     def run(
-        self,
-        parent_dir: str | Path | None = ...,
-        *,
-        verbose: Literal["quiet", "status", "full"] = ...,
-        wait: Literal[True] = ...,
-    ) -> dict[str, Path]: ...
-    @overload
-    def run(
-        self,
-        parent_dir: str | Path | None = ...,
-        *,
-        verbose: Literal["quiet", "status", "full"] = ...,
-        wait: Literal[False],
-    ) -> str: ...
-    def run(  # ty: ignore[invalid-method-override]
         self,
         parent_dir: str | Path | None = None,
         *,
