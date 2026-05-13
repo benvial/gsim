@@ -30,6 +30,7 @@
 import gdsfactory as gf
 from ihp import LAYER, PDK
 
+from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
 PDK.activate()
@@ -67,7 +68,12 @@ def gsg_electrode(
 sim = DrivenSim()
 sim.set_output_dir("./palace-sim-cpw-fields")
 sim.set_geometry(gsg_electrode())
-sim.set_stack(include_substrate=True, substrate_thickness=2.0)
+
+stack = get_stack(
+    include_substrate=True, substrate_thickness=2.0
+)  # auto-detects active PDK
+sim.set_stack(stack)
+
 sim.add_cpw_port("o1", layer="topmetal2", s_width=20, gap_width=15)
 sim.add_cpw_port("o2", layer="topmetal2", s_width=20, gap_width=15)
 

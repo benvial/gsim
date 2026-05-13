@@ -90,12 +90,15 @@ cc
 # ### Configure simulation
 
 # %% papermill={"duration": 0.479072, "end_time": "2026-04-17T08:35:47.158023", "exception": false, "start_time": "2026-04-17T08:35:46.678951", "status": "completed"}
+from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
 sim = DrivenSim()
 sim.set_output_dir("./palace-sim-cpw-waveport")
 sim.set_geometry(c)
-sim.set_stack(substrate_thickness=2.0, air_above=100.0, air_below=100.0)
+
+stack = get_stack(air_above=100.0, air_below=100.0)  # auto-detects active PDK
+sim.set_stack(stack)
 
 # Wave ports — max_size fills the full domain boundary
 sim.add_wave_port("o1", layer="topmetal2", max_size=True, mode=1, excited=True)

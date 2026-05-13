@@ -47,10 +47,13 @@ c
 
 # %% papermill={"duration": 0.06344, "end_time": "2026-04-22T12:34:55.648999", "exception": false, "start_time": "2026-04-22T12:34:55.585559", "status": "completed"}
 from gsim import meep
+from gsim.common.stack import get_stack
+
+stack = get_stack()  # auto-detects active PDK
 
 sim = meep.Simulation()
 
-sim.geometry(component=c)
+sim.geometry(component=c, stack=stack)
 sim.materials = {"si": 3.47, "SiO2": 1.44}
 sim.source(port="o1", wavelength=1.55, wavelength_span=0.01)
 sim.monitors = ["o1", "o2", "o3"]

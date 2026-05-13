@@ -15,8 +15,8 @@
 # %%
 import gdsfactory as gf
 from qpdk import PDK, cells
-from qpdk.cells.helpers import apply_additive_metals
 from qpdk.tech import LAYER
+from qpdk.utils import apply_additive_metals
 
 PDK.activate()
 
@@ -26,7 +26,7 @@ def transmon_component() -> gf.Component:
     """Create a qubit with resonator layout."""
     c = gf.Component()
 
-    ref = c << cells.qubit_with_resonator(
+    ref = c << cells.transmon_with_resonator(
         qubit="double_pad_transmon_with_bbox",
         resonator_length=5000.0,
         resonator_meanders=5,

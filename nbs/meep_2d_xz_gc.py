@@ -47,10 +47,13 @@ c
 
 # %% papermill={"duration": 0.052953, "end_time": "2026-04-22T12:26:10.484942", "exception": false, "start_time": "2026-04-22T12:26:10.431989", "status": "completed"}
 from gsim import meep
+from gsim.common.stack import get_stack
+
+stack = get_stack()  # auto-detects active PDK
 
 sim = meep.Simulation()
 
-sim.geometry(component=c)
+sim.geometry(component=c, stack=stack)
 sim.materials = {"si": 3.47, "SiO2": 1.44}
 
 sim.solver(resolution=25, is_3d=False, plane="xz", save_animation=True)

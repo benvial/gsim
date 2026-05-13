@@ -90,12 +90,15 @@ cc
 # ### Configure simulation
 
 # %% papermill={"duration": 0.592297, "end_time": "2026-04-18T15:49:13.814782", "exception": false, "start_time": "2026-04-18T15:49:13.222485", "status": "completed"}
+from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
 sim = DrivenSim()
 sim.set_output_dir("./palace-sim-cpw-lumped")
 sim.set_geometry(c)
-sim.set_stack(substrate_thickness=2.0, air_above=100.0, air_below=100.0)
+
+stack = get_stack(air_above=100.0, air_below=100.0)  # auto-detects active PDK
+sim.set_stack(stack)
 
 # CPW lumped ports — offset defaults to length/2 (flush with conductor edge)
 sim.add_cpw_port("o1", layer="topmetal2", s_width=20, gap_width=15, excited=True)

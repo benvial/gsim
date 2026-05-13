@@ -95,6 +95,7 @@ cc
 # ### Configure and run simulation with DrivenSim
 
 # %% papermill={"duration": 0.467892, "end_time": "2026-04-04T05:08:48.688108", "exception": false, "start_time": "2026-04-04T05:08:48.220216", "status": "completed"}
+from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
 # Create simulation object
@@ -107,7 +108,8 @@ sim_lumped.set_output_dir("./palace-sim-cpw")
 sim_lumped.set_geometry(c)
 
 # Configure layer stack from active PDK
-sim_lumped.set_stack(substrate_thickness=2.0, air_above=100.0, air_below=100.0)
+stack = get_stack(air_above=100.0, air_below=100.0)  # auto-detects active PDK
+sim_lumped.set_stack(stack)
 
 # Configure left CPW port (single port at signal center)
 sim_lumped.add_cpw_port(
@@ -150,8 +152,8 @@ sim_waveport.set_output_dir("./palace-sim-cpw-waveport")
 # Set the component geometry
 sim_waveport.set_geometry(c)
 
-# Configure layer stack from active PDK
-sim_waveport.set_stack(substrate_thickness=2.0, air_above=100.0, air_below=100.0)
+# Reuse the same stack from active PDK
+sim_waveport.set_stack(stack)
 
 # Configure left CPW port (single port at signal center)
 sim_waveport.add_wave_port("o1", layer="topmetal2", max_size=True, mode=1, excited=True)

@@ -228,6 +228,7 @@ cc
 # ### Configure and run simulation with DrivenSim
 
 # %% papermill={"duration": 0.494087, "end_time": "2026-04-18T15:52:01.596676", "exception": false, "start_time": "2026-04-18T15:52:01.102589", "status": "completed"}
+from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
 # Create simulation object
@@ -240,7 +241,8 @@ sim.set_output_dir("./palace-sim-cpw")
 sim.set_geometry(c)
 
 # Configure layer stack from active PDK
-sim.set_stack(substrate_thickness=2.0, air_above=300.0)
+stack = get_stack(air_above=300.0)  # auto-detects active PDK
+sim.set_stack(stack)
 
 # Configure left CPW port (single port at signal center)
 sim.add_cpw_port("o1", layer="topmetal2", s_width=20, gap_width=15)

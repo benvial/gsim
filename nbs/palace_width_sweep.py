@@ -39,9 +39,12 @@ widths = np.arange(2, 21, 4)
 import gdsfactory as gf
 from ihp import LAYER, PDK, cells
 
+from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
 PDK.activate()
+
+stack = get_stack(air_above=300.0)  # auto-detects active PDK
 
 sims = []
 
@@ -59,7 +62,7 @@ for w in widths:
     sim = DrivenSim()
     sim.set_output_dir(f"./palace-sim-w{w:.1f}")
     sim.set_geometry(c)
-    sim.set_stack(substrate_thickness=2.0, air_above=300.0)
+    sim.set_stack(stack)
 
     for port in c.ports:
         assert port.name is not None

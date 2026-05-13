@@ -49,6 +49,7 @@ cc
 # ### Configure and run simulation with DrivenSim
 
 # %% papermill={"duration": 0.473096, "end_time": "2026-04-18T15:42:28.763192", "exception": false, "start_time": "2026-04-18T15:42:28.290096", "status": "completed"}
+from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
 # Create simulation object
@@ -61,7 +62,8 @@ sim.set_output_dir("./palace-sim-microstrip")
 sim.set_geometry(c)
 
 # Configure layer stack from active PDK
-sim.set_stack(substrate_thickness=2.0, air_above=300.0)
+stack = get_stack(air_above=300.0)  # auto-detects active PDK
+sim.set_stack(stack)
 
 # Configure via ports (Metal1 ground plane to TopMetal2 signal)
 for port in c.ports:

@@ -220,6 +220,7 @@ cc
 # ### Configure and run simulation with DrivenSim
 
 # %% papermill={"duration": 0.482865, "end_time": "2026-04-04T06:14:37.374923", "exception": false, "start_time": "2026-04-04T06:14:36.892058", "status": "completed"}
+from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
 # Create simulation object
@@ -232,7 +233,8 @@ sim.set_output_dir("./palace-sim-branch-coupler")
 sim.set_geometry(c)
 
 # Configure layer stack from active PDK
-sim.set_stack(substrate_thickness=2.0, air_above=300.0)
+stack = get_stack(air_above=300.0)  # auto-detects active PDK
+sim.set_stack(stack)
 
 # Configure via ports (Metal3 ground plane to TopMetal2 signal)
 for port in c.ports:
