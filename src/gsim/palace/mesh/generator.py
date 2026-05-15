@@ -30,7 +30,7 @@ from .groups import assign_physical_groups
 
 if TYPE_CHECKING:
     from gsim.common.stack import LayerStack
-    from gsim.palace.models import DrivenConfig, EigenmodeConfig
+    from gsim.palace.models import DrivenConfig, EigenmodeConfig, NumericalConfig
     from gsim.palace.models.pec import PECBlockConfig
     from gsim.palace.ports.config import PalacePort
 
@@ -218,6 +218,7 @@ def generate_mesh(
     simulation_type: str = "driven",
     driven_config: DrivenConfig | None = None,
     eigenmode_config: EigenmodeConfig | None = None,
+    numerical_config: NumericalConfig | None = None,
     write_config: bool = True,
     planar_conductors: bool = False,
     pec_blocks: list[PECBlockConfig] | None = None,
@@ -254,6 +255,7 @@ def generate_mesh(
         simulation_type: Type of simulation (driven, eigenmode or electrostatics)
         driven_config: Optional DrivenConfig for frequency sweep settings
         eigenmode_config: Optional EigenmodeConfig for eigenmode problems
+        numerical_config: Optional NumericalConfig for solver settings
         write_config: Whether to write config.json (default True)
         pec_blocks: PEC configuration
         planar_conductors: If True, treat conductors as 2D PEC surfaces
@@ -445,6 +447,7 @@ def generate_mesh(
                 simulation_type,
                 driven_config,
                 eigenmode_config,
+                numerical_config,
                 absorbing_boundary,
             )
 

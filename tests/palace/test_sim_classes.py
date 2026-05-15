@@ -162,9 +162,20 @@ class TestMixinMethods:
         """Test set_numerical works on all sim classes."""
         for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
             sim = cls()
-            sim.set_numerical(order=3, tolerance=1e-8)
+            sim.set_numerical(
+                order=3,
+                tolerance=1e-8,
+                max_iterations=1000,
+                solver_type="MUMPS",
+                preconditioner="AMS",
+                device="CPU",
+            )
             assert sim.numerical.order == 3
             assert sim.numerical.tolerance == 1e-8
+            assert sim.numerical.max_iterations == 1000
+            assert sim.numerical.solver_type == "MUMPS"
+            assert sim.numerical.preconditioner == "AMS"
+            assert sim.numerical.device == "CPU"
 
     def test_mesh_requires_output_dir(self):
         """Test mesh() raises if output_dir not set."""

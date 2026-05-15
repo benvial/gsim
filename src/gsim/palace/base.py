@@ -986,6 +986,7 @@ class PalaceSimMixin:
             simulation_type=self.simulation_type,
             driven_config=driven_config,
             eigenmode_config=self.eigenmode,
+            numerical_config=self.numerical,
             write_config=write_config,
             planar_conductors=mesh_config.planar_conductors,
             pec_blocks=self._pec_blocks or None,
@@ -1145,6 +1146,7 @@ class PalaceSimMixin:
                 simulation_type=self.simulation_type,
                 driven_config=self.driven,
                 eigenmode_config=self.eigenmode,
+                numerical_config=self.numerical,
                 planar_conductors=mesh_config.planar_conductors,
                 pec_blocks=self._pec_blocks or None,
                 absorbing_boundary=self.absorbing_boundary,
@@ -1312,8 +1314,21 @@ class PalaceSimMixin:
 
         return result
 
-    def write_config(self) -> Path:
+    def write_config(
+        self,
+        *,
+        photonic: bool = False,
+        photononic: bool | None = None,
+    ) -> Path:
         """Write Palace config.json after mesh generation.
+
+        By default this validates that the generated mesh/config include
+        conductor boundaries required for EM conductor solves. For photonic
+        simulations, pass ``photonic=True`` to skip this validation.
+
+        Args:
+            photonic: Skip conductor-oriented mesh validation when ``True``.
+            photononic: Deprecated alias for ``photonic``.
 
         Returns:
             Path to the generated config.json
@@ -1324,8 +1339,16 @@ class PalaceSimMixin:
         Example:
             >>> result = sim.mesh("./sim")
             >>> config_path = sim.write_config()
+            >>> # Photonic workflow without conductor boundaries
+            >>> config_path = sim.write_config(photonic=True)
         """
         from gsim.palace.mesh.generator import write_config as gen_write_config
+
+        if photononic is not None:
+            logger.warning(
+                "write_config(photononic=...) is deprecated; use photonic=..."
+            )
+            photonic = photonic or photononic
 
         if self._last_mesh_result is None:
             raise ValueError("No mesh result. Call mesh() first.")
@@ -1344,14 +1367,16 @@ class PalaceSimMixin:
             simulation_type=self.simulation_type,
             eigenmode_config=self.eigenmode,
             driven_config=self.driven,
+            numerical_config=self.numerical,
             absorbing_boundary=self.absorbing_boundary,
             hints=self._hints,
         )
 
-        # Validate mesh and config
-        validation = self.validate_mesh()
-        if not validation.valid:
-            raise ValueError(f"Mesh validation failed:\n{validation}")
+        # Validate mesh and config unless this is a photonic workflow.
+        if not photonic:
+            validation = self.validate_mesh()
+            if not validation.valid:
+                raise ValueError(f"Mesh validation failed:\n{validation}")
 
         return config_path
 
