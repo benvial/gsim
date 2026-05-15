@@ -451,7 +451,11 @@ def add_dielectrics(
     stack: LayerStack,
     margin_x: float,
     margin_y: float | None = None,
-    air_margin: float = 0.0,
+    *,
+    airbox_margin_x: float | None = None,
+    airbox_margin_y: float | None = None,
+    airbox_margin_above: float | None = None,
+    airbox_margin_below: float | None = None,
 ) -> dict:
     """Add dielectric volumes to gmsh.
 
@@ -467,10 +471,10 @@ def add_dielectrics(
         margin_x: X margin around design (um). Also used as Y margin
             when *margin_y* is not provided (backward compat).
         margin_y: Y margin around design (um). Defaults to margin_x.
-        air_margin: Extra margin for the surrounding airbox (um).
-            When > 0, an enclosing airbox is created.  The boolean
-            pipeline will carve the dielectrics out of it
-            automatically.
+        airbox_margin_x: Airbox x-margin around component bbox (um).
+        airbox_margin_y: Airbox y-margin around component bbox (um).
+        airbox_margin_above: Airbox z extension above stack envelope (um).
+        airbox_margin_below: Airbox z extension below stack envelope (um).
 
     Returns:
         Dict with material_name -> list of volume_tags
@@ -480,7 +484,8 @@ def add_dielectrics(
 
     dielectric_tags: dict[str, list[int]] = {}
 
-    xmin, ymin, xmax, ymax = geometry.bbox
+    xmin0, ymin0, xmax0, ymax0 = geometry.bbox
+    xmin, ymin, xmax, ymax = xmin0, ymin0, xmax0, ymax0
     xmin -= margin_x
     ymin -= margin_y
     xmax += margin_x
@@ -492,8 +497,8 @@ def add_dielectrics(
     for dielectric in stack.dielectrics:
         material = dielectric["material"]
 
-        # When building an explicit airbox, skip the dielectric air layer
-        if material == "air" and air_margin > 0:
+        # Palace air is modeled as one explicit airbox volume.
+        if str(material).lower() == "air":
             continue
 
         d_zmin = dielectric["zmin"]
@@ -515,16 +520,49 @@ def add_dielectrics(
         )
         dielectric_tags[material].append(box_tag)
 
-    # Surrounding airbox (boolean pipeline handles the overlap)
-    if air_margin > 0:
+    # Resolve stack z envelope even if dielectric list is sparse.
+    if not (math.isfinite(z_min_all) and math.isfinite(z_max_all)):
+        for layer in stack.layers.values():
+            z_min_all = min(z_min_all, layer.zmin)
+            z_max_all = max(z_max_all, layer.zmax)
+
+    has_explicit_airbox = all(
+        value is not None
+        for value in (
+            airbox_margin_x,
+            airbox_margin_y,
+            airbox_margin_above,
+            airbox_margin_below,
+        )
+    )
+
+    # Explicit single airbox (boolean pipeline handles overlap/subtraction).
+    if has_explicit_airbox:
+        if not (math.isfinite(z_min_all) and math.isfinite(z_max_all)):
+            raise ValueError(
+                "Cannot create airbox because stack z extents could not be resolved"
+            )
+
+        airbox_x = airbox_margin_x
+        airbox_y = airbox_margin_y
+        airbox_above = airbox_margin_above
+        airbox_below = airbox_margin_below
+        if (
+            airbox_x is None
+            or airbox_y is None
+            or airbox_above is None
+            or airbox_below is None
+        ):
+            raise ValueError("Explicit airbox margins must all be provided")
+
         airbox_tag = gmsh_utils.create_box(
             kernel,
-            xmin - air_margin,
-            ymin - air_margin,
-            z_min_all - air_margin,
-            xmax + air_margin,
-            ymax + air_margin,
-            z_max_all + air_margin,
+            xmin0 - float(airbox_x),
+            ymin0 - float(airbox_y),
+            z_min_all - float(airbox_below),
+            xmax0 + float(airbox_x),
+            ymax0 + float(airbox_y),
+            z_max_all + float(airbox_above),
         )
         dielectric_tags["airbox"] = [airbox_tag]
 
@@ -945,11 +983,17 @@ def build_entities(
                 )
             )
 
+    patterned_names = set(patterned_dielectric_tags or {})
     for material, vol_tags in dielectric_tags.items():
-        order = 4 if material == "airbox" else 3
+        # If a patterned dielectric entity already uses this name, prefer the
+        # patterned volume entity to avoid name collisions in group assignment.
+        material_name = str(material)
+        if material_name in patterned_names:
+            continue
+        order = 4 if material_name == "airbox" else 3
         entities.append(
             Entity(
-                name=material,
+                name=material_name,
                 dim=3,
                 mesh_order=order,
                 tags=vol_tags,

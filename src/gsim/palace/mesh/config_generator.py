@@ -94,7 +94,7 @@ def generate_palace_config(
         "Type": "Default",
         "KSPType": "GMRES",
         "Tol": 1e-6,
-        "MaxIts": 400,
+        "MaxIts": 1000,
     }
     # TODO: Add MUMPS support
     # linear_conf: dict[str, object] = {

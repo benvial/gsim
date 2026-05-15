@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from gdsfactory.technology import LayerLevel
 
-from gsim.common.stack.extractor import Layer, extract_layer_stack
+from gsim.common.stack.extractor import Layer, LayerStack, extract_layer_stack
 from gsim.palace.mesh.geometry import build_entities
 
 
@@ -32,19 +32,19 @@ def test_extract_layer_stack_can_disable_synthetic_dielectrics():
     )
 
     names = [d["name"] for d in stack.dielectrics]
-    assert names == ["air_box"]
+    assert names == []
     assert stack.simulation["add_oxide_dielectric"] is False
     assert stack.simulation["add_passivation_dielectric"] is False
 
 
 def test_extract_layer_stack_defaults_keep_synthetic_dielectrics():
-    """Defaults preserve legacy oxide/passive/air-box regions."""
+    """Defaults preserve synthetic oxide/passive dielectric regions."""
     stack = extract_layer_stack(_fake_gf_stack(), pdk_name="test-pdk")
 
     names = [d["name"] for d in stack.dielectrics]
     assert "oxide" in names
     assert "passive" in names
-    assert "air_box" in names
+    assert "air_box" not in names
 
 
 def test_build_entities_prioritizes_patterned_dielectrics_over_background_boxes():
@@ -60,7 +60,7 @@ def test_build_entities_prioritizes_patterned_dielectrics_over_background_boxes(
             layer_type="via",
         )
     }
-    stack = SimpleNamespace(layers=stack_layers)
+    stack = LayerStack(layers=stack_layers)
 
     metal_tags = {
         "via1": {

@@ -209,7 +209,10 @@ def generate_mesh(
     max_mesh_size: float = 300.0,
     margin_x: float = 50.0,
     margin_y: float = 50.0,
-    air_margin: float = 50.0,
+    airbox_margin_x: float | None = None,
+    airbox_margin_y: float | None = None,
+    airbox_margin_above: float | None = None,
+    airbox_margin_below: float | None = None,
     fmax: float = 100e9,
     show_gui: bool = False,
     simulation_type: str = "driven",
@@ -242,7 +245,10 @@ def generate_mesh(
         max_mesh_size: Max mesh size in air/dielectric (um)
         margin_x: X-axis margin around design (um)
         margin_y: Y-axis margin around design (um)
-        air_margin: Air box margin (um)
+        airbox_margin_x: Airbox x-margin around the component bbox (um)
+        airbox_margin_y: Airbox y-margin around the component bbox (um)
+        airbox_margin_above: Airbox z extension above stack envelope (um)
+        airbox_margin_below: Airbox z extension below stack envelope (um)
         fmax: Max frequency for config (Hz)
         show_gui: Show gmsh GUI during meshing
         simulation_type: Type of simulation (driven, eigenmode or electrostatics)
@@ -315,7 +321,15 @@ def generate_mesh(
 
         logger.info("Adding dielectrics...")
         dielectric_tags = add_dielectrics(
-            kernel, geometry, stack, margin_x, margin_y, air_margin
+            kernel,
+            geometry,
+            stack,
+            margin_x,
+            margin_y,
+            airbox_margin_x=airbox_margin_x,
+            airbox_margin_y=airbox_margin_y,
+            airbox_margin_above=airbox_margin_above,
+            airbox_margin_below=airbox_margin_below,
         )
 
         logger.info("Adding patterned dielectric layers...")

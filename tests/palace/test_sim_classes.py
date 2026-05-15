@@ -125,12 +125,28 @@ class TestMixinMethods:
             assert sim.output_dir.exists()
 
     def test_set_stack(self):
-        """Test set_stack works on all sim classes."""
+        """Test set_stack no longer stores airbox parameters."""
         for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
             sim = cls()
             sim.set_stack(air_above=500.0, air_below=25.0)
-            assert sim._stack_kwargs["air_above"] == 500.0
-            assert sim._stack_kwargs["air_below"] == 25.0
+            assert "air_above" not in sim._stack_kwargs
+            assert "air_below" not in sim._stack_kwargs
+
+    def test_set_airbox(self):
+        """Test set_airbox works on all sim classes."""
+        for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
+            sim = cls()
+            sim.set_airbox(
+                margin_x=120.0,
+                margin_y=140.0,
+                margin_above=180.0,
+                margin_below=20.0,
+            )
+            assert sim._airbox_config is not None
+            assert sim._airbox_config["margin_x"] == 120.0
+            assert sim._airbox_config["margin_y"] == 140.0
+            assert sim._airbox_config["margin_above"] == 180.0
+            assert sim._airbox_config["margin_below"] == 20.0
 
     def test_set_material(self):
         """Test set_material works on all sim classes."""

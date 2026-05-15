@@ -61,12 +61,10 @@ class TestMeshConfig:
             refined_mesh_size=3.0,
             max_mesh_size=200.0,
             margin=75.0,
-            airbox_margin=150.0,
         )
         assert config.refined_mesh_size == 3.0
         assert config.max_mesh_size == 200.0
         assert config.margin == 75.0
-        assert config.airbox_margin == 150.0
 
     def test_curve_fit_overrides(self):
         """Test custom curve-fit settings."""

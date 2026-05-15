@@ -254,12 +254,10 @@ class LayerStack(BaseModel):
                         f"zmax={z_max_dielectric:.4f}"
                     )
 
-        # 4. Check we have at least substrate, oxide, and air
+        # 4. Check commonly expected dielectric regions
         dielectric_names = {d["name"] for d in self.dielectrics}
         if "substrate" not in dielectric_names:
             warnings.append("No 'substrate' dielectric region defined")
-        if "air_box" not in dielectric_names:
-            warnings.append("No 'air_box' dielectric region defined")
 
         valid = len(errors) == 0
         return ValidationResult(valid=valid, errors=errors, warnings=warnings)
@@ -327,8 +325,6 @@ def extract_layer_stack(
     gf_layer_stack: GfLayerStack,
     pdk_name: str = "unknown",
     substrate_thickness: float = 2.0,
-    air_above: float = 5.0,
-    air_below: float = 0.0,
     boundary_margin: float = 30.0,
     include_substrate: bool = False,
     add_oxide_dielectric: bool = True,
@@ -340,9 +336,6 @@ def extract_layer_stack(
         gf_layer_stack: gdsfactory LayerStack object
         pdk_name: Name of the PDK (for documentation)
         substrate_thickness: Thickness of substrate in um (default: 2.0)
-        air_above: Height of air box above top metal in um (default: 5).
-            Palace RF sims should override to 200+ for far-field radiation.
-        air_below: Height of air box below substrate/oxide in um (default: 0)
         boundary_margin: Lateral margin from GDS bbox in um (default: 30)
         include_substrate: Whether to include lossy substrate (default: False)
         add_oxide_dielectric: Add synthetic oxide background dielectric region.
@@ -432,7 +425,6 @@ def extract_layer_stack(
             }
         )
 
-    air_box_zmin = z_max_overall
     if add_passivation_dielectric:
         passive_thickness = 0.4
         stack.dielectrics.append(
@@ -445,31 +437,9 @@ def extract_layer_stack(
         )
         if "passive" not in stack.materials:
             stack.materials["passive"] = MATERIALS_DB["passive"].to_dict()
-        air_box_zmin = z_max_overall + passive_thickness
-
-    stack.dielectrics.append(
-        {
-            "name": "air_box",
-            "zmin": air_box_zmin,
-            "zmax": air_box_zmin + air_above,
-            "material": "air",
-        }
-    )
-
-    if air_below > 0:
-        stack.dielectrics.append(
-            {
-                "name": "air_box_bottom",
-                "zmin": -substrate_thickness - air_below,
-                "zmax": -substrate_thickness,
-                "material": "air",
-            }
-        )
 
     stack.simulation = {
         "boundary_margin": boundary_margin,
-        "air_above": air_above,
-        "air_below": air_below,
         "substrate_thickness": substrate_thickness,
         "include_substrate": include_substrate,
         "add_oxide_dielectric": add_oxide_dielectric,

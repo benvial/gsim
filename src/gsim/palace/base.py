@@ -62,6 +62,7 @@ class PalaceSimMixin:
     _stack_kwargs: dict[str, Any]
     _pec_blocks: list
     _hints: dict[str, Any]
+    _airbox_config: dict[str, float] | None
     absorbing_boundary: bool
 
     # -------------------------------------------------------------------------
@@ -122,8 +123,8 @@ class PalaceSimMixin:
         stack: LayerStack | None = None,
         *,
         yaml_path: str | Path | None = None,
-        air_above: float = 200.0,
-        air_below: float = 0.0,
+        air_above: float | None = None,
+        air_below: float | None = None,
         substrate_thickness: float = 2.0,
         include_substrate: bool = False,
         add_oxide_dielectric: bool = True,
@@ -134,9 +135,9 @@ class PalaceSimMixin:
 
         Three modes of use:
 
-        1. **Active PDK** (default — auto-detects IHP, QPDK, etc.)::
+         1. **Active PDK** (default — auto-detects IHP, QPDK, etc.)::
 
-               sim.set_stack(air_above=300.0, substrate_thickness=2.0)
+             sim.set_stack(substrate_thickness=2.0)
 
         2. **YAML file**::
 
@@ -149,8 +150,8 @@ class PalaceSimMixin:
         Args:
             stack: Custom gsim LayerStack (bypasses PDK extraction).
             yaml_path: Path to custom YAML stack file.
-            air_above: Air box height above top metal in um.
-            air_below: Air box height below substrate/oxide in um.
+            air_above: Deprecated and ignored. Use set_airbox().
+            air_below: Deprecated and ignored. Use set_airbox().
             substrate_thickness: Thickness below z=0 in um.
             include_substrate: Include lossy silicon substrate.
             add_oxide_dielectric: Add synthetic oxide background dielectric.
@@ -158,7 +159,7 @@ class PalaceSimMixin:
             **kwargs: Additional args passed to extract_layer_stack.
 
         Example:
-            >>> sim.set_stack(air_above=300.0, substrate_thickness=2.0)
+            >>> sim.set_stack(substrate_thickness=2.0)
         """
         if stack is not None:
             # Directly use a pre-built LayerStack — skip lazy resolution
@@ -166,10 +167,15 @@ class PalaceSimMixin:
             self._stack_kwargs = {"_prebuilt": True}
             return
 
+        if air_above is not None or air_below is not None:
+            logger.warning(
+                "set_stack(air_above/air_below) is deprecated and ignored. "
+                "Use set_airbox(margin_x=..., margin_y=..., "
+                "margin_above=..., margin_below=...)."
+            )
+
         self._stack_kwargs = {
             "yaml_path": yaml_path,
-            "air_above": air_above,
-            "air_below": air_below,
             "substrate_thickness": substrate_thickness,
             "include_substrate": include_substrate,
             "add_oxide_dielectric": add_oxide_dielectric,
@@ -178,6 +184,40 @@ class PalaceSimMixin:
         }
         # Stack will be resolved lazily during mesh() or simulate()
         self.stack = None
+
+    def set_airbox(
+        self,
+        *,
+        margin_x: float,
+        margin_y: float | None = None,
+        margin_above: float,
+        margin_below: float,
+    ) -> None:
+        """Set explicit airbox margins for Palace meshing.
+
+        This is the single source of truth for airbox creation.
+
+        Args:
+            margin_x: Lateral x margin around component bbox (um).
+            margin_y: Lateral y margin around component bbox (um).
+                Uses margin_x when omitted.
+            margin_above: Airbox z extension above the stack envelope (um).
+            margin_below: Airbox z extension below the stack envelope (um).
+        """
+        if margin_x < 0:
+            raise ValueError("margin_x must be >= 0")
+        if margin_y is not None and margin_y < 0:
+            raise ValueError("margin_y must be >= 0")
+        if margin_above < 0 or margin_below < 0:
+            raise ValueError("margin_above and margin_below must be >= 0")
+
+        resolved_margin_y = margin_x if margin_y is None else margin_y
+        self._airbox_config = {
+            "margin_x": margin_x,
+            "margin_y": resolved_margin_y,
+            "margin_above": margin_above,
+            "margin_below": margin_below,
+        }
 
     # -------------------------------------------------------------------------
     # Material methods
@@ -322,6 +362,14 @@ class PalaceSimMixin:
         for name, props in self.materials.items():
             legacy_stack.materials[name] = props.to_dict()
 
+        # Keep stack free of synthetic air regions; Palace airboxes are
+        # generated explicitly from set_airbox().
+        legacy_stack.dielectrics = [
+            d
+            for d in legacy_stack.dielectrics
+            if str(d.get("material", "")).lower() != "air"
+        ]
+
         # Store the LayerStack
         self.stack = legacy_stack
 
@@ -455,7 +503,11 @@ class PalaceSimMixin:
         if margin_y is not None:
             mesh_config.margin_y = margin_y
         if airbox_margin is not None:
-            mesh_config.airbox_margin = airbox_margin
+            raise ValueError(
+                "airbox_margin has been removed from mesh()/preview(). "
+                "Use set_airbox(margin_x=..., margin_y=..., "
+                "margin_above=..., margin_below=...)."
+            )
         if fmax is not None:
             mesh_config.fmax = fmax
         if curve_fit_mode is not None:
@@ -553,7 +605,8 @@ class PalaceSimMixin:
         # Check absorbing boundary
         if not groups.get("boundary_surfaces", {}).get("absorbing"):
             warnings_list.append(
-                "No absorbing boundary found. This is expected if airbox_margin=0."
+                "No absorbing boundary found. "
+                "Configure set_airbox(...) for open boundaries."
             )
 
         # Validate config.json if it exists
@@ -907,6 +960,9 @@ class PalaceSimMixin:
 
         # Resolve stack
         stack = self._resolve_stack()
+        airbox_cfg = self._airbox_config or {}
+        domain_margin_x = airbox_cfg.get("margin_x", mesh_config.effective_margin_x)
+        domain_margin_y = airbox_cfg.get("margin_y", mesh_config.effective_margin_y)
 
         if verbose:
             logger.info("Generating mesh in %s", output_dir)
@@ -919,9 +975,12 @@ class PalaceSimMixin:
             model_name=model_name,
             refined_mesh_size=mesh_config.refined_mesh_size,
             max_mesh_size=mesh_config.max_mesh_size,
-            margin_x=mesh_config.effective_margin_x,
-            margin_y=mesh_config.effective_margin_y,
-            air_margin=mesh_config.airbox_margin,
+            margin_x=domain_margin_x,
+            margin_y=domain_margin_y,
+            airbox_margin_x=airbox_cfg.get("margin_x"),
+            airbox_margin_y=airbox_cfg.get("margin_y"),
+            airbox_margin_above=airbox_cfg.get("margin_above"),
+            airbox_margin_below=airbox_cfg.get("margin_below"),
             fmax=effective_fmax,
             show_gui=mesh_config.show_gui,
             simulation_type=self.simulation_type,
@@ -1002,7 +1061,7 @@ class PalaceSimMixin:
             margin: XY margin around design (um)
             margin_x: X-axis margin (um). Overrides margin for X.
             margin_y: Y-axis margin (um). Overrides margin for Y.
-            airbox_margin: Extra airbox around stack (um); 0 = disabled
+            airbox_margin: Deprecated. Use set_airbox().
             fmax: Max frequency for mesh sizing (Hz)
             planar_conductors: Treat conductors as 2D PEC surfaces
             show_gui: Show gmsh GUI for interactive preview
@@ -1062,6 +1121,10 @@ class PalaceSimMixin:
         # Get ports
         ports = self._get_ports_for_preview(stack)
 
+        airbox_cfg = self._airbox_config or {}
+        domain_margin_x = airbox_cfg.get("margin_x", mesh_config.effective_margin_x)
+        domain_margin_y = airbox_cfg.get("margin_y", mesh_config.effective_margin_y)
+
         # Generate mesh in temp directory
         with tempfile.TemporaryDirectory() as tmpdir:
             generate_mesh(
@@ -1071,9 +1134,12 @@ class PalaceSimMixin:
                 output_dir=tmpdir,
                 refined_mesh_size=mesh_config.refined_mesh_size,
                 max_mesh_size=mesh_config.max_mesh_size,
-                margin_x=mesh_config.effective_margin_x,
-                margin_y=mesh_config.effective_margin_y,
-                air_margin=mesh_config.airbox_margin,
+                margin_x=domain_margin_x,
+                margin_y=domain_margin_y,
+                airbox_margin_x=airbox_cfg.get("margin_x"),
+                airbox_margin_y=airbox_cfg.get("margin_y"),
+                airbox_margin_above=airbox_cfg.get("margin_above"),
+                airbox_margin_below=airbox_cfg.get("margin_below"),
                 fmax=mesh_config.fmax,
                 show_gui=True,
                 simulation_type=self.simulation_type,
@@ -1137,7 +1203,7 @@ class PalaceSimMixin:
             margin: XY margin around design (um), overrides preset
             margin_x: X-axis margin (um). Overrides margin for X.
             margin_y: Y-axis margin (um). Overrides margin for Y.
-            airbox_margin: Extra airbox around stack (um); 0 = disabled
+            airbox_margin: Deprecated. Use set_airbox().
             fmax: Max frequency for mesh sizing (Hz), overrides preset
             planar_conductors: Treat conductors as 2D PEC surfaces
             show_gui: Show gmsh GUI during meshing
@@ -1479,7 +1545,7 @@ class PalaceSimMixin:
             num_processes: Number of MPI processes (default: 1)
             num_threads: Number of OpenMP threads to use for OpenMP builds, default is 1
                 or the value of OMP_NUM_THREADS in the environment
-            verbose: Print progress messages
+            verbose: Print progress messages and stream Palace output in real time
 
         Returns:
             Parsed Palace result object (``SParams``) when ``port-S.csv`` is
@@ -1606,37 +1672,63 @@ class PalaceSimMixin:
             cmd.extend(["-nt", str(num_threads)])
         cmd.extend(["config.json"])
 
+        def _emit_info(msg: str, *args: object) -> None:
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(msg, *args)
+            else:
+                logger.warning(msg, *args)
+
+        def _emit_warning(msg: str, *args: object) -> None:
+            logger.warning(msg, *args)
+
         if verbose:
             if use_apptainer:
-                logger.info("Running Palace simulation in %s via Apptainer", output_dir)
+                _emit_info("Running Palace simulation in %s via Apptainer", output_dir)
             else:
-                logger.info("Running Palace simulation in %s directly", output_dir)
-            logger.info("Command: %s", " ".join(cmd))
-            logger.info("Processes: %d", num_processes)
+                _emit_info("Running Palace simulation in %s directly", output_dir)
+            _emit_info("Command: %s", " ".join(cmd))
+            _emit_info("Processes: %d", num_processes)
 
         # Run simulation
         try:
-            result = subprocess.run(  # noqa: S603
-                cmd,
-                cwd=output_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            if verbose:
+                streamed_lines: list[str] = []
+                with subprocess.Popen(  # noqa: S603
+                    cmd,
+                    cwd=output_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                ) as process:
+                    if process.stdout is not None:
+                        for line in process.stdout:
+                            line = line.rstrip("\n")
+                            streamed_lines.append(line)
+                            if line:
+                                _emit_info(line)
+                    returncode = process.wait()
 
-            # Log output if verbose
-            if verbose and result.stdout:
-                logger.info(result.stdout)
-            if verbose and result.stderr:
-                logger.warning(result.stderr)
-
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Palace simulation failed with return code {e.returncode}"
-            if e.stdout:
-                error_msg += f"\n\nStdout:\n{e.stdout}"
-            if e.stderr:
-                error_msg += f"\n\nStderr:\n{e.stderr}"
-            raise RuntimeError(error_msg) from e
+                if returncode != 0:
+                    tail = "\n".join(streamed_lines[-200:])
+                    error_msg = (
+                        f"Palace simulation failed with return code {returncode}"
+                    )
+                    if tail:
+                        error_msg += f"\n\nOutput (tail):\n{tail}"
+                    raise RuntimeError(error_msg)
+            else:
+                result = subprocess.run(  # noqa: S603
+                    cmd,
+                    cwd=output_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.stdout:
+                    logger.debug(result.stdout)
+                if result.stderr:
+                    _emit_warning(result.stderr)
         except FileNotFoundError as e:
             if use_apptainer:
                 raise RuntimeError(
@@ -1650,12 +1742,12 @@ class PalaceSimMixin:
             ) from e
 
         if verbose:
-            logger.info("Simulation completed successfully")
+            _emit_info("Simulation completed successfully")
 
         postpro_dir = output_dir / "output/palace/"
 
         if verbose:
-            logger.info("Results saved to %s", postpro_dir)
+            _emit_info("Results saved to %s", postpro_dir)
 
         files = {
             file.name: file

@@ -39,7 +39,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         >>>
         >>> sim = DrivenSim()
         >>> sim.set_geometry(component)
-        >>> sim.set_stack(air_above=300.0)
+        >>> sim.set_stack()
+        >>> sim.set_airbox(margin_x=120.0, margin_above=120.0, margin_below=20.0)
         >>> sim.add_cpw_port("o1", layer="topmetal2", s_width=10, gap_width=6)
         >>> sim.add_cpw_port("o2", layer="topmetal2", s_width=10, gap_width=6)
         >>> sim.set_driven(fmin=1e9, fmax=100e9, num_points=40)
@@ -89,6 +90,7 @@ class DrivenSim(PalaceSimMixin, BaseModel):
 
     # Stack configuration (stored as kwargs until resolved)
     _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _airbox_config: dict[str, float] | None = PrivateAttr(default=None)
     _pec_blocks: list = PrivateAttr(default_factory=list)
     _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
 
