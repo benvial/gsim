@@ -7,8 +7,8 @@ import pytest
 
 from gsim.common.stack import LayerStack
 from gsim.palace.mesh import MeshConfig
-from gsim.palace.mesh.geometry import GeometryData, add_dielectrics
 from gsim.palace.mesh import validation as mesh_validation
+from gsim.palace.mesh.geometry import GeometryData, add_dielectrics
 
 
 class TestMeshConfig:

@@ -49,8 +49,6 @@ _c
 # ### Inspect raw layers and apply additive metals
 
 # %%
-from gsim.common.polygon_utils import inspect_layers
-
 # inspect_layers(component, filename="transmon_raw_layers.png")
 
 # Apply additive metals processing (QPDK-specific step)
@@ -105,7 +103,7 @@ for name, region in [
 for port in processed.ports:
     etched.add_port(name=port.name, port=port)
 
-inspect_layers(etched, filename="transmon_etched_layers.png")
+# inspect_layers(etched, filename="transmon_etched_layers.png")
 etched
 
 # %% [markdown]
@@ -182,7 +180,9 @@ sim.set_stack(stack)
 sim.add_port("junction", layer="SUPERCONDUCTOR", length=5.0, inductance=10e-9)
 
 # CPW feed ports
-sim.add_cpw_port("o1", layer="SUPERCONDUCTOR", s_width=10.0, gap_width=6.0, length=5.0)
+sim.add_cpw_port(
+    "o1", layer="SUPERCONDUCTOR", s_width=10.0, gap_width=6.0, length=5.0, offset=-30
+)
 
 sim.set_driven(fmin=7.75e9, fmax=7.8e9, num_points=100)
 
@@ -193,6 +193,8 @@ sim.set_driven(fmin=7.75e9, fmax=7.8e9, num_points=100)
 sim.set_output_dir("./sim_qpdk_qubit_resonator")
 sim.mesh(preset="fine", margin=0)
 
+print(sim.validate_mesh())
+
 # %%
 sim.plot_mesh(
     style="solid",
@@ -201,5 +203,5 @@ sim.plot_mesh(
 )
 
 # %%
-sim.write_config()
+print(sim.write_config())
 results = sim.run()
