@@ -7,7 +7,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.19.2
 #   kernelspec:
-#     display_name: gsim
+#     display_name: .venv
 #     language: python
 #     name: python3
 # ---
@@ -112,8 +112,10 @@ print(sim.validate_config())
 # ### Generate mesh
 
 # %% papermill={"duration": 1.612178, "end_time": "2026-04-18T15:49:15.430189", "exception": false, "start_time": "2026-04-18T15:49:13.818011", "status": "completed"}
+sim.set_airbox(margin_x=50, margin_y=0, z_above=100, z_below=100)
+
 sim.mesh(
-    preset="default",
+    preset="coarse",
     # refined_mesh_size=2.0,
     # max_mesh_size=40.0,
     # fmax=150e9,
@@ -133,7 +135,7 @@ sim.plot_mesh(
 
 # %% papermill={"duration": 123.129284, "end_time": "2026-04-18T15:51:19.145033", "exception": false, "start_time": "2026-04-18T15:49:16.015749", "status": "completed"}
 sim.write_config()
-results = sim.run()
+results = sim.run_local()
 
 # %% [markdown] papermill={"duration": 0.002571, "end_time": "2026-04-18T15:51:19.151041", "exception": false, "start_time": "2026-04-18T15:51:19.148470", "status": "completed"}
 # ### Plot S-parameters
