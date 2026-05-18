@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# %% [markdown] papermill={"duration": 0.001655, "end_time": "2026-04-18T15:49:11.926549", "exception": false, "start_time": "2026-04-18T15:49:11.924894", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.003093, "end_time": "2026-05-18T13:21:13.924709", "exception": false, "start_time": "2026-05-18T13:21:13.921616", "status": "completed"}
 # # Palace CPW Simulation — Lumped Ports
 #
 # [Palace](https://awslabs.github.io/palace/) is an open-source 3D electromagnetic simulator supporting eigenmode, driven (S-parameter), and electrostatic simulations. This notebook demonstrates using the `gsim.palace` API to run a driven simulation on a CPW (coplanar waveguide) structure with **lumped ports**.
@@ -22,10 +22,10 @@
 # - IHP PDK: `uv pip install ihp-gdsfactory`
 # - [GDSFactory+](https://gdsfactory.com) account for cloud simulation
 
-# %% [markdown] papermill={"duration": 0.000942, "end_time": "2026-04-18T15:49:11.928627", "exception": false, "start_time": "2026-04-18T15:49:11.927685", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.001148, "end_time": "2026-05-18T13:21:13.928081", "exception": false, "start_time": "2026-05-18T13:21:13.926933", "status": "completed"}
 # ### Define GSG electrode
 
-# %% papermill={"duration": 1.289763, "end_time": "2026-04-18T15:49:13.219276", "exception": false, "start_time": "2026-04-18T15:49:11.929513", "status": "completed"}
+# %% papermill={"duration": 2.554843, "end_time": "2026-05-18T13:21:16.483929", "exception": false, "start_time": "2026-05-18T13:21:13.929086", "status": "completed"}
 import gdsfactory as gf
 from ihp import LAYER, PDK
 
@@ -86,10 +86,10 @@ cc = c.copy()
 cc.draw_ports()
 cc
 
-# %% [markdown] papermill={"duration": 0.000817, "end_time": "2026-04-18T15:49:13.221395", "exception": false, "start_time": "2026-04-18T15:49:13.220578", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.000789, "end_time": "2026-05-18T13:21:16.485840", "exception": false, "start_time": "2026-05-18T13:21:16.485051", "status": "completed"}
 # ### Configure simulation
 
-# %% papermill={"duration": 0.592297, "end_time": "2026-04-18T15:49:13.814782", "exception": false, "start_time": "2026-04-18T15:49:13.222485", "status": "completed"}
+# %% papermill={"duration": 0.619004, "end_time": "2026-05-18T13:21:17.105521", "exception": false, "start_time": "2026-05-18T13:21:16.486517", "status": "completed"}
 from gsim.common.stack import get_stack
 from gsim.palace import DrivenSim
 
@@ -108,10 +108,10 @@ sim.set_driven(fmin=1e9, fmax=100e9, num_points=300)
 
 print(sim.validate_config())
 
-# %% [markdown] papermill={"duration": 0.001197, "end_time": "2026-04-18T15:49:13.817164", "exception": false, "start_time": "2026-04-18T15:49:13.815967", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.000747, "end_time": "2026-05-18T13:21:17.107199", "exception": false, "start_time": "2026-05-18T13:21:17.106452", "status": "completed"}
 # ### Generate mesh
 
-# %% papermill={"duration": 1.612178, "end_time": "2026-04-18T15:49:15.430189", "exception": false, "start_time": "2026-04-18T15:49:13.818011", "status": "completed"}
+# %% papermill={"duration": 0.844215, "end_time": "2026-05-18T13:21:17.952069", "exception": false, "start_time": "2026-05-18T13:21:17.107854", "status": "completed"}
 sim.set_airbox(margin_x=50, margin_y=0, z_above=100, z_below=100)
 
 sim.mesh(
@@ -123,27 +123,26 @@ sim.mesh(
     margin_y=0,
 )
 
-# %% papermill={"duration": 0.577498, "end_time": "2026-04-18T15:49:16.008713", "exception": false, "start_time": "2026-04-18T15:49:15.431215", "status": "completed"}
+# %% papermill={"duration": 0.555541, "end_time": "2026-05-18T13:21:18.509127", "exception": false, "start_time": "2026-05-18T13:21:17.953586", "status": "completed"}
 sim.plot_mesh(
     style="solid",
     transparent_groups=["air__None", "SiO2__None", "SiO2__passive", "air__passive"],
     interactive=True,
 )
 
-# %% [markdown] papermill={"duration": 0.002318, "end_time": "2026-04-18T15:49:16.013622", "exception": false, "start_time": "2026-04-18T15:49:16.011304", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.001812, "end_time": "2026-05-18T13:21:18.513433", "exception": false, "start_time": "2026-05-18T13:21:18.511621", "status": "completed"}
 # ### Run simulation
 
-# %% papermill={"duration": 123.129284, "end_time": "2026-04-18T15:51:19.145033", "exception": false, "start_time": "2026-04-18T15:49:16.015749", "status": "completed"}
-sim.write_config()
-results = sim.run_local()
+# %% papermill={"duration": 97.647775, "end_time": "2026-05-18T13:22:56.162915", "exception": false, "start_time": "2026-05-18T13:21:18.515140", "status": "completed"}
+results = sim.run()
 
-# %% [markdown] papermill={"duration": 0.002571, "end_time": "2026-04-18T15:51:19.151041", "exception": false, "start_time": "2026-04-18T15:51:19.148470", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.002577, "end_time": "2026-05-18T13:22:56.168483", "exception": false, "start_time": "2026-05-18T13:22:56.165906", "status": "completed"}
 # ### Plot S-parameters
 
-# %% papermill={"duration": 0.244907, "end_time": "2026-04-18T15:51:19.399008", "exception": false, "start_time": "2026-04-18T15:51:19.154101", "status": "completed"}
+# %% papermill={"duration": 0.189017, "end_time": "2026-05-18T13:22:56.359908", "exception": false, "start_time": "2026-05-18T13:22:56.170891", "status": "completed"}
 results.plot_interactive()
 
-# %% papermill={"duration": 0.01808, "end_time": "2026-04-18T15:51:19.420771", "exception": false, "start_time": "2026-04-18T15:51:19.402691", "status": "completed"}
+# %% papermill={"duration": 0.012315, "end_time": "2026-05-18T13:22:56.374751", "exception": false, "start_time": "2026-05-18T13:22:56.362436", "status": "completed"}
 results.plot_interactive(phase=True)
 
-# %% papermill={"duration": 0.003691, "end_time": "2026-04-18T15:51:19.427545", "exception": false, "start_time": "2026-04-18T15:51:19.423854", "status": "completed"}
+# %% papermill={"duration": 0.002349, "end_time": "2026-05-18T13:22:56.379283", "exception": false, "start_time": "2026-05-18T13:22:56.376934", "status": "completed"}

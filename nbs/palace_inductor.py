@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# %% [markdown]
+# %% [markdown] papermill={"duration": 0.003748, "end_time": "2026-05-18T13:26:54.014979", "exception": false, "start_time": "2026-05-18T13:26:54.011231", "status": "completed"}
 # # Running Palace Simulations
 #
 # [Palace](https://awslabs.github.io/palace/) is an open-source 3D electromagnetic simulator supporting eigenmode, driven (S-parameter), and electrostatic simulations. This notebook demonstrates using the `gsim.palace` API to run a driven simulation on a spiral inductor with Metal1 guard ring.
@@ -22,13 +22,13 @@
 # - gsim with Palace backend
 #
 
-# %% [markdown]
+# %% [markdown] papermill={"duration": 0.001625, "end_time": "2026-05-18T13:26:54.019193", "exception": false, "start_time": "2026-05-18T13:26:54.017568", "status": "completed"}
 # ### Build inductor + guard ring
 #
 # **Known PDK limitation:** `gf.components.inductor` accepts a `turns` parameter but does not use it in geometry construction. The spiral is always single-turn regardless of the value passed."""
 #
 
-# %%
+# %% papermill={"duration": 2.353525, "end_time": "2026-05-18T13:26:56.374264", "exception": false, "start_time": "2026-05-18T13:26:54.020739", "status": "completed"}
 import gdsfactory as gf
 from ihp import PDK
 
@@ -92,10 +92,10 @@ cc = c.copy()
 c.draw_ports()
 c.plot()
 
-# %% [markdown]
+# %% [markdown] papermill={"duration": 0.000971, "end_time": "2026-05-18T13:26:56.376142", "exception": false, "start_time": "2026-05-18T13:26:56.375171", "status": "completed"}
 # ### Configure and run simulation with DrivenSim
 
-# %%
+# %% papermill={"duration": 0.576828, "end_time": "2026-05-18T13:26:56.953899", "exception": false, "start_time": "2026-05-18T13:26:56.377071", "status": "completed"}
 from gsim.palace import DrivenSim
 
 # Create simulation object
@@ -124,22 +124,22 @@ sim.set_driven(fmin=10e9, fmax=200e9, num_points=50)
 # Validate configuration
 print(sim.validate_config())
 
-# %%
+# %% papermill={"duration": 1.930523, "end_time": "2026-05-18T13:26:58.885247", "exception": false, "start_time": "2026-05-18T13:26:56.954724", "status": "completed"}
 # Generate mesh (presets: "coarse", "default", "fine")
 sim.mesh(preset="default", margin=50, refined_mesh_size=1.5)
 
-# %%
+# %% papermill={"duration": 0.706534, "end_time": "2026-05-18T13:26:59.592690", "exception": false, "start_time": "2026-05-18T13:26:58.886156", "status": "completed"}
 sim.plot_mesh(show_groups=["metal", "P"])
 
-# %% [markdown]
+# %% [markdown] papermill={"duration": 0.001592, "end_time": "2026-05-18T13:26:59.596145", "exception": false, "start_time": "2026-05-18T13:26:59.594553", "status": "completed"}
 # ### Run simulation on cloud
 
-# %%
+# %% papermill={"duration": 134.955712, "end_time": "2026-05-18T13:29:14.553533", "exception": false, "start_time": "2026-05-18T13:26:59.597821", "status": "completed"}
 # Run simulation on GDSFactory+ cloud
 results = sim.run()
 
-# %%
+# %% papermill={"duration": 0.104371, "end_time": "2026-05-18T13:29:14.660424", "exception": false, "start_time": "2026-05-18T13:29:14.556053", "status": "completed"}
 results.plot_interactive()
 
-# %%
+# %% papermill={"duration": 0.012891, "end_time": "2026-05-18T13:29:14.675333", "exception": false, "start_time": "2026-05-18T13:29:14.662442", "status": "completed"}
 results.plot_interactive(phase=True)

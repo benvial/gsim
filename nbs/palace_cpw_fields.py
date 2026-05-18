@@ -12,7 +12,7 @@
 #     name: python3
 # ---
 
-# %% [markdown] papermill={"duration": 0.001696, "end_time": "2026-04-17T19:18:34.646960", "exception": false, "start_time": "2026-04-17T19:18:34.645264", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.005223, "end_time": "2026-05-18T13:23:16.944434", "exception": false, "start_time": "2026-05-18T13:23:16.939211", "status": "completed"}
 # # Palace Field Visualization
 #
 # Top-view and cross-section visualization of electromagnetic fields from a
@@ -23,10 +23,10 @@
 # - IHP PDK: `uv pip install ihp-gdsfactory`
 # - [GDSFactory+](https://gdsfactory.com) account for cloud simulation
 
-# %% [markdown] papermill={"duration": 0.001266, "end_time": "2026-04-17T19:18:34.649623", "exception": false, "start_time": "2026-04-17T19:18:34.648357", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.002836, "end_time": "2026-05-18T13:23:16.951273", "exception": false, "start_time": "2026-05-18T13:23:16.948437", "status": "completed"}
 # ### Simulation setup
 
-# %% papermill={"duration": 3.647855, "end_time": "2026-04-17T19:18:38.298542", "exception": false, "start_time": "2026-04-17T19:18:34.650687", "status": "completed"}
+# %% papermill={"duration": 4.588761, "end_time": "2026-05-18T13:23:21.542536", "exception": false, "start_time": "2026-05-18T13:23:16.953775", "status": "completed"}
 import gdsfactory as gf
 from ihp import LAYER, PDK
 
@@ -92,20 +92,20 @@ sim.mesh(
     max_mesh_size=25.0,
 )
 
-# %% [markdown] papermill={"duration": 0.000956, "end_time": "2026-04-17T19:18:38.300749", "exception": false, "start_time": "2026-04-17T19:18:38.299793", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.00094, "end_time": "2026-05-18T13:23:21.544669", "exception": false, "start_time": "2026-05-18T13:23:21.543729", "status": "completed"}
 # ### Load results
 
-# %% papermill={"duration": 0.745122, "end_time": "2026-04-17T19:18:39.047185", "exception": false, "start_time": "2026-04-17T19:18:38.302063", "status": "completed"}
+# %% papermill={"duration": 0.730086, "end_time": "2026-05-18T13:23:22.275668", "exception": false, "start_time": "2026-05-18T13:23:21.545582", "status": "completed"}
 sim.plot_mesh(
     show_groups=["metal", "P", "via"],
     style="solid",
     transparent_groups=["air__None", "air__passive", "SiO2__passive"],
 )
 
-# %% papermill={"duration": 158.472414, "end_time": "2026-04-17T19:21:17.523438", "exception": false, "start_time": "2026-04-17T19:18:39.051024", "status": "completed"}
-results = sim.run_local()
+# %% papermill={"duration": 186.931123, "end_time": "2026-05-18T13:26:29.209716", "exception": false, "start_time": "2026-05-18T13:23:22.278593", "status": "completed"}
+results = sim.run()
 
-# %% papermill={"duration": 1.170331, "end_time": "2026-04-17T19:21:18.697731", "exception": false, "start_time": "2026-04-17T19:21:17.527400", "status": "completed"}
+# %% papermill={"duration": 1.191397, "end_time": "2026-05-18T13:26:30.406244", "exception": false, "start_time": "2026-05-18T13:26:29.214847", "status": "completed"}
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -133,10 +133,10 @@ print(f"Frequency: {freq_ghz:.1f} GHz")
 print(f"Volume: {vol.n_points:,} points, {vol.n_cells:,} cells")
 print(f"Boundary: {bnd.n_points:,} points, {bnd.n_cells:,} cells")
 
-# %% [markdown] papermill={"duration": 0.004304, "end_time": "2026-04-17T19:21:18.706250", "exception": false, "start_time": "2026-04-17T19:21:18.701946", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.003037, "end_time": "2026-05-18T13:26:30.412862", "exception": false, "start_time": "2026-05-18T13:26:30.409825", "status": "completed"}
 # ### Top view at conductor layer
 
-# %% papermill={"duration": 0.380237, "end_time": "2026-04-17T19:21:19.091008", "exception": false, "start_time": "2026-04-17T19:21:18.710771", "status": "completed"}
+# %% papermill={"duration": 0.281674, "end_time": "2026-05-18T13:26:30.697795", "exception": false, "start_time": "2026-05-18T13:26:30.416121", "status": "completed"}
 # Slice volume at conductor top
 z_conductor = 16.0
 vol_slice = vol.slice(normal="z", origin=(0, 0, z_conductor))
@@ -160,7 +160,7 @@ if not topmetal2_attr:
 
 print(f"Using topmetal2_xy attributes for J_s_real: {topmetal2_attr}")
 
-# %% papermill={"duration": 0.501202, "end_time": "2026-04-17T19:21:19.596279", "exception": false, "start_time": "2026-04-17T19:21:19.095077", "status": "completed"}
+# %% papermill={"duration": 0.422845, "end_time": "2026-05-18T13:26:31.124335", "exception": false, "start_time": "2026-05-18T13:26:30.701490", "status": "completed"}
 plot_topview(
     vol,
     field="E_real",
@@ -168,7 +168,7 @@ plot_topview(
     title=f"Electric field |E| at {freq_ghz:.1f} GHz — field concentrated in CPW gaps (V/m)",
 )
 
-# %% papermill={"duration": 0.475162, "end_time": "2026-04-17T19:21:20.076250", "exception": false, "start_time": "2026-04-17T19:21:19.601088", "status": "completed"}
+# %% papermill={"duration": 0.395972, "end_time": "2026-05-18T13:26:31.524276", "exception": false, "start_time": "2026-05-18T13:26:31.128304", "status": "completed"}
 plot_topview(
     vol,
     field="S",
@@ -176,7 +176,7 @@ plot_topview(
     title=f"Poynting vector |S| at {freq_ghz:.1f} GHz — power flow along the waveguide (W/m²)",
 )
 
-# %% papermill={"duration": 0.128071, "end_time": "2026-04-17T19:21:20.208579", "exception": false, "start_time": "2026-04-17T19:21:20.080508", "status": "completed"}
+# %% papermill={"duration": 0.124749, "end_time": "2026-05-18T13:26:31.653010", "exception": false, "start_time": "2026-05-18T13:26:31.528261", "status": "completed"}
 plot_topview(
     bnd,
     field="J_s_real",
@@ -187,18 +187,18 @@ plot_topview(
     title=f"Surface current |J_s| at {freq_ghz:.1f} GHz — current crowding at conductor edges (A/m)",
 )
 
-# %% [markdown] papermill={"duration": 0.005698, "end_time": "2026-04-17T19:21:20.221785", "exception": false, "start_time": "2026-04-17T19:21:20.216087", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.00403, "end_time": "2026-05-18T13:26:31.676694", "exception": false, "start_time": "2026-05-18T13:26:31.672664", "status": "completed"}
 # ### Field components — top view
 #
 # `E_y` is the dominant E-field component in a CPW — the transverse field across
 # the gaps between signal and ground. A diverging colormap shows the polarity
 # flipping between the two gaps, which the magnitude plots above hide.
 
-# %% papermill={"duration": 0.023246, "end_time": "2026-04-17T19:21:20.254684", "exception": false, "start_time": "2026-04-17T19:21:20.231438", "status": "completed"}
+# %% papermill={"duration": 0.006067, "end_time": "2026-05-18T13:26:31.690418", "exception": false, "start_time": "2026-05-18T13:26:31.684351", "status": "completed"}
 # Surface-current top view now uses automatic material-aware filtering
 # inside gsim.viz.plot_topview (no manual attribute filter needed).
 
-# %% papermill={"duration": 0.501102, "end_time": "2026-04-17T19:21:20.774107", "exception": false, "start_time": "2026-04-17T19:21:20.273005", "status": "completed"}
+# %% papermill={"duration": 0.398982, "end_time": "2026-05-18T13:26:32.093406", "exception": false, "start_time": "2026-05-18T13:26:31.694424", "status": "completed"}
 plot_topview(
     vol,
     field="E_real",
@@ -209,10 +209,10 @@ plot_topview(
     symmetric=True,
 )
 
-# %% [markdown] papermill={"duration": 0.004137, "end_time": "2026-04-17T19:21:20.782657", "exception": false, "start_time": "2026-04-17T19:21:20.778520", "status": "completed"}
+# %% [markdown] papermill={"duration": 0.004359, "end_time": "2026-05-18T13:26:32.102337", "exception": false, "start_time": "2026-05-18T13:26:32.097978", "status": "completed"}
 # ### Cross-sections (YZ plane at x=0)
 
-# %% papermill={"duration": 0.096762, "end_time": "2026-04-17T19:21:20.883697", "exception": false, "start_time": "2026-04-17T19:21:20.786935", "status": "completed"}
+# %% papermill={"duration": 0.087473, "end_time": "2026-05-18T13:26:32.193676", "exception": false, "start_time": "2026-05-18T13:26:32.106203", "status": "completed"}
 yz_slice = vol.slice(normal="x", origin=(0, 0, 0))
 yz_pts = yz_slice.points
 
@@ -225,7 +225,7 @@ plot_cross_section(
     label="|E| (V/m)",
 )
 
-# %% papermill={"duration": 0.086651, "end_time": "2026-04-17T19:21:20.975167", "exception": false, "start_time": "2026-04-17T19:21:20.888516", "status": "completed"}
+# %% papermill={"duration": 0.077411, "end_time": "2026-05-18T13:26:32.275946", "exception": false, "start_time": "2026-05-18T13:26:32.198535", "status": "completed"}
 plot_cross_section(
     vol,
     normal="x",
@@ -235,7 +235,7 @@ plot_cross_section(
     label="|B| (T)",
 )
 
-# %% papermill={"duration": 0.144154, "end_time": "2026-04-17T19:21:21.125132", "exception": false, "start_time": "2026-04-17T19:21:20.980978", "status": "completed"}
+# %% papermill={"duration": 0.127074, "end_time": "2026-05-18T13:26:32.407925", "exception": false, "start_time": "2026-05-18T13:26:32.280851", "status": "completed"}
 # B_z component cross-section — non-zero B_z indicates departure from pure TEM mode
 y_pad = 5
 yz_slice = vol.slice(normal="x", origin=(0, 0, 0))
@@ -289,4 +289,4 @@ fig.colorbar(im, cax=cax, label="B_z (T)")
 fig.tight_layout(pad=0.5)
 plt.show()
 
-# %% papermill={"duration": 0.011346, "end_time": "2026-04-17T19:21:21.148105", "exception": false, "start_time": "2026-04-17T19:21:21.136759", "status": "completed"}
+# %% papermill={"duration": 0.004983, "end_time": "2026-05-18T13:26:32.418105", "exception": false, "start_time": "2026-05-18T13:26:32.413122", "status": "completed"}
