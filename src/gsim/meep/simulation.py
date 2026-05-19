@@ -730,12 +730,25 @@ class Simulation(BaseModel):
         active_source = (
             self.fiber_source if self.fiber_source is not None else self.source
         )
-        material_data = resolve_materials(
-            used_materials,
-            overrides=self._material_overrides(),
-            wavelength_um=active_source.wavelength,
-            overlay=self._pdk_overlay,
-        )
+        if self.solver.dispersion != "false":
+            from gsim.meep.materials import resolve_materials_with_dispersion
+
+            material_data = resolve_materials_with_dispersion(
+                used_materials,
+                overrides=self._material_overrides(),
+                wavelength_um=active_source.wavelength,
+                bandwidth_um=active_source.wavelength_span,
+                dispersion=self.solver.dispersion,
+                overlay=self._pdk_overlay,
+                threshold=self.solver.dispersion_threshold,
+            )
+        else:
+            material_data = resolve_materials(
+                used_materials,
+                overrides=self._material_overrides(),
+                wavelength_um=active_source.wavelength,
+                overlay=self._pdk_overlay,
+            )
 
         fwidth = source_cfg.compute_fwidth(wl_cfg.fcen, wl_cfg.df)
         source_for_config = source_cfg.model_copy(update={"fwidth": fwidth})

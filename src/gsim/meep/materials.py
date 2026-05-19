@@ -10,6 +10,12 @@ Anisotropic tensor mapping (RFC: unify the tensor model):
     - ``conductivity`` / ``conductivity_diagonal`` -> ``D_conductivity`` / ``D_conductivity_diag``
     - ``loss_tangent`` -> ``D_conductivity`` (converted at simulation frequency)
     - ``material_axes`` -> ``epsilon_offdiag`` (rotation of the tensor)
+
+Dispersion rendering (RFC: dispersion flag on the Simulation):
+    - ``dispersion="auto"``: evaluate dn/n across source bandwidth; enable
+      susceptibility poles per material when > threshold (default 0.5%).
+    - ``dispersion="true"``: force full dispersion for all materials.
+    - ``dispersion="false"``: force constant-epsilon for speed.
 """
 
 from __future__ import annotations
@@ -18,13 +24,14 @@ import math
 import warnings
 
 from gsim.common.stack.materials import (
+    DispersionModel,
     MaterialProperties,
     ResolvedMaterial,
     get_material_properties,
     resolve_material_at_wavelength,
     should_enable_dispersion,
 )
-from gsim.meep.models.config import MaterialData
+from gsim.meep.models.config import LorentzianPoleConfig, MaterialData
 
 _EPS0_SI = 8.854187817e-12
 
@@ -50,6 +57,118 @@ def loss_tangent_to_conductivity(
         Conductivity in S/m
     """
     return 2.0 * math.pi * freq_hz * _EPS0_SI * permittivity * loss_tangent
+
+
+def sellmeier_to_lorentzian_poles(
+    model: DispersionModel,
+) -> list[LorentzianPoleConfig]:
+    """Convert a Sellmeier dispersion model to MEEP Lorentzian susceptibility poles.
+
+    The Sellmeier equation n^2(lambda) = eps_inf + sum(Bi*lam^2/(lam^2-Ci))
+    maps to the Lorentzian form eps(w) = eps_inf + sum(sigma_i/(w0i^2 - w^2))
+    with gamma=0 (lossless poles) via:
+
+    - w0_i = 1/sqrt(C_i)  (resonance frequency in 1/um, since C is in um^2)
+    - sigma_i = B_i * w0_i^2  (oscillator strength)
+
+    Args:
+        model: A DispersionModel of type "sellmeier" with sellmeier_terms.
+
+    Returns:
+        List of LorentzianPoleConfig for MEEP epsilon_susceptibilities.
+    """
+    if model.type != "sellmeier" or not model.sellmeier_terms:
+        return []
+
+    poles: list[LorentzianPoleConfig] = []
+    for term in model.sellmeier_terms:
+        if term.C <= 0:
+            continue
+        w0 = 1.0 / math.sqrt(term.C)
+        sigma = term.B * w0**2
+        pole = LorentzianPoleConfig(
+            frequency=w0,
+            gamma=0.0,
+            sigma=sigma,
+            sigma_diagonal=term.sigma_diagonal,
+        )
+        poles.append(pole)
+
+    return poles
+
+
+def lorentzian_to_meep_poles(
+    model: DispersionModel,
+) -> list[LorentzianPoleConfig]:
+    """Convert a Lorentzian dispersion model to MEEP LorentzianPoleConfig.
+
+    Direct mapping: frequency, gamma, sigma, sigma_diagonal transfer as-is.
+
+    Args:
+        model: A DispersionModel of type "lorentzian" with lorentzian_terms.
+
+    Returns:
+        List of LorentzianPoleConfig for MEEP epsilon_susceptibilities.
+    """
+    if model.type != "lorentzian" or not model.lorentzian_terms:
+        return []
+
+    poles: list[LorentzianPoleConfig] = []
+    for term in model.lorentzian_terms:
+        pole = LorentzianPoleConfig(
+            frequency=term.frequency,
+            gamma=term.gamma,
+            sigma=term.sigma,
+            sigma_diagonal=term.sigma_diagonal,
+        )
+        poles.append(pole)
+
+    return poles
+
+
+def dispersion_model_to_meep_poles(
+    model: DispersionModel,
+) -> list[LorentzianPoleConfig]:
+    """Convert any DispersionModel to MEEP Lorentzian susceptibility poles.
+
+    Dispatches to the appropriate converter based on model type.
+    Returns empty list for constant-type models (no dispersive poles).
+
+    Args:
+        model: A DispersionModel (sellmeier, lorentzian, or constant).
+
+    Returns:
+        List of LorentzianPoleConfig for MEEP epsilon_susceptibilities.
+    """
+    if model.type == "sellmeier":
+        return sellmeier_to_lorentzian_poles(model)
+    if model.type == "lorentzian":
+        return lorentzian_to_meep_poles(model)
+    return []
+
+
+def _validity_to_freq_range(
+    model: DispersionModel,
+) -> list[float] | None:
+    """Extract validity range as [f_min, f_max] in MEEP units (1/um).
+
+    Args:
+        model: DispersionModel with a validity range.
+
+    Returns:
+        [f_min, f_max] in 1/um, or None if unspecified.
+    """
+    v = model.validity
+    if v.valid_wavelength is not None:
+        wl_min, wl_max = v.valid_wavelength
+        if wl_min > 0 and wl_max > 0:
+            return [1.0 / wl_max, 1.0 / wl_min]
+    if v.valid_frequency is not None:
+        f_min_hz, f_max_hz = v.valid_frequency
+        f_min = f_min_hz * 1e-6 / 3e8
+        f_max = f_max_hz * 1e-6 / 3e8
+        return [f_min, f_max]
+    return None
 
 
 def _is_identity_axes(material_axes: list[list[float]] | None) -> bool:
@@ -93,16 +212,19 @@ def _rotate_diagonal_tensor(
 def _resolved_to_material_data(
     resolved: ResolvedMaterial,
     wavelength_um: float,
+    dispersive_model: DispersionModel | None = None,
 ) -> MaterialData:
     """Convert a ResolvedMaterial to a MaterialData with full tensor support.
 
-    Populates scalar, diagonal, and off-diagonal fields based on what the
-    resolved material provides. Converts loss tangent to D_conductivity at
-    the simulation frequency.
+    When ``dispersive_model`` is provided, populates
+    ``epsilon_susceptibilities`` with Lorentzian poles and ``valid_freq_range``
+    from the model's validity bounds. The epsilon_inf field is derived from
+    the model's epsilon_inf, and epsilon_diag is set to [eps_inf]*3.
 
     Args:
         resolved: Evaluated material properties from the dispersion resolver
         wavelength_um: Simulation wavelength in um (for loss tangent conversion)
+        dispersive_model: Optional DispersionModel for dispersive rendering
 
     Returns:
         MaterialData suitable for the MEEP config JSON
@@ -115,10 +237,20 @@ def _resolved_to_material_data(
         extinction_coeff=resolved.extinction_coeff,
     )
 
-    if resolved.permittivity_diagonal is not None:
-        data.epsilon_diag = [v * 1.0 for v in resolved.permittivity_diagonal]
-    elif resolved.permittivity is not None:
-        data.epsilon_diag = [resolved.permittivity] * 3
+    if dispersive_model is not None:
+        poles = dispersion_model_to_meep_poles(dispersive_model)
+        if poles:
+            data.epsilon_susceptibilities = poles
+        freq_range = _validity_to_freq_range(dispersive_model)
+        if freq_range is not None:
+            data.valid_freq_range = freq_range
+        eps_inf = dispersive_model.epsilon_inf
+        data.epsilon_diag = [eps_inf] * 3
+    else:
+        if resolved.permittivity_diagonal is not None:
+            data.epsilon_diag = [v * 1.0 for v in resolved.permittivity_diagonal]
+        elif resolved.permittivity is not None:
+            data.epsilon_diag = [resolved.permittivity] * 3
 
     if resolved.permeability is not None:
         data.mu_diag = [v * 1.0 for v in resolved.permeability]
@@ -155,6 +287,32 @@ def _resolved_to_material_data(
         )
 
     return data
+
+
+def _find_dispersion_model(
+    props: MaterialProperties,
+    wavelength_um: float,
+) -> DispersionModel | None:
+    """Find the best dispersion model for a material at a given wavelength.
+
+    Scans dispersion_models for one whose validity covers the wavelength.
+    Falls back to models with unspecified validity. Returns None if no
+    model covers the wavelength.
+
+    Args:
+        props: MaterialProperties with optional dispersion_models
+        wavelength_um: Target wavelength in um
+
+    Returns:
+        DispersionModel if found, else None
+    """
+    for model in props.dispersion_models:
+        if model.validity.covers_wavelength(wavelength_um):
+            return model
+    for model in props.dispersion_models:
+        if model.validity.is_unspecified:
+            return model
+    return None
 
 
 def resolve_materials(
@@ -251,38 +409,57 @@ def resolve_materials_with_dispersion(
     used_material_names: set[str],
     overrides: dict[str, MaterialProperties] | None = None,
     wavelength_um: float = 1.55,
-    bandwidth_um: float = 0.1,  # noqa: ARG001
-    dispersion: str = "auto",  # noqa: ARG001
+    bandwidth_um: float = 0.1,
+    dispersion: str = "auto",
     overlay: dict[str, MaterialProperties] | None = None,
+    threshold: float = 0.005,
 ) -> dict[str, MaterialData]:
     """Resolve materials with dispersion-aware evaluation.
 
     Uses the frequency-aware resolver and the ``dispersion`` flag to decide
     whether each material should use constant or dispersive rendering.
 
+    ``dispersion="auto"``: For each material, evaluate dn/n across the source
+    bandwidth. If > threshold, populate epsilon_susceptibilities with
+    Lorentzian poles from the Sellmeier/Lorentzian model. Otherwise, use
+    constant-epsilon rendering.
+
+    ``dispersion="true"``: Force full dispersion for all materials that have
+    dispersive models in the database.
+
+    ``dispersion="false"``: Force constant-epsilon for all materials.
+
     Args:
         used_material_names: Material names that appear in extracted geometry
         overrides: User-supplied material property overrides
         wavelength_um: Center wavelength in um
         bandwidth_um: Source bandwidth in um
-        dispersion: "auto", "true"/"yes", or "false"/"no"
+        dispersion: "auto", "true", or "false"
         overlay: PDK overlay dict (foundry-specific values)
+        threshold: dn/n threshold for auto-dispersion (default 0.5%)
 
     Returns:
         Dict mapping material name to MaterialData
     """
     overrides = overrides or {}
     materials: dict[str, MaterialData] = {}
+    force_dispersion = dispersion == "true"
+    force_nodispersion = dispersion == "false"
 
     for name in sorted(used_material_names):
         resolved: ResolvedMaterial | None
+        props: MaterialProperties | None = None
 
         if name in overrides:
             resolved = overrides[name].evaluate_at_wavelength(wavelength_um)
+            props = overrides[name]
         else:
             resolved = resolve_material_at_wavelength(
                 name, wavelength_um, overlay=overlay
             )
+            from gsim.common.stack.materials import _resolve_with_overlay
+
+            props = _resolve_with_overlay(name, overlay)
 
         if resolved is None or resolved.refractive_index is None:
             warnings.warn(
@@ -292,7 +469,36 @@ def resolve_materials_with_dispersion(
             )
             continue
 
-        materials[name] = _resolved_to_material_data(resolved, wavelength_um)
+        if force_nodispersion:
+            materials[name] = _resolved_to_material_data(resolved, wavelength_um)
+            continue
+
+        if props is not None and props.type == "conductor":
+            continue
+
+        dispersive_model: DispersionModel | None = None
+        if props is not None:
+            dispersive_model = _find_dispersion_model(props, wavelength_um)
+
+        if dispersive_model is None or dispersive_model.type == "constant":
+            materials[name] = _resolved_to_material_data(resolved, wavelength_um)
+            continue
+
+        if force_dispersion:
+            materials[name] = _resolved_to_material_data(
+                resolved, wavelength_um, dispersive_model=dispersive_model
+            )
+            continue
+
+        need_disp = should_enable_dispersion(
+            name, wavelength_um, bandwidth_um, threshold, overrides, overlay
+        )
+        if need_disp:
+            materials[name] = _resolved_to_material_data(
+                resolved, wavelength_um, dispersive_model=dispersive_model
+            )
+        else:
+            materials[name] = _resolved_to_material_data(resolved, wavelength_um)
 
     return materials
 
