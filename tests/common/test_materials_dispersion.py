@@ -276,14 +276,13 @@ class TestMaterialPropertiesEvaluation:
         assert "dispersion_models" in d
         assert len(d["dispersion_models"]) == 1  # ty: ignore[invalid-argument-type]
 
-    def test_to_dict_includes_conductivity_diagonal(self):
+    def test_to_dict_includes_tensor_conductivity(self):
         mat = MaterialProperties(
             type="semiconductor",
-            conductivity=2.0,
-            conductivity_diagonal=[2.0, 2.0, 0.5],
+            conductivity=[2.0, 2.0, 0.5],
         )
         d = mat.to_dict()
-        assert d["conductivity_diagonal"] == [2.0, 2.0, 0.5]
+        assert d["conductivity"] == [2.0, 2.0, 0.5]
 
 
 class TestResolvedMaterial:
@@ -299,10 +298,10 @@ class TestResolvedMaterial:
     def test_anisotropic_fields(self):
         rm = ResolvedMaterial(
             refractive_index=1.77,
-            permittivity_diagonal=[9.3, 9.3, 11.5],
+            permittivity=[9.3, 9.3, 11.5],
             material_axes=[[0.8, 0.6, 0.0], [-0.6, 0.8, 0.0], [0.0, 0.0, 1.0]],
         )
-        assert rm.permittivity_diagonal is not None
+        assert isinstance(rm.permittivity, list)
         assert rm.material_axes is not None
 
 
@@ -421,9 +420,9 @@ class TestMaterialsDB:
     def test_sapphire_anisotropic(self):
         props = get_material_properties("sapphire")
         assert props is not None
-        assert props.permittivity_diagonal is not None
+        assert isinstance(props.permittivity, list)
         assert props.permeability is not None
-        assert props.loss_tangent_diagonal is not None
+        assert isinstance(props.loss_tangent, list)
         assert props.material_axes is not None
 
     def test_optical_classmethod(self):

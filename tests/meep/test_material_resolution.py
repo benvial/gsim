@@ -96,8 +96,7 @@ class TestResolvedToMaterialData:
     def test_anisotropic_permittivity(self):
         resolved = ResolvedMaterial(
             refractive_index=1.77,
-            permittivity=1.77**2,
-            permittivity_diagonal=[9.3, 9.3, 11.5],
+            permittivity=[9.3, 9.3, 11.5],
         )
         data = _resolved_to_material_data(resolved, 1.55)
         assert data.epsilon_diag == pytest.approx([9.3, 9.3, 11.5])
@@ -131,11 +130,11 @@ class TestResolvedToMaterialData:
         data = _resolved_to_material_data(resolved, 1.55)
         assert data.D_conductivity == 1e5
 
-    def test_conductivity_diagonal(self):
+    def test_tensor_conductivity(self):
         resolved = ResolvedMaterial(
             refractive_index=1.0,
             permittivity=1.0,
-            conductivity_diagonal=[1e4, 1e4, 1e5],
+            conductivity=[1e4, 1e4, 1e5],
         )
         data = _resolved_to_material_data(resolved, 1.55)
         assert data.D_conductivity_diag == pytest.approx([1e4, 1e4, 1e5])
@@ -143,9 +142,8 @@ class TestResolvedToMaterialData:
     def test_anisotropic_loss_tangent(self):
         resolved = ResolvedMaterial(
             refractive_index=1.77,
-            permittivity=1.77**2,
-            loss_tangent_diagonal=[3e-5, 3e-5, 8.6e-5],
-            permittivity_diagonal=[9.3, 9.3, 11.5],
+            permittivity=[9.3, 9.3, 11.5],
+            loss_tangent=[3e-5, 3e-5, 8.6e-5],
         )
         data = _resolved_to_material_data(resolved, 1.55)
         assert data.D_conductivity_diag is not None
@@ -156,8 +154,7 @@ class TestResolvedToMaterialData:
     def test_material_axes_rotation(self):
         resolved = ResolvedMaterial(
             refractive_index=1.77,
-            permittivity=1.77**2,
-            permittivity_diagonal=[9.3, 9.3, 11.5],
+            permittivity=[9.3, 9.3, 11.5],
             material_axes=[[0.8, 0.6, 0.0], [-0.6, 0.8, 0.0], [0.0, 0.0, 1.0]],
         )
         data = _resolved_to_material_data(resolved, 1.55)
@@ -166,8 +163,7 @@ class TestResolvedToMaterialData:
     def test_identity_axes_no_offdiag(self):
         resolved = ResolvedMaterial(
             refractive_index=1.77,
-            permittivity=1.77**2,
-            permittivity_diagonal=[9.3, 9.3, 11.5],
+            permittivity=[9.3, 9.3, 11.5],
             material_axes=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         )
         data = _resolved_to_material_data(resolved, 1.55)

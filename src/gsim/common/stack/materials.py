@@ -8,6 +8,17 @@ Dispersion models:
     or constant-epsilon), each annotated with a domain of validity and citation.
     A material can have multiple models covering different frequency regimes
     (e.g. SiO2: Sellmeier for optical, constant epsilon for RF).
+
+Unified tensor fields:
+    ``permittivity``, ``conductivity``, ``loss_tangent``, and ``permeability``
+    each accept either a scalar (isotropic) or a list of 3 floats (anisotropic).
+    This replaces the old separate ``permittivity_diagonal`` etc. fields.
+
+Resolution priority:
+    1. dispersion_models evaluated at target frequency
+    2. PDK overlay (constant-eps)
+    3. legacy ``refractive_index`` (converted to eps=n^2)
+    4. legacy ``permittivity`` scalar or tensor
 """
 
 from __future__ import annotations
@@ -203,26 +214,50 @@ class DispersionModel(BaseModel):
         return n**2
 
 
+def _as_list(val: float | list[float] | None, n: int = 3) -> list[float] | None:
+    """Expand a scalar to a list of n identical values, or pass list through."""
+    if val is None:
+        return None
+    if isinstance(val, list):
+        return val
+    return [val] * n
+
+
+def _is_tensor(val: float | list[float] | None) -> bool:
+    """Check if a value is an anisotropic tensor (list of 3)."""
+    return isinstance(val, list)
+
+
 class ResolvedMaterial(BaseModel):
     """Result of evaluating a material's dispersion model at a specific frequency.
 
-    Contains the scalar properties needed by solvers, plus metadata about
+    Contains the scalar/tensor properties needed by solvers, plus metadata about
     which model was used and whether the evaluation frequency is within
     the model's validity range.
+
+    Tensor fields (permittivity, conductivity, loss_tangent, permeability)
+    accept a scalar (isotropic) or list of 3 floats (anisotropic).
     """
 
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
 
-    permittivity: float | None = Field(default=None, ge=1.0)
+    permittivity: float | list[float] | None = Field(
+        default=None,
+        description="Relative permittivity. Scalar (isotropic) or [ex, ey, ez].",
+    )
     refractive_index: float | None = Field(default=None, gt=0)
     extinction_coeff: float = Field(default=0.0, ge=0)
-    conductivity: float | None = Field(default=None, ge=0)
-    loss_tangent: float | None = Field(default=None, ge=0, le=1)
-
-    permittivity_diagonal: list[float] | None = None
-    conductivity_diagonal: list[float] | None = None
-    permeability: list[float] | None = None
-    loss_tangent_diagonal: list[float] | None = None
+    conductivity: float | list[float] | None = Field(
+        default=None, description="Conductivity S/m. Scalar or [sx, sy, sz]."
+    )
+    loss_tangent: float | list[float] | None = Field(
+        default=None,
+        description="Loss tangent. Scalar or [tx, ty, tz].",
+    )
+    permeability: float | list[float] | None = Field(
+        default=None,
+        description="Relative permeability. Scalar or [mx, my, mz].",
+    )
     material_axes: list[list[float]] | None = None
 
     model_type: str = Field(default="", description="Type of dispersion model used")
@@ -238,26 +273,67 @@ class ResolvedMaterial(BaseModel):
         description="Human-readable note about validity status",
     )
 
+    @property
+    def permittivity_scalar(self) -> float | None:
+        """Return scalar permittivity, or first element of tensor."""
+        if self.permittivity is None:
+            return None
+        if isinstance(self.permittivity, list):
+            return self.permittivity[0]
+        return self.permittivity
+
+    @property
+    def conductivity_scalar(self) -> float | None:
+        """Return scalar conductivity, or first element of tensor."""
+        if self.conductivity is None:
+            return None
+        if isinstance(self.conductivity, list):
+            return self.conductivity[0]
+        return self.conductivity
+
+    @property
+    def loss_tangent_scalar(self) -> float | None:
+        """Return scalar loss tangent, or first element of tensor."""
+        if self.loss_tangent is None:
+            return None
+        if isinstance(self.loss_tangent, list):
+            return self.loss_tangent[0]
+        return self.loss_tangent
+
 
 class MaterialProperties(BaseModel):
     """EM properties for a material.
 
-    Supports both legacy scalar properties (permittivity, refractive_index)
-    and frequency-dependent dispersion models with validity ranges.
+    Supports both legacy scalar properties and frequency-dependent dispersion
+    models with validity ranges. Tensor fields (permittivity, conductivity,
+    loss_tangent, permeability) accept a scalar (isotropic) or list of 3
+    floats (anisotropic).
+
+    Resolution priority:
+        1. dispersion_models evaluated at target frequency
+        2. refractive_index (converted to eps = n^2)
+        3. permittivity scalar or tensor
     """
 
-    model_config = ConfigDict(validate_assignment=True)
+    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
 
     type: Literal["conductor", "dielectric", "semiconductor"]
-    conductivity: float | None = Field(default=None, ge=0)
-    permittivity: float | None = Field(default=None, ge=1.0)
-    loss_tangent: float | None = Field(default=None, ge=0, le=1)
-
-    permittivity_diagonal: list[float] | None = None
-    permeability: list[float] | None = None
-    loss_tangent_diagonal: list[float] | None = None
+    conductivity: float | list[float] | None = Field(
+        default=None, description="Conductivity S/m. Scalar or [sx, sy, sz]."
+    )
+    permittivity: float | list[float] | None = Field(
+        default=None,
+        description="Relative permittivity. Scalar (isotropic) or [ex, ey, ez].",
+    )
+    loss_tangent: float | list[float] | None = Field(
+        default=None,
+        description="Loss tangent. Scalar or [tx, ty, tz].",
+    )
+    permeability: float | list[float] | None = Field(
+        default=None,
+        description="Relative permeability. Scalar or [mx, my, mz].",
+    )
     material_axes: list[list[float]] | None = None
-    conductivity_diagonal: list[float] | None = None
 
     refractive_index: float | None = Field(default=None, gt=0)
     extinction_coeff: float | None = Field(default=None, ge=0)
@@ -276,16 +352,10 @@ class MaterialProperties(BaseModel):
             d["permittivity"] = self.permittivity
         if self.loss_tangent is not None:
             d["loss_tangent"] = self.loss_tangent
-        if self.permittivity_diagonal is not None:
-            d["permittivity_diagonal"] = self.permittivity_diagonal
         if self.permeability is not None:
             d["permeability"] = self.permeability
-        if self.loss_tangent_diagonal is not None:
-            d["loss_tangent_diagonal"] = self.loss_tangent_diagonal
         if self.material_axes is not None:
             d["material_axes"] = self.material_axes
-        if self.conductivity_diagonal is not None:
-            d["conductivity_diagonal"] = self.conductivity_diagonal
         if self.refractive_index is not None:
             d["refractive_index"] = self.refractive_index
         if self.extinction_coeff is not None:
@@ -330,67 +400,53 @@ class MaterialProperties(BaseModel):
                 stacklevel=3,
             )
 
+        base = ResolvedMaterial(
+            permittivity=self.permittivity,
+            conductivity=self.conductivity,
+            loss_tangent=self.loss_tangent,
+            permeability=self.permeability,
+            material_axes=self.material_axes,
+            extinction_coeff=self.extinction_coeff or 0.0,
+        )
+
         if selected is not None:
             n = selected.evaluate_n(wavelength_um)
-            return ResolvedMaterial(
-                refractive_index=n,
-                permittivity=n**2,
-                extinction_coeff=self.extinction_coeff or 0.0,
-                conductivity=self.conductivity,
-                loss_tangent=self.loss_tangent,
-                permittivity_diagonal=self.permittivity_diagonal,
-                conductivity_diagonal=self.conductivity_diagonal,
-                permeability=self.permeability,
-                loss_tangent_diagonal=self.loss_tangent_diagonal,
-                material_axes=self.material_axes,
-                model_type=selected.type,
-                model_source=selected.source,
-                within_validity=within_validity,
-                validity_note=validity_note,
+            base.refractive_index = n
+            base.permittivity = (
+                self.permittivity if _is_tensor(self.permittivity) else n**2
             )
+            base.model_type = selected.type
+            base.model_source = selected.source
+            base.within_validity = within_validity
+            base.validity_note = validity_note
+            return base
 
         if self.refractive_index is not None:
-            return ResolvedMaterial(
-                refractive_index=self.refractive_index,
-                permittivity=self.refractive_index**2,
-                extinction_coeff=self.extinction_coeff or 0.0,
-                conductivity=self.conductivity,
-                loss_tangent=self.loss_tangent,
-                permittivity_diagonal=self.permittivity_diagonal,
-                conductivity_diagonal=self.conductivity_diagonal,
-                permeability=self.permeability,
-                loss_tangent_diagonal=self.loss_tangent_diagonal,
-                material_axes=self.material_axes,
-                within_validity=True,
-                validity_note="legacy scalar (no dispersion models)",
+            base.refractive_index = self.refractive_index
+            base.permittivity = (
+                self.permittivity
+                if _is_tensor(self.permittivity)
+                else self.refractive_index**2
             )
+            base.within_validity = True
+            base.validity_note = "legacy scalar (no dispersion models)"
+            return base
 
         if self.permittivity is not None:
-            return ResolvedMaterial(
-                refractive_index=math.sqrt(self.permittivity),
-                permittivity=self.permittivity,
-                extinction_coeff=self.extinction_coeff or 0.0,
-                conductivity=self.conductivity,
-                loss_tangent=self.loss_tangent,
-                permittivity_diagonal=self.permittivity_diagonal,
-                conductivity_diagonal=self.conductivity_diagonal,
-                permeability=self.permeability,
-                loss_tangent_diagonal=self.loss_tangent_diagonal,
-                material_axes=self.material_axes,
-                within_validity=True,
-                validity_note="legacy scalar (no dispersion models)",
-            )
+            if _is_tensor(self.permittivity) and isinstance(self.permittivity, list):
+                eps_scalar = float(self.permittivity[0])
+            elif isinstance(self.permittivity, (int, float)):
+                eps_scalar = float(self.permittivity)
+            else:
+                eps_scalar = 1.0
+            base.refractive_index = math.sqrt(eps_scalar)
+            base.within_validity = True
+            base.validity_note = "legacy scalar (no dispersion models)"
+            return base
 
-        return ResolvedMaterial(
-            conductivity=self.conductivity,
-            permittivity_diagonal=self.permittivity_diagonal,
-            conductivity_diagonal=self.conductivity_diagonal,
-            permeability=self.permeability,
-            loss_tangent_diagonal=self.loss_tangent_diagonal,
-            material_axes=self.material_axes,
-            within_validity=False,
-            validity_note="no optical or RF data available",
-        )
+        base.within_validity = False
+        base.validity_note = "no optical or RF data available"
+        return base
 
     def evaluate_at_frequency(self, freq_hz: float) -> ResolvedMaterial:
         """Evaluate material properties at a specific frequency in Hz."""
@@ -661,12 +717,10 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
     ),
     "sapphire": MaterialProperties(
         type="dielectric",
-        permittivity=9.3,
-        loss_tangent=3e-5,
+        permittivity=[9.3, 9.3, 11.5],
+        loss_tangent=[3e-5, 3e-5, 8.6e-5],
         refractive_index=1.77,
-        permittivity_diagonal=[9.3, 9.3, 11.5],
         permeability=[0.99999975, 0.99999975, 0.99999979],
-        loss_tangent_diagonal=[3e-5, 3e-5, 8.6e-5],
         material_axes=[[0.8, 0.6, 0.0], [-0.6, 0.8, 0.0], [0.0, 0.0, 1.0]],
         dispersion_models=[
             DispersionModel(

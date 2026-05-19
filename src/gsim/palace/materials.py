@@ -59,24 +59,16 @@ def resolve_palace_materials_at_frequency(
         new_props: dict[str, object] = dict(props)
 
         if evaluated.permittivity is not None:
-            if evaluated.permittivity_diagonal is not None:
-                new_props["permittivity_diagonal"] = evaluated.permittivity_diagonal
-                new_props.pop("permittivity", None)
-            else:
-                new_props["permittivity"] = evaluated.permittivity
-                new_props.pop("permittivity_diagonal", None)
+            new_props["permittivity"] = evaluated.permittivity
 
         if evaluated.loss_tangent is not None:
             new_props["loss_tangent"] = evaluated.loss_tangent
 
-        if evaluated.loss_tangent_diagonal is not None:
-            new_props["loss_tangent_diagonal"] = evaluated.loss_tangent_diagonal
-
         if evaluated.conductivity is not None:
             new_props["conductivity"] = evaluated.conductivity
 
-        if evaluated.conductivity_diagonal is not None:
-            new_props["conductivity_diagonal"] = evaluated.conductivity_diagonal
+        if evaluated.permeability is not None:
+            new_props["permeability"] = evaluated.permeability
 
         resolved[name] = new_props
 

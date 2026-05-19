@@ -181,26 +181,25 @@ def generate_palace_config(
         elif is_via:
             sigma = mat_props.get("conductivity", 0.0)
             mat_entry["Permittivity"] = 1.0
-            if sigma > 0:
+            if isinstance(sigma, (int, float)) and sigma > 0:
                 mat_entry["Conductivity"] = sigma
         else:
-            if "permittivity_diagonal" in mat_props:
-                mat_entry["Permittivity"] = mat_props["permittivity_diagonal"]
-            else:
-                mat_entry["Permittivity"] = mat_props.get("permittivity", 1.0)
+            perm = mat_props.get("permittivity", 1.0)
+            mat_entry["Permittivity"] = perm
 
             if "permeability" in mat_props:
                 mat_entry["Permeability"] = mat_props["permeability"]
 
             sigma = mat_props.get("conductivity", 0.0)
-            if sigma > 0:
+            lt = mat_props.get("loss_tangent", 0.0)
+            if (isinstance(sigma, (int, float)) and sigma > 0) or isinstance(
+                sigma, list
+            ):
                 mat_entry["Conductivity"] = sigma
-            elif "conductivity_diagonal" in mat_props:
-                mat_entry["Conductivity"] = mat_props["conductivity_diagonal"]
-            elif "loss_tangent_diagonal" in mat_props:
-                mat_entry["LossTan"] = mat_props["loss_tangent_diagonal"]
+            elif isinstance(lt, list) or (isinstance(lt, (int, float)) and lt > 0):
+                mat_entry["LossTan"] = lt
             else:
-                mat_entry["LossTan"] = mat_props.get("loss_tangent", 0.0)
+                mat_entry["LossTan"] = 0.0
 
             if "material_axes" in mat_props:
                 mat_entry["MaterialAxes"] = mat_props["material_axes"]

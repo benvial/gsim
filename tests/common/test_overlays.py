@@ -67,8 +67,7 @@ materials:
 materials:
   sapphire:
     type: dielectric
-    permittivity: 9.3
-    permittivity_diagonal: [9.3, 9.3, 11.5]
+    permittivity: [9.3, 9.3, 11.5]
     material_axes: [[0.8, 0.6, 0.0], [-0.6, 0.8, 0.0], [0.0, 0.0, 1.0]]
 """
         overlay_path = tmp_path / "overlay.yaml"
@@ -76,7 +75,7 @@ materials:
 
         result = load_overlay(overlay_path)
         assert "sapphire" in result
-        assert result["sapphire"].permittivity_diagonal == [9.3, 9.3, 11.5]
+        assert result["sapphire"].permittivity == [9.3, 9.3, 11.5]
 
     def test_load_with_wavelength_validity(self, tmp_path):
         yaml_content = """

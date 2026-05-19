@@ -4,11 +4,14 @@ Resolves material names from the common materials database to optical
 properties needed for photonic FDTD simulation. Supports three-tier
 resolution: user override > PDK overlay > built-in database.
 
-Anisotropic tensor mapping (RFC: unify the tensor model):
-    - ``permittivity_diagonal`` -> ``epsilon_diag``
-    - ``permeability`` -> ``mu_diag``
-    - ``conductivity`` / ``conductivity_diagonal`` -> ``D_conductivity`` / ``D_conductivity_diag``
-    - ``loss_tangent`` -> ``D_conductivity`` (converted at simulation frequency)
+Tensor fields on ResolvedMaterial (permittivity, conductivity, loss_tangent,
+permeability) accept scalar (isotropic) or list-of-3 (anisotropic). This
+module maps them to MEEP-specific MaterialData fields:
+
+    - ``permittivity`` scalar/list -> ``epsilon_diag``
+    - ``permeability`` scalar/list -> ``mu_diag``
+    - ``conductivity`` scalar/list -> ``D_conductivity`` / ``D_conductivity_diag``
+    - ``loss_tangent`` scalar/list -> ``D_conductivity`` (converted at sim freq)
     - ``material_axes`` -> ``epsilon_offdiag`` (rotation of the tensor)
 
 Dispersion rendering (RFC: dispersion flag on the Simulation):
@@ -27,6 +30,8 @@ from gsim.common.stack.materials import (
     DispersionModel,
     MaterialProperties,
     ResolvedMaterial,
+    _as_list,
+    _is_tensor,
     get_material_properties,
     resolve_material_at_wavelength,
     should_enable_dispersion,
@@ -176,8 +181,8 @@ def _is_identity_axes(material_axes: list[list[float]] | None) -> bool:
     if material_axes is None:
         return True
     identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-    for row, ref in zip(material_axes, identity):
-        for v, r in zip(row, ref):
+    for row, ref in zip(material_axes, identity, strict=False):
+        for v, r in zip(row, ref, strict=False):
             if abs(v - r) > 1e-10:
                 return False
     return True
@@ -246,36 +251,42 @@ def _resolved_to_material_data(
             data.valid_freq_range = freq_range
         eps_inf = dispersive_model.epsilon_inf
         data.epsilon_diag = [eps_inf] * 3
-    else:
-        if resolved.permittivity_diagonal is not None:
-            data.epsilon_diag = [v * 1.0 for v in resolved.permittivity_diagonal]
-        elif resolved.permittivity is not None:
-            data.epsilon_diag = [resolved.permittivity] * 3
+    elif resolved.permittivity is not None:
+        data.epsilon_diag = _as_list(resolved.permittivity, 3)
 
     if resolved.permeability is not None:
-        data.mu_diag = [v * 1.0 for v in resolved.permeability]
+        data.mu_diag = _as_list(resolved.permeability, 3)
 
     freq_hz = 3e8 / (wavelength_um * 1e-6)
 
-    if resolved.conductivity is not None and resolved.conductivity > 0:
-        data.D_conductivity = resolved.conductivity
-    elif resolved.loss_tangent is not None and resolved.loss_tangent > 0:
-        eps_r = resolved.permittivity or (resolved.refractive_index**2)
-        data.D_conductivity = loss_tangent_to_conductivity(
-            resolved.loss_tangent, eps_r, freq_hz
-        )
+    cond_scalar = resolved.conductivity_scalar
+    if cond_scalar is not None and cond_scalar > 0:
+        if _is_tensor(resolved.conductivity):
+            data.D_conductivity_diag = _as_list(resolved.conductivity, 3)
+        else:
+            data.D_conductivity = cond_scalar
 
-    if resolved.conductivity_diagonal is not None:
-        data.D_conductivity_diag = [v * 1.0 for v in resolved.conductivity_diagonal]
-    elif resolved.loss_tangent_diagonal is not None:
-        eps_diag = (
-            resolved.permittivity_diagonal
-            or [resolved.permittivity or resolved.refractive_index**2] * 3
-        )
-        data.D_conductivity_diag = [
-            loss_tangent_to_conductivity(lt, eps, freq_hz)
-            for lt, eps in zip(resolved.loss_tangent_diagonal, eps_diag)
-        ]
+    lt_scalar = resolved.loss_tangent_scalar
+    has_cond = data.D_conductivity is not None or data.D_conductivity_diag is not None
+    if lt_scalar is not None and lt_scalar > 0 and not has_cond:
+        if _is_tensor(resolved.loss_tangent):
+            eps_diag = (
+                _as_list(resolved.permittivity, 3) or [resolved.refractive_index**2] * 3
+            )
+            lt_list = _as_list(resolved.loss_tangent, 3)
+            data.D_conductivity_diag = [
+                loss_tangent_to_conductivity(lt, eps, freq_hz)
+                for lt, eps in zip(
+                    lt_list or [],
+                    eps_diag,
+                    strict=False,
+                )
+            ]
+        else:
+            eps_r = resolved.permittivity_scalar or (resolved.refractive_index**2)
+            data.D_conductivity = loss_tangent_to_conductivity(
+                lt_scalar, eps_r, freq_hz
+            )
 
     if (
         resolved.material_axes is not None

@@ -22,6 +22,16 @@ from gsim.common.stack.materials import (
 )
 
 
+def _parse_tensor_or_scalar(entry: dict, key: str) -> float | list[float] | None:
+    """Parse a key that can be scalar or list-of-3 from an overlay dict."""
+    val = entry.get(key)
+    if val is None:
+        return None
+    if isinstance(val, list):
+        return val
+    return float(val)
+
+
 def load_overlay(path: str | Path) -> dict[str, MaterialProperties]:
     """Load a PDK overlay from a YAML file.
 
@@ -60,32 +70,17 @@ def load_overlay(path: str | Path) -> dict[str, MaterialProperties]:
         mat_type = entry.get("type", "dielectric")
         props_kwargs: dict = {"type": mat_type}
 
-        if "permittivity" in entry:
-            props_kwargs["permittivity"] = entry["permittivity"]
-        if "conductivity" in entry:
-            props_kwargs["conductivity"] = entry["conductivity"]
-        if "loss_tangent" in entry:
-            props_kwargs["loss_tangent"] = entry["loss_tangent"]
+        for key in ("permittivity", "conductivity", "loss_tangent", "permeability"):
+            val = _parse_tensor_or_scalar(entry, key)
+            if val is not None:
+                props_kwargs[key] = val
+
         if "refractive_index" in entry:
             props_kwargs["refractive_index"] = entry["refractive_index"]
         if "extinction_coeff" in entry:
             props_kwargs["extinction_coeff"] = entry["extinction_coeff"]
-
-        perm_diag = entry.get("permittivity_diagonal")
-        if perm_diag:
-            props_kwargs["permittivity_diagonal"] = perm_diag
-        cond_diag = entry.get("conductivity_diagonal")
-        if cond_diag:
-            props_kwargs["conductivity_diagonal"] = cond_diag
-        perm_axes = entry.get("material_axes")
-        if perm_axes:
-            props_kwargs["material_axes"] = perm_axes
-        perm_mu = entry.get("permeability")
-        if perm_mu:
-            props_kwargs["permeability"] = perm_mu
-        lt_diag = entry.get("loss_tangent_diagonal")
-        if lt_diag:
-            props_kwargs["loss_tangent_diagonal"] = lt_diag
+        if "material_axes" in entry:
+            props_kwargs["material_axes"] = entry["material_axes"]
 
         dispersion_models = []
         if "dispersion_models" in entry:
@@ -159,13 +154,10 @@ def _merge_material(
         "conductivity",
         "permittivity",
         "loss_tangent",
+        "permeability",
+        "material_axes",
         "refractive_index",
         "extinction_coeff",
-        "permittivity_diagonal",
-        "conductivity_diagonal",
-        "permeability",
-        "loss_tangent_diagonal",
-        "material_axes",
     ):
         overlay_val = getattr(overlay, field_name)
         base_val = getattr(base, field_name)

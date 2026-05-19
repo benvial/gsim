@@ -65,4 +65,4 @@ class TestResolvePalaceMaterialsAtFrequency:
         freq_hz = 3e8 / (1.55e-6)
         resolved = resolve_palace_materials_at_frequency(materials, freq_hz)
         assert "sapphire" in resolved
-        assert "permittivity_diagonal" in resolved["sapphire"]
+        assert isinstance(resolved["sapphire"]["permittivity"], list)
