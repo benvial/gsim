@@ -38,7 +38,7 @@ def resolve_palace_materials_at_frequency(
     Returns:
         New materials dict with evaluated scalar properties
     """
-    wavelength_um = 3e8 / frequency_hz * 1e6
+    wavelength_um = 299_792_458 / frequency_hz * 1e6
     resolved: dict[str, dict] = {}
 
     for name, props in materials.items():

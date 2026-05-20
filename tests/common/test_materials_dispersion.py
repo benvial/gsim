@@ -49,12 +49,12 @@ class TestValidityRange:
 
     def test_frequency_covers_wavelength(self):
         vr = ValidityRange(valid_frequency=(1e9, 10e9))
-        wl_um = 3e8 / 5e9 * 1e6
+        wl_um = 299_792_458 / 5e9 * 1e6
         assert vr.covers_wavelength(wl_um)
 
     def test_wavelength_covers_frequency(self):
         vr = ValidityRange(valid_wavelength=(0.21, 3.71))
-        freq_hz = 3e8 / (1.55 * 1e-6)
+        freq_hz = 299_792_458 / (1.55 * 1e-6)
         assert vr.covers_frequency(freq_hz)
 
 
@@ -179,7 +179,7 @@ class TestMaterialPropertiesEvaluation:
         mat = get_material_properties("SiO2")
         assert mat is not None
         freq_hz = 5e9
-        wl_um = 3e8 / freq_hz * 1e6
+        wl_um = 299_792_458 / freq_hz * 1e6
         resolved = mat.evaluate_at_wavelength(wl_um)
         assert resolved.permittivity is not None
         assert resolved.permittivity == pytest.approx(4.1, rel=1e-2)

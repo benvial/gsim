@@ -103,11 +103,16 @@ class DrivenConfig(BaseModel):
         description="Specific frequencies (Hz) at which to save fields for ParaView.",
     )
 
+    @property
+    def center_frequency(self) -> float:
+        """Center frequency of the sweep band in Hz."""
+        return (self.fmin + self.fmax) / 2
+
     @model_validator(mode="after")
     def validate_frequency_range(self) -> Self:
-        """Validate that fmin < fmax and snap save_fields_at to the sample grid."""
-        if self.fmin >= self.fmax:
-            raise ValueError(f"fmin ({self.fmin}) must be less than fmax ({self.fmax})")
+        """Validate that fmin <= fmax and snap save_fields_at to the sample grid."""
+        if self.fmin > self.fmax:
+            raise ValueError(f"fmin ({self.fmin}) must be <= fmax ({self.fmax})")
 
         # Palace requires Save frequencies to exactly match the sample grid.
         # Snap to nearest sample point and warn if the shift is significant.

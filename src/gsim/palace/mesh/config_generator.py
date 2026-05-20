@@ -33,7 +33,6 @@ def generate_palace_config(
     absorbing_boundary: bool = True,
     periodic_axis: str | None = None,
     hints: dict[str, Any] | None = None,
-    frequency_hz: float | None = None,
 ) -> Path:
     """Generate Palace config.json file.
 
@@ -45,14 +44,13 @@ def generate_palace_config(
         output_path: Output directory path
         model_name: Base name for output files
         fmax: Maximum frequency (Hz) - used as fallback if driven_config not provided
-        driven_config: Optional DrivenConfig for frequency sweep settings
+        driven_config: Optional DrivenConfig for frequency sweep settings.
+            When provided, material dispersion is evaluated at the center
+            frequency ``(fmin + fmax) / 2`` of the sweep band.
         eigenmode_config: Optional EigenmodeConfig for eigenproblems settings
         absorbing_boundary: Whether to add absorbing (PML) boundary
         periodic_axis: Optional periodic axis identifier
         hints: Additional config hints merged into the JSON
-        frequency_hz: Target frequency in Hz for evaluating dispersion models.
-            When provided, material permittivity is evaluated from Sellmeier/
-            Lorentzian models at this frequency instead of using static values.
 
     Returns:
         Path to the generated config.json
@@ -152,13 +150,13 @@ def generate_palace_config(
     }
 
     # Build domains section
-    # Evaluate dispersion models at target frequency if provided
+    # Evaluate dispersion models at the center frequency of the sweep band
     stack_materials = stack.materials
-    if frequency_hz is not None:
+    if driven_config is not None:
         from gsim.palace.materials import resolve_palace_materials_at_frequency
 
         stack_materials = resolve_palace_materials_at_frequency(
-            stack.materials, frequency_hz
+            stack.materials, driven_config.center_frequency
         )
 
     materials: list[dict[str, object]] = []
@@ -556,7 +554,6 @@ def write_config(
     eigenmode_config: EigenmodeConfig | None = None,
     absorbing_boundary: bool = True,
     hints: dict[str, Any] | None = None,
-    frequency_hz: float | None = None,
 ) -> Path:
     """Write Palace config.json from a MeshResult.
 
@@ -566,13 +563,12 @@ def write_config(
         mesh_result: Result from generate_mesh(write_config=False)
         stack: LayerStack for material properties
         ports: List of PalacePort objects
-        driven_config: Optional DrivenConfig for frequency sweep settings
+        driven_config: Optional DrivenConfig for frequency sweep settings.
+            When provided, material dispersion is evaluated at the center
+            frequency of the sweep band.
         eigenmode_config: Optional EigenmodeConfig for eigenproblems settings
         absorbing_boundary: Whether to add absorbing (PML) boundary
         hints: Additional config hints merged into the JSON
-        frequency_hz: Target frequency in Hz for evaluating dispersion.
-            When provided, material permittivity is evaluated from
-            Sellmeier/Lorentzian models at this frequency.
 
     Returns:
         Path to the generated config.json
@@ -603,7 +599,6 @@ def write_config(
         absorbing_boundary=absorbing_boundary,
         periodic_axis=mesh_result.periodic_axis,
         hints=hints,
-        frequency_hz=frequency_hz,
     )
 
     # Update the mesh_result with the config path
