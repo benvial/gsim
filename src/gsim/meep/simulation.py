@@ -63,7 +63,7 @@ class Simulation(BaseModel):
         sim = meep.Simulation()
         sim.geometry.component = ybranch
         sim.geometry.stack = stack
-        sim.materials = {"si": 3.47, "sio2": 1.44}
+        sim.materials = {"si": Material(permittivity=12.0)}
         sim.source.port = "o1"
         sim.monitors = ["o1", "o2"]
         sim.solver.stopping = "dft_decay"
@@ -136,16 +136,21 @@ class Simulation(BaseModel):
     def _normalize_materials(
         cls,
         v: dict[str, float | Material | dict],
-    ) -> dict[str, float | Material]:
-        """Accept float shorthand: ``{"si": 3.47}`` -> ``Material(n=3.47)``."""
-        out: dict[str, float | Material] = {}
+    ) -> dict[str, Material]:
+        """Accept float/int shorthand: ``{"si": 12.0}`` -> ``Material(permittivity=12.0)``."""  # noqa: E501
+        out: dict[str, Material] = {}
         for name, val in v.items():
-            if isinstance(val, (int, float)):
-                out[name] = Material(n=float(val))
+            if isinstance(val, Material):
+                out[name] = val
+            elif isinstance(val, (int, float)):
+                out[name] = Material(permittivity=float(val))
             elif isinstance(val, dict):
                 out[name] = Material(**val)
             else:
-                out[name] = val
+                raise TypeError(
+                    f"Material '{name}' must be a Material, number, or dict, "
+                    f"got {type(val).__name__}."
+                )
         return out
 
     # -------------------------------------------------------------------------
@@ -154,13 +159,7 @@ class Simulation(BaseModel):
 
     def _resolved_materials(self) -> dict[str, Material]:
         """Return materials dict with all values normalized to Material."""
-        out: dict[str, Material] = {}
-        for name, val in self.materials.items():
-            if isinstance(val, (int, float)):
-                out[name] = Material(n=float(val))
-            else:
-                out[name] = val
-        return out
+        return dict(self.materials)  # ty: ignore[invalid-return-type]
 
     # -------------------------------------------------------------------------
     # Fiber source helper
@@ -544,7 +543,8 @@ class Simulation(BaseModel):
         for name, val in self._resolved_materials().items():
             overrides[name] = MaterialProperties(
                 type="dielectric",
-                permittivity=val.n**2,
+                permittivity=val.permittivity,
+                loss_tangent=val.loss_tangent,
             )
         return overrides
 

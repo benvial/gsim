@@ -53,12 +53,19 @@ class Geometry(BaseModel):
 
 
 class Material(BaseModel):
-    """Optical material properties."""
+    """EM material properties for MEEP simulation overrides.
+
+    Use ``permittivity`` for the relative permittivity (isotropic).
+    Use ``loss_tangent`` for dielectric loss (converted to conductivity at
+    the simulation frequency).
+    """
 
     model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
-    n: float = Field(gt=0, description="Refractive index")
-    k: float = Field(default=0.0, ge=0, description="Extinction coefficient")
+    permittivity: float = Field(gt=0, description="Relative permittivity")
+    loss_tangent: float = Field(
+        default=0.0, ge=0, description="Dielectric loss tangent"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -407,16 +414,17 @@ class FDTD(BaseModel):
     dispersion: Literal["auto", "true", "false"] = Field(
         default="auto",
         description=(
-            "Dispersion mode: 'auto' evaluates dn/n across the source bandwidth "
-            "and enables dispersion per material when >0.5%; 'true' forces full "
-            "dispersion for all materials; 'false' forces constant-epsilon for speed."
+            "Dispersion mode: 'auto' evaluates deps/eps across the source "
+            "bandwidth and enables dispersion per material when >0.5%; 'true' "
+            "forces full dispersion for all materials; 'false' forces "
+            "constant-epsilon for speed."
         ),
     )
     dispersion_threshold: float = Field(
         default=0.005,
         gt=0,
         lt=1,
-        description="dn/n threshold for auto-dispersion (default 0.5%).",
+        description="deps/eps threshold for auto-dispersion (default 0.5%).",
     )
 
     # Diagnostics — output control for plots, fields, animations
