@@ -200,9 +200,12 @@ def _is_covered_by_dielectric_box(layer, stack: LayerStack) -> bool:
     for d in stack.dielectrics:
         d_mat_name = d.get("material", "")
         d_mat = MATERIAL_ALIASES.get(d_mat_name.lower(), d_mat_name.lower())
-        if d_mat == layer_mat:
-            if d["zmin"] <= layer.zmin + 1e-6 and d["zmax"] >= layer.zmax - 1e-6:
-                return True
+        if (
+            d_mat == layer_mat
+            and d["zmin"] <= layer.zmin + 1e-6
+            and d["zmax"] >= layer.zmax - 1e-6
+        ):
+            return True
     return False
 
 

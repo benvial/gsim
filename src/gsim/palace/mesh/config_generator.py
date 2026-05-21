@@ -164,12 +164,7 @@ def generate_palace_config(
         is_via = info.get("is_via", False)
         is_shaped_dielectric = info.get("is_shaped_dielectric", False)
 
-        if is_via:
-            layer = stack.layers.get(material_name)
-            if layer is None:
-                continue
-            mat_props = stack_materials.get(layer.material, {})
-        elif is_shaped_dielectric:
+        if is_via or is_shaped_dielectric:
             layer = stack.layers.get(material_name)
             if layer is None:
                 continue

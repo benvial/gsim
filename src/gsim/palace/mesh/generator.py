@@ -97,7 +97,7 @@ def _setup_mesh_fields(
 
     # Shaped-dielectric volume boundaries are refined — the permittivity
     # discontinuity at the core-cladding interface concentrates fields.
-    for vol_name, vol_info in groups.get("volumes", {}).items():
+    for vol_info in groups.get("volumes", {}).values():
         if vol_info.get("is_shaped_dielectric"):
             for tag in vol_info.get("tags", []):
                 try:

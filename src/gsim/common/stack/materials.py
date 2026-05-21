@@ -269,8 +269,11 @@ class ResolvedMaterial(BaseModel):
 
     @property
     def behavior(self) -> Literal["conductive", "dielectric"]:
-        """Frequency-aware classification: conductive if significant conductivity
-        and no dispersive permittivity model active, else dielectric."""
+        """Frequency-aware classification.
+
+        Conductive if significant conductivity
+        and no dispersive permittivity model active, else dielectric.
+        """
         cond = self.conductivity_scalar
         if (
             cond is not None
@@ -489,9 +492,7 @@ class MaterialProperties(BaseModel):
         cls, permittivity: float, loss_tangent: float = 0.0
     ) -> MaterialProperties:
         """Create a dielectric material with permittivity and loss tangent."""
-        return cls(
-            permittivity=permittivity, loss_tangent=loss_tangent
-        )
+        return cls(permittivity=permittivity, loss_tangent=loss_tangent)
 
 
 MATERIALS_DB: dict[str, MaterialProperties] = {

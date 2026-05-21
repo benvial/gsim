@@ -98,7 +98,7 @@ materials:
 class TestMergeOverlay:
     def test_merge_adds_new_material(self):
         overlay = {
-            "custom_mat": MaterialProperties(type="dielectric", permittivity=5.0),
+            "custom_mat": MaterialProperties(permittivity=5.0),
         }
         merged = merge_overlay(overlay)
         assert "custom_mat" in merged
@@ -106,9 +106,7 @@ class TestMergeOverlay:
 
     def test_merge_overrides_existing(self):
         overlay = {
-            "SiO2": MaterialProperties(
-                type="dielectric", permittivity=3.9, loss_tangent=0.001
-            ),
+            "SiO2": MaterialProperties(permittivity=3.9, loss_tangent=0.001),
         }
         merged = merge_overlay(overlay)
         assert merged["SiO2"].permittivity == 3.9
@@ -116,7 +114,7 @@ class TestMergeOverlay:
 
     def test_merge_preserves_non_overlaid(self):
         overlay = {
-            "custom": MaterialProperties(type="dielectric", permittivity=5.0),
+            "custom": MaterialProperties(permittivity=5.0),
         }
         merged = merge_overlay(overlay)
         assert "aluminum" in merged
@@ -127,7 +125,7 @@ class TestMergeOverlay:
 
         original_count = len(MATERIALS_DB)
         overlay = {
-            "custom": MaterialProperties(type="dielectric", permittivity=5.0),
+            "custom": MaterialProperties(permittivity=5.0),
         }
         merge_overlay(overlay)
         assert len(MATERIALS_DB) == original_count

@@ -542,7 +542,6 @@ class Simulation(BaseModel):
         overrides: dict[str, MaterialProperties] = {}
         for name, val in self._resolved_materials().items():
             overrides[name] = MaterialProperties(
-                type="dielectric",
                 permittivity=val.permittivity,
                 loss_tangent=val.loss_tangent,
             )
@@ -992,7 +991,6 @@ class Simulation(BaseModel):
             FileNotFoundError: If meep is not installed.
             RuntimeError: If simulation fails.
         """
-        import os
         import shutil
         import subprocess
         import sys
@@ -1031,7 +1029,7 @@ class Simulation(BaseModel):
             logger.info("Command: %s", " ".join(cmd))
 
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # noqa: S603
                 cmd,
                 cwd=output_dir,
                 check=True,

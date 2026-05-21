@@ -274,7 +274,6 @@ class TestValidityToFreqRange:
 class TestFindDispersionModel:
     def test_finds_covering_model(self):
         props = MaterialProperties(
-            type="dielectric",
             permittivity=4.1,
             dispersion_models=[
                 DispersionModel(

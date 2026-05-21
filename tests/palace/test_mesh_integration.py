@@ -439,7 +439,7 @@ class TestPECBlockMesh:
 
 
 class TestShapedDielectric:
-    """Test mesh generation with shaped dielectric volumes (e.g. photonic waveguides)."""
+    """Test mesh generation with shaped dielectric volumes."""
 
     @pytest.fixture(scope="class")
     def shaped_dielectric_sim(self, tmp_path_factory):
@@ -450,15 +450,9 @@ class TestShapedDielectric:
         gf.gpdk.PDK.activate()
 
         c = gf.Component("shaped_wg")
-        c.add_polygon(
-            [(-11, -1), (11, -1), (11, 1), (-11, 1)], layer=(1, 0)
-        )
-        c.add_port(
-            name="o1", center=(-11, 0), width=2, orientation=180, layer=(1, 0)
-        )
-        c.add_port(
-            name="o2", center=(11, 0), width=2, orientation=0, layer=(1, 0)
-        )
+        c.add_polygon([(-11, -1), (11, -1), (11, 1), (-11, 1)], layer=(1, 0))
+        c.add_port(name="o1", center=(-11, 0), width=2, orientation=180, layer=(1, 0))
+        c.add_port(name="o2", center=(11, 0), width=2, orientation=0, layer=(1, 0))
 
         si_thickness = 0.22
         box_thickness = 2.0
@@ -503,8 +497,8 @@ class TestShapedDielectric:
         sim.set_output_dir(str(tmp_path / "sim"))
         sim.set_geometry(c)
         sim.set_stack(stack)
-        for port in c.ports:
-            sim.add_wave_port(port.name, layer="CORE")
+        for i, port in enumerate(c.ports):
+            sim.add_wave_port(port.name or f"P{i}", layer="CORE")
         sim.set_driven(fmin=190e12, fmax=200e12, num_points=2)
         sim.mesh(preset="coarse", auto_size=True)
         return sim
@@ -544,9 +538,8 @@ class TestShapedDielectric:
 
         assert core_mat is not None, "CORE volume not found in config materials"
         perm = core_mat.get("Permittivity")
-        assert perm is not None and perm != 1.0, (
-            f"CORE should have non-1.0 permittivity, got {perm}"
-        )
+        assert perm is not None, f"CORE should have Permittivity, got {core_mat}"
+        assert perm != 1.0, f"CORE should have non-1.0 permittivity, got {perm}"
         assert "Conductivity" not in core_mat, (
             f"CORE should not have Conductivity, got {core_mat.get('Conductivity')}"
         )

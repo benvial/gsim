@@ -426,13 +426,15 @@ def extract_layer_stack(
             substrate_zmax = None
             box_zmin = None
             box_zmax = None
-            for _ln, layer in stack.layers.items():
+            for layer in stack.layers.values():
                 if layer.layer_type == "substrate":
                     substrate_zmin = min(
-                        layer.zmin, substrate_zmin if substrate_zmin is not None else layer.zmin
+                        layer.zmin,
+                        substrate_zmin if substrate_zmin is not None else layer.zmin,
                     )
                     substrate_zmax = max(
-                        layer.zmax, substrate_zmax if substrate_zmax is not None else layer.zmax
+                        layer.zmax,
+                        substrate_zmax if substrate_zmax is not None else layer.zmax,
                     )
                 # BOX detection: dielectric layers below z=0 on the WAFER GDS
                 # layer that are SiO2-like (covers the buried oxide in SOI)
@@ -441,8 +443,12 @@ def extract_layer_stack(
                     and layer.zmax <= 0.0 + 1e-6
                     and _is_oxide_like(layer.material)
                 ):
-                    box_zmin = min(layer.zmin, box_zmin if box_zmin is not None else layer.zmin)
-                    box_zmax = max(layer.zmax, box_zmax if box_zmax is not None else layer.zmax)
+                    box_zmin = min(
+                        layer.zmin, box_zmin if box_zmin is not None else layer.zmin
+                    )
+                    box_zmax = max(
+                        layer.zmax, box_zmax if box_zmax is not None else layer.zmax
+                    )
 
             # Extend substrate below the PDK's substrate z-range
             if substrate_zmin is not None:
