@@ -826,6 +826,7 @@ class PalaceSimMixin:
         verbose: bool,
         write_config: bool = True,
         periodic_axis: str | None = None,
+        decimate_tolerance: float | None = None,
     ) -> SimulationResult:
         """Internal mesh generation."""
         from gsim.palace.mesh.generator import generate_mesh
@@ -873,6 +874,7 @@ class PalaceSimMixin:
             absorbing_boundary=self.absorbing_boundary,
             periodic_axis=periodic_axis,
             merge_via_distance=mesh_config.merge_via_distance,
+            decimate_tolerance=decimate_tolerance,
             verbosity=3,
         )
 
@@ -915,6 +917,7 @@ class PalaceSimMixin:
         show_gui: bool = True,
         auto_size: bool = False,
         cells_per_feature: int = 2,
+        decimate_tolerance: float | None = None,
     ) -> None:
         """Preview the mesh without running simulation.
 
@@ -935,6 +938,8 @@ class PalaceSimMixin:
                 conductor feature / cells_per_feature. Off by default.
             cells_per_feature: Target cells across the smallest conductor
                 feature when auto_size=True. Default 2.
+            decimate_tolerance: Relative tolerance for polygon decimation
+                (None = no decimation; typical 0.001-0.01).
 
         Example:
             >>> sim.preview(preset="fine", planar_conductors=True, show_gui=True)
@@ -998,6 +1003,7 @@ class PalaceSimMixin:
                 pec_blocks=self._pec_blocks or None,
                 absorbing_boundary=self.absorbing_boundary,
                 merge_via_distance=mesh_config.merge_via_distance,
+                decimate_tolerance=decimate_tolerance,
             )
 
     # -------------------------------------------------------------------------
@@ -1022,6 +1028,7 @@ class PalaceSimMixin:
         auto_size: bool = False,
         cells_per_feature: int = 2,
         periodic_axis: str | None = None,
+        decimate_tolerance: float | None = None,
     ) -> SimulationResult:
         """Generate the mesh for Palace simulation.
 
@@ -1050,6 +1057,9 @@ class PalaceSimMixin:
                 feature when auto_size=True. Default 2.
             periodic_axis: Optional periodic axis ("x" or "y") for periodic
                 meshing constraints on opposite domain sides.
+            decimate_tolerance: Relative tolerance for polygon decimation
+                (None = no decimation; typical 0.001-0.01). Reduces vertex
+                count on curved geometry before meshing.
 
         Returns:
             SimulationResult with mesh path
@@ -1109,6 +1119,7 @@ class PalaceSimMixin:
             verbose=verbose,
             write_config=False,
             periodic_axis=periodic_axis,
+            decimate_tolerance=decimate_tolerance,
         )
 
         # Post-mesh summary: nodes, tets, refined / max sizes (in um).
@@ -1349,8 +1360,8 @@ class PalaceSimMixin:
     ) -> SParams | dict[str, Path]:
         """Run simulation locally using Palace.
 
-        Requires mesh() to be called first. Automatically calls
-        write_config() if config.json hasn't been written yet.
+        Requires mesh() to be called first. Always regenerates
+        config.json to reflect current driven/eigenmode settings.
         Supports both Apptainer and direct Palace installation.
 
         Args:
@@ -1413,9 +1424,9 @@ class PalaceSimMixin:
         if num_processes is None:
             num_processes = os.cpu_count() or 1
 
-        # Auto-generate config.json if missing (matches run() behavior)
-        if not config_path.exists():
-            self.write_config()
+        # Always regenerate config.json to reflect current settings
+        # (frequency, material overrides, etc. may have changed since last run)
+        self.write_config()
 
         if not mesh_path.exists():
             raise FileNotFoundError(
