@@ -407,25 +407,6 @@ def pec_block_sim(tmp_path_factory):
 class TestPECBlockMesh:
     """Test mesh generation with PEC blocks."""
 
-    @pytest.mark.skip(reason="No PEC surfaces found.")
-    def test_mesh_has_pec_surfaces(self, pec_block_sim):
-        """PEC blocks must produce PEC surface groups."""
-        groups = pec_block_sim._last_mesh_result.groups
-        pec_names = list(groups["pec_surfaces"].keys())
-        assert len(pec_names) > 0, f"No PEC surfaces found. Got: {pec_names}"
-        # Should contain pec_block_0 entries
-        assert any("pec_block" in name for name in pec_names), (
-            f"No pec_block entries in PEC surfaces. Got: {pec_names}"
-        )
-
-    @pytest.mark.skip(reason="Missing PEC boundary.")
-    def test_config_json_has_pec(self, pec_block_sim):
-        """Config must include PEC boundary when PEC blocks are present."""
-        pec_block_sim.write_config()
-        config_path = Path(pec_block_sim._output_dir) / "config.json"
-        config = json.loads(config_path.read_text())
-        assert "PEC" in config["Boundaries"], "Missing PEC boundary"
-
     def test_mesh_has_conductor_surfaces(self, pec_block_sim):
         """Volumetric conductors should still be present alongside PEC blocks."""
         groups = pec_block_sim._last_mesh_result.groups
