@@ -1026,7 +1026,7 @@ class PalaceSimMixin:
         show_gui: bool = False,
         model_name: str = "palace",
         verbose: bool = True,
-        gmsh_verbosity: int = 0,
+        verbosity: int = 0,
         auto_size: bool = False,
         cells_per_feature: int = 2,
         periodic_axis: str | None = None,
@@ -1052,7 +1052,7 @@ class PalaceSimMixin:
             show_gui: Show gmsh GUI during meshing
             model_name: Base name for output files
             verbose: Print progress messages
-            gmsh_verbosity: Gmsh OCC verbosity level (0=silent, 1-99=increasing)
+            verbosity: Gmsh OCC verbosity level (0=silent, 1-99=increasing)
             auto_size: If True, scale refined_mesh_size down to the smallest
                 conductor feature / cells_per_feature. Off by default so presets
                 use their literal refined_mesh_size.
@@ -1123,7 +1123,7 @@ class PalaceSimMixin:
             write_config=False,
             periodic_axis=periodic_axis,
             decimate_tolerance=decimate_tolerance,
-            gmsh_verbosity=gmsh_verbosity,
+            gmsh_verbosity=verbosity,
         )
 
         # Post-mesh summary: nodes, tets, refined / max sizes (in um).
