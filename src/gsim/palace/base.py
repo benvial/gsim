@@ -1349,7 +1349,8 @@ class PalaceSimMixin:
     ) -> SParams | dict[str, Path]:
         """Run simulation locally using Palace.
 
-        Requires mesh() and write_config() to be called first.
+        Requires mesh() to be called first. Automatically calls
+        write_config() if config.json hasn't been written yet.
         Supports both Apptainer and direct Palace installation.
 
         Args:
@@ -1412,11 +1413,9 @@ class PalaceSimMixin:
         if num_processes is None:
             num_processes = os.cpu_count() or 1
 
-        # Check required files exist
+        # Auto-generate config.json if missing (matches run() behavior)
         if not config_path.exists():
-            raise FileNotFoundError(
-                f"Config file not found: {config_path}. Call write_config() first."
-            )
+            self.write_config()
 
         if not mesh_path.exists():
             raise FileNotFoundError(
