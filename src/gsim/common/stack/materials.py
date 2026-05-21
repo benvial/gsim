@@ -546,12 +546,12 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
             DispersionModel(
                 type="sellmeier",
                 sellmeier_terms=[
-                    SellmeierTerm(B=0.696, C=0.0684**2),
-                    SellmeierTerm(B=0.408, C=0.1162**2),
-                    SellmeierTerm(B=0.897, C=9.896**2),
+                    SellmeierTerm(B=0.6961663, C=0.0684043**2),
+                    SellmeierTerm(B=0.4079426, C=0.1162414**2),
+                    SellmeierTerm(B=0.8974794, C=9.896161**2),
                 ],
-                validity=ValidityRange(valid_wavelength=(0.21, 3.71)),
-                source="Malitson 1965, Appl. Opt. 4(9)",
+                validity=ValidityRange(valid_wavelength=(0.21, 6.7)),
+                source="Malitson 1965 (meep: fused_quartz)",
             ),
             DispersionModel(
                 type="constant",
@@ -582,11 +582,11 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
             DispersionModel(
                 type="sellmeier",
                 sellmeier_terms=[
-                    SellmeierTerm(B=2.814, C=0.0136**2),
-                    SellmeierTerm(B=0.388, C=0.2738**2),
+                    SellmeierTerm(B=3.0249, C=0.1353406**2),
+                    SellmeierTerm(B=40314, C=1239.842**2),
                 ],
-                validity=ValidityRange(valid_wavelength=(0.31, 5.5)),
-                source="Luke et al. 2015",
+                validity=ValidityRange(valid_wavelength=(0.31, 5.504)),
+                source="Luke et al. 2015 (meep: Si3N4_NIR)",
             ),
             DispersionModel(
                 type="constant",
@@ -627,11 +627,12 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
             DispersionModel(
                 type="sellmeier",
                 sellmeier_terms=[
-                    SellmeierTerm(B=10.357, C=0.8832**2),
-                    SellmeierTerm(B=0.860, C=6.004**2),
+                    SellmeierTerm(B=10.6684293, C=0.301516485**2),
+                    SellmeierTerm(B=0.0030434748, C=1.13475115**2),
+                    SellmeierTerm(B=1.54133408, C=1104**2),
                 ],
                 validity=ValidityRange(valid_wavelength=(1.36, 11)),
-                source="Salzberg & Villa 1957",
+                source="Salzberg & Villa 1957 (meep: Si)",
             ),
             DispersionModel(
                 type="constant",
@@ -649,11 +650,12 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
             DispersionModel(
                 type="sellmeier",
                 sellmeier_terms=[
-                    SellmeierTerm(B=10.357, C=0.8832**2),
-                    SellmeierTerm(B=0.860, C=6.004**2),
+                    SellmeierTerm(B=10.6684293, C=0.301516485**2),
+                    SellmeierTerm(B=0.0030434748, C=1.13475115**2),
+                    SellmeierTerm(B=1.54133408, C=1104**2),
                 ],
                 validity=ValidityRange(valid_wavelength=(1.36, 11)),
-                source="Salzberg & Villa 1957",
+                source="Salzberg & Villa 1957 (meep: Si)",
             ),
             DispersionModel(
                 type="constant",
@@ -673,11 +675,12 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
             DispersionModel(
                 type="sellmeier",
                 sellmeier_terms=[
-                    SellmeierTerm(B=1.024, C=0.0532**2),
-                    SellmeierTerm(B=1.076, C=0.1550**2),
+                    SellmeierTerm(B=1.4313493, C=0.0726631**2),
+                    SellmeierTerm(B=0.65054713, C=0.1193242**2),
+                    SellmeierTerm(B=5.3414021, C=18.02825**2),
                 ],
                 validity=ValidityRange(valid_wavelength=(0.2, 5.0)),
-                source="Malitson & Dodge 1972",
+                source="Malitson & Dodge 1972 (meep: Al2O3 ordinary)",
             ),
             DispersionModel(
                 type="constant",
@@ -705,11 +708,12 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
             DispersionModel(
                 type="sellmeier",
                 sellmeier_terms=[
-                    SellmeierTerm(B=8.288, C=0.4682**2),
-                    SellmeierTerm(B=1.784, C=5.768**2),
+                    SellmeierTerm(B=6.7288, C=0.6641159**2),
+                    SellmeierTerm(B=0.21307, C=62.210127**2),
                 ],
+                epsilon_inf=9.28156,
                 validity=ValidityRange(valid_wavelength=(2.5, 12)),
-                source="Barnes & Piltch 1979",
+                source="Icenogle 1979 (meep: Ge, Barnes & Piltch)",
             ),
         ],
     ),
@@ -720,11 +724,12 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
             DispersionModel(
                 type="sellmeier",
                 sellmeier_terms=[
-                    SellmeierTerm(B=8.288, C=0.4682**2),
-                    SellmeierTerm(B=1.784, C=5.768**2),
+                    SellmeierTerm(B=6.7288, C=0.6641159**2),
+                    SellmeierTerm(B=0.21307, C=62.210127**2),
                 ],
+                epsilon_inf=9.28156,
                 validity=ValidityRange(valid_wavelength=(2.5, 12)),
-                source="Barnes & Piltch 1979",
+                source="Icenogle 1979 (meep: Ge, Barnes & Piltch)",
             ),
         ],
     ),
