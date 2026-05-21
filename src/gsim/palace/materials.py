@@ -47,7 +47,8 @@ def resolve_palace_materials_at_frequency(
             resolved[name] = dict(props)
             continue
 
-        if db_props.type == "conductor":
+        evaluated = resolve_material_at_wavelength(name, wavelength_um)
+        if evaluated is not None and evaluated.behavior == "conductive":
             resolved[name] = dict(props)
             continue
 

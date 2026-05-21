@@ -227,6 +227,10 @@ class ResolvedMaterial(BaseModel):
 
     Tensor fields (permittivity, conductivity, loss_tangent, permeability)
     accept a scalar (isotropic) or list of 3 floats (anisotropic).
+
+    The ``behavior`` property returns "conductive" or "dielectric" based on
+    the resolved properties at the evaluation frequency — a material can be
+    conductive at RF and dielectric at optical wavelengths.
     """
 
     model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
@@ -260,6 +264,21 @@ class ResolvedMaterial(BaseModel):
         default="",
         description="Human-readable note about validity status",
     )
+
+    CONDUCTIVITY_THRESHOLD: float = 1e4
+
+    @property
+    def behavior(self) -> Literal["conductive", "dielectric"]:
+        """Frequency-aware classification: conductive if significant conductivity
+        and no dispersive permittivity model active, else dielectric."""
+        cond = self.conductivity_scalar
+        if (
+            cond is not None
+            and cond >= self.CONDUCTIVITY_THRESHOLD
+            and self.model_type not in ("sellmeier", "lorentzian")
+        ):
+            return "conductive"
+        return "dielectric"
 
     @property
     def permittivity_scalar(self) -> float | None:
@@ -297,6 +316,11 @@ class MaterialProperties(BaseModel):
     loss_tangent, permeability) accept a scalar (isotropic) or list of 3
     floats (anisotropic).
 
+    The static ``type`` classification (conductor/dielectric/semiconductor)
+    has been removed in favor of frequency-aware ``ResolvedMaterial.behavior``
+    which correctly handles materials that are conductive at RF but dielectric
+    at optical wavelengths.
+
     Resolution priority:
     1. dispersion_models evaluated at target frequency (-> permittivity)
         2. permittivity scalar or tensor (directly specified)
@@ -304,7 +328,6 @@ class MaterialProperties(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
 
-    type: Literal["conductor", "dielectric", "semiconductor"]
     conductivity: float | list[float] | None = Field(
         default=None, description="Conductivity S/m. Scalar or [sx, sy, sz]."
     )
@@ -329,7 +352,7 @@ class MaterialProperties(BaseModel):
 
     def to_dict(self) -> dict[str, object]:
         """Convert to dictionary for YAML/JSON output."""
-        d: dict[str, object] = {"type": self.type}
+        d: dict[str, object] = {}
         if self.conductivity is not None:
             d["conductivity"] = self.conductivity
         if self.permittivity is not None:
@@ -453,7 +476,7 @@ class MaterialProperties(BaseModel):
     @classmethod
     def conductor(cls, conductivity: float = 5.8e7) -> MaterialProperties:
         """Create a conductor material with the given conductivity in S/m."""
-        return cls(type="conductor", conductivity=conductivity)
+        return cls(conductivity=conductivity)
 
     @classmethod
     def dielectric(
@@ -461,13 +484,12 @@ class MaterialProperties(BaseModel):
     ) -> MaterialProperties:
         """Create a dielectric material with permittivity and loss tangent."""
         return cls(
-            type="dielectric", permittivity=permittivity, loss_tangent=loss_tangent
+            permittivity=permittivity, loss_tangent=loss_tangent
         )
 
 
 MATERIALS_DB: dict[str, MaterialProperties] = {
     "aluminum": MaterialProperties(
-        type="conductor",
         conductivity=3.77e7,
         dispersion_models=[
             DispersionModel(
@@ -479,7 +501,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "copper": MaterialProperties(
-        type="conductor",
         conductivity=5.8e7,
         dispersion_models=[
             DispersionModel(
@@ -491,7 +512,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "tungsten": MaterialProperties(
-        type="conductor",
         conductivity=1.82e7,
         dispersion_models=[
             DispersionModel(
@@ -503,7 +523,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "gold": MaterialProperties(
-        type="conductor",
         conductivity=4.1e7,
         dispersion_models=[
             DispersionModel(
@@ -515,7 +534,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "TiN": MaterialProperties(
-        type="conductor",
         conductivity=5.0e6,
         dispersion_models=[
             DispersionModel(
@@ -527,7 +545,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "poly_si": MaterialProperties(
-        type="conductor",
         conductivity=1.0e5,
         dispersion_models=[
             DispersionModel(
@@ -539,7 +556,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "SiO2": MaterialProperties(
-        type="dielectric",
         permittivity=4.1,
         loss_tangent=0.0,
         dispersion_models=[
@@ -562,7 +578,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "passive": MaterialProperties(
-        type="dielectric",
         permittivity=6.6,
         loss_tangent=0.0,
         dispersion_models=[
@@ -575,7 +590,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "Si3N4": MaterialProperties(
-        type="dielectric",
         permittivity=7.5,
         loss_tangent=0.001,
         dispersion_models=[
@@ -597,7 +611,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "polyimide": MaterialProperties(
-        type="dielectric",
         permittivity=3.4,
         loss_tangent=0.002,
         dispersion_models=[
@@ -610,40 +623,14 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "air": MaterialProperties(
-        type="dielectric",
         permittivity=1.0,
         loss_tangent=0.0,
     ),
     "vacuum": MaterialProperties(
-        type="dielectric",
         permittivity=1.0,
         loss_tangent=0.0,
     ),
     "silicon": MaterialProperties(
-        type="semiconductor",
-        permittivity=11.9,
-        conductivity=2.0,
-        dispersion_models=[
-            DispersionModel(
-                type="sellmeier",
-                sellmeier_terms=[
-                    SellmeierTerm(B=10.6684293, C=0.301516485**2),
-                    SellmeierTerm(B=0.0030434748, C=1.13475115**2),
-                    SellmeierTerm(B=1.54133408, C=1104**2),
-                ],
-                validity=ValidityRange(valid_wavelength=(1.36, 11)),
-                source="Salzberg & Villa 1957 (meep: Si)",
-            ),
-            DispersionModel(
-                type="constant",
-                permittivity=11.9,
-                validity=ValidityRange(valid_frequency=(0, 10e9)),
-                source="IHP SG13G2 PDK",
-            ),
-        ],
-    ),
-    "si": MaterialProperties(
-        type="semiconductor",
         permittivity=11.9,
         conductivity=2.0,
         dispersion_models=[
@@ -666,7 +653,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "sapphire": MaterialProperties(
-        type="dielectric",
         permittivity=[9.3, 9.3, 11.5],
         loss_tangent=[3e-5, 3e-5, 8.6e-5],
         permeability=[0.99999975, 0.99999975, 0.99999979],
@@ -691,7 +677,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "quartz": MaterialProperties(
-        type="dielectric",
         permittivity=4.5,
         dispersion_models=[
             DispersionModel(
@@ -702,23 +687,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "germanium": MaterialProperties(
-        type="semiconductor",
-        permittivity=16.0,
-        dispersion_models=[
-            DispersionModel(
-                type="sellmeier",
-                sellmeier_terms=[
-                    SellmeierTerm(B=6.7288, C=0.6641159**2),
-                    SellmeierTerm(B=0.21307, C=62.210127**2),
-                ],
-                epsilon_inf=9.28156,
-                validity=ValidityRange(valid_wavelength=(2.5, 12)),
-                source="Icenogle 1979 (meep: Ge, Barnes & Piltch)",
-            ),
-        ],
-    ),
-    "ge": MaterialProperties(
-        type="semiconductor",
         permittivity=16.0,
         dispersion_models=[
             DispersionModel(
@@ -734,7 +702,6 @@ MATERIALS_DB: dict[str, MaterialProperties] = {
         ],
     ),
     "tfln": MaterialProperties(
-        type="dielectric",
         permittivity=44.0,
         dispersion_models=[
             DispersionModel(
@@ -760,6 +727,7 @@ MATERIAL_ALIASES: dict[str, str] = {
     "sin": "Si3N4",
     "si3n4": "Si3N4",
     "si": "silicon",
+    "ge": "germanium",
 }
 
 
@@ -891,15 +859,3 @@ def should_enable_dispersion(
         return props.index_variation(wavelength_um, bandwidth_um) > threshold
 
     return False
-
-
-def material_is_conductor(material_name: str) -> bool:
-    """Check if a material is a conductor."""
-    props = get_material_properties(material_name)
-    return props is not None and props.type == "conductor"
-
-
-def material_is_dielectric(material_name: str) -> bool:
-    """Check if a material is a dielectric."""
-    props = get_material_properties(material_name)
-    return props is not None and props.type == "dielectric"

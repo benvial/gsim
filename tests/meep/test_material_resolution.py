@@ -295,7 +295,6 @@ class TestFindDispersionModel:
 
     def test_falls_back_to_unspecified(self):
         props = MaterialProperties(
-            type="dielectric",
             permittivity=4.1,
             dispersion_models=[
                 DispersionModel(
@@ -312,7 +311,6 @@ class TestFindDispersionModel:
 
     def test_no_model_at_wavelength(self):
         props = MaterialProperties(
-            type="dielectric",
             permittivity=4.1,
             dispersion_models=[
                 DispersionModel(
@@ -326,7 +324,7 @@ class TestFindDispersionModel:
         assert model is None
 
     def test_no_dispersion_models(self):
-        props = MaterialProperties(type="dielectric", permittivity=4.1)
+        props = MaterialProperties(permittivity=4.1)
         model = _find_dispersion_model(props, 1.55)
         assert model is None
 

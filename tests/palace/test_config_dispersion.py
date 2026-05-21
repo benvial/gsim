@@ -73,10 +73,10 @@ class TestResolvePalaceMaterialsAtFrequency:
         materials = {"aluminum": MATERIALS_DB["aluminum"].to_dict()}
         resolved = resolve_palace_materials_at_frequency(materials, 5e9)
         assert "aluminum" in resolved
-        assert resolved["aluminum"]["type"] == "conductor"
+        assert resolved["aluminum"]["conductivity"] == 3.77e7
 
     def test_unknown_material_preserved(self):
-        materials = {"custom_mat": {"permittivity": 5.0, "type": "dielectric"}}
+        materials = {"custom_mat": {"permittivity": 5.0}}
         resolved = resolve_palace_materials_at_frequency(materials, 5e9)
         assert "custom_mat" in resolved
         assert resolved["custom_mat"]["permittivity"] == 5.0
@@ -89,7 +89,7 @@ class TestResolvePalaceMaterialsAtFrequency:
         materials = {"SiO2": MATERIALS_DB["SiO2"].to_dict()}
         freq_hz = 299_792_458 / (1.55e-6)
         resolved = resolve_palace_materials_at_frequency(materials, freq_hz)
-        assert resolved["SiO2"]["type"] == "dielectric"
+        assert resolved["SiO2"]["permittivity"] is not None
 
     def test_does_not_mutate_input(self):
         materials = {"SiO2": MATERIALS_DB["SiO2"].to_dict()}

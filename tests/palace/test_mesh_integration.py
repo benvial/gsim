@@ -249,12 +249,11 @@ def _make_qpdk_stack():
     ]
     stack.materials = {
         "sapphire": {
-            "type": "dielectric",
             "permittivity": 9.3,
             "loss_tangent": 0.0,
         },
-        "vacuum": {"type": "dielectric", "permittivity": 1.0, "loss_tangent": 0.0},
-        "niobium": {"type": "conductor", "conductivity": 0.0},
+        "vacuum": {"permittivity": 1.0, "loss_tangent": 0.0},
+        "niobium": {"conductivity": 0.0},
     }
     return stack
 

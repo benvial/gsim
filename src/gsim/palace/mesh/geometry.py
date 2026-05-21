@@ -613,19 +613,17 @@ def add_dielectrics(
     def _is_air_or_vacuum(material_name: str) -> bool:
         """Return True when *material_name* represents air/vacuum.
 
-        Uses stack material metadata first (type + permittivity), then
+        Uses stack material metadata (permittivity ~1) first, then
         falls back to name matching for robustness with custom stacks.
         """
         mat = stack.materials.get(material_name)
         if isinstance(mat, dict):
-            mat_type = str(mat.get("type", "")).strip().lower()
-            if mat_type == "dielectric":
-                eps = mat.get("permittivity")
-                try:
-                    if eps is not None and abs(float(eps) - 1.0) <= 1e-9:
-                        return True
-                except (TypeError, ValueError):
-                    pass
+            eps = mat.get("permittivity")
+            try:
+                if eps is not None and abs(float(eps) - 1.0) <= 1e-9:
+                    return True
+            except (TypeError, ValueError):
+                pass
 
         name = material_name.strip().lower()
         return name in {"air", "vacuum"}

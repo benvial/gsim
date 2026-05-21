@@ -293,7 +293,8 @@ class TestMaterialsResolution:
 
         mat = MaterialProperties.dielectric(permittivity=6.25)
         assert mat.permittivity == 6.25
-        assert mat.type == "dielectric"
+        resolved = mat.evaluate_at_wavelength(1.55)
+        assert resolved.behavior == "dielectric"
 
 
 # ---------------------------------------------------------------------------

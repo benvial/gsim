@@ -143,7 +143,7 @@ def _merge_material(
     base: MaterialProperties, overlay: MaterialProperties
 ) -> MaterialProperties:
     """Merge overlay properties into base, keeping unset fields from base."""
-    kwargs: dict = {"type": overlay.type or base.type}
+    kwargs: dict = {}
 
     for field_name in (
         "conductivity",

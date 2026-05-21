@@ -38,8 +38,6 @@ from gsim.common.stack.materials import (
     SellmeierTerm,
     ValidityRange,
     get_material_properties,
-    material_is_conductor,
-    material_is_dielectric,
     resolve_material_at_wavelength,
     should_enable_dispersion,
 )
@@ -169,8 +167,6 @@ __all__ = [
     "get_stack",
     "load_overlay",
     "load_stack_yaml",
-    "material_is_conductor",
-    "material_is_dielectric",
     "merge_overlay",
     "parse_layer_stack",
     "plot_stack",

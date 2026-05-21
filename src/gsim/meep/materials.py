@@ -353,14 +353,20 @@ def resolve_materials(
     for name in sorted(used_material_names):
         if name in overrides:
             props = overrides[name]
-            if props.type == "conductor":
-                continue
             if wavelength_um is not None:
                 resolved = props.evaluate_at_wavelength(wavelength_um)
+                if resolved.behavior == "conductive":
+                    continue
                 if resolved.permittivity is not None:
                     materials[name] = _resolved_to_material_data(
                         resolved, wavelength_um
                     )
+                    continue
+            else:
+                cond = props.conductivity
+                if isinstance(cond, list):
+                    cond = cond[0]
+                if cond is not None and cond >= ResolvedMaterial.CONDUCTIVITY_THRESHOLD:
                     continue
             if props.permittivity is None:
                 warnings.warn(
@@ -375,13 +381,13 @@ def resolve_materials(
             continue
 
         db_props = get_material_properties(name)
-        if db_props is not None and db_props.type == "conductor":
-            continue
 
         if wavelength_um is not None:
             resolved = resolve_material_at_wavelength(
                 name, wavelength_um, overlay=overlay
             )
+            if resolved is not None and resolved.behavior == "conductive":
+                continue
             if resolved is not None and resolved.permittivity is not None:
                 materials[name] = _resolved_to_material_data(resolved, wavelength_um)
                 continue
@@ -477,7 +483,7 @@ def resolve_materials_with_dispersion(
             materials[name] = _resolved_to_material_data(resolved, wavelength_um)
             continue
 
-        if props is not None and props.type == "conductor":
+        if resolved.behavior == "conductive":
             continue
 
         dispersive_model: DispersionModel | None = None
