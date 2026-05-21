@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
+from scipy.constants import c as C0
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -249,9 +250,8 @@ class EigenmodeConfig(BaseModel):
                 "Cannot compute Floquet wave vector without eigenmode target frequency."
             )
 
-        c0 = 299_792_458.0
         d_mesh = (
-            self.phi_target * c0 / (2 * math.pi * self.target * self.n_eff_guess * l0)
+            self.phi_target * C0 / (2 * math.pi * self.target * self.n_eff_guess * l0)
         )
         d_mesh_rounded = max(1, round(d_mesh))
         k_component = self.phi_target / d_mesh_rounded
