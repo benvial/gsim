@@ -10,7 +10,8 @@ to the Palace config JSON.
 """
 
 from __future__ import annotations
-from scipy.constants import c as C0
+
+from scipy.constants import c as C0  # noqa: N812
 
 from gsim.common.stack.materials import (
     get_material_properties,

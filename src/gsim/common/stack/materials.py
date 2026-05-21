@@ -23,11 +23,11 @@ Resolution priority:
 from __future__ import annotations
 
 import math
-from scipy.constants import c as C0
 import warnings
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from scipy.constants import c as C0  # noqa: N812
 
 
 class ValidityRange(BaseModel):

@@ -24,8 +24,9 @@ Dispersion rendering (RFC: dispersion flag on the Simulation):
 from __future__ import annotations
 
 import math
-from scipy.constants import c as C0
 import warnings
+
+from scipy.constants import c as C0  # noqa: N812
 
 from gsim.common.stack.materials import (
     DispersionModel,

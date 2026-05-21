@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import logging
 import math
-from scipy.constants import c as C0
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from scipy.constants import c as C0  # noqa: N812
 
 logger = logging.getLogger(__name__)
 

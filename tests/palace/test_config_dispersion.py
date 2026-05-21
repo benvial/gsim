@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from scipy.constants import c as C0  # noqa: N812
 
-from scipy.constants import c as C0
 from gsim.common.stack.materials import MATERIALS_DB
 from gsim.palace.materials import resolve_palace_materials_at_frequency
 from gsim.palace.models import DrivenConfig

@@ -391,9 +391,7 @@ def validate_mesh(sim) -> ValidationResult:
         try:
             sim.write_config(validate_mesh=False)
         except Exception as e:
-            errors.append(
-                f"Could not regenerate config.json during validate_mesh: {e}"
-            )
+            errors.append(f"Could not regenerate config.json during validate_mesh: {e}")
 
         if config_path.exists():
             try:
