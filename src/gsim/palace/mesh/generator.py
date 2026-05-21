@@ -202,6 +202,7 @@ def generate_mesh(
     absorbing_boundary: bool = True,
     periodic_axis: str | None = None,
     merge_via_distance: float = 2.0,
+    decimate_tolerance: float | None = None,
     verbosity: int = 3,
 ) -> MeshResult:
     """Generate mesh for Palace EM simulation.
@@ -232,6 +233,8 @@ def generate_mesh(
         absorbing_boundary: If True, use absorbing boundary conditions on outer surfaces
         periodic_axis: ("x" or "y") for meshing constraints on opposite domain sides
         merge_via_distance: Max gap between vias to merge (um)
+        decimate_tolerance: Relative tolerance for polygon decimation
+            (None = no decimation; typical 0.001-0.01)
         verbosity: Sets gmsh verbosity level
 
     Returns:
@@ -244,7 +247,7 @@ def generate_mesh(
 
     # Extract geometry
     logger.info("Extracting geometry...")
-    geometry = extract_geometry(component, stack)
+    geometry = extract_geometry(component, stack, decimate_tolerance=decimate_tolerance)
     logger.info("  Polygons: %s", len(geometry.polygons))
     logger.info("  Bbox: %s", geometry.bbox)
 
