@@ -238,22 +238,31 @@ def generate_palace_config(
             return via.zmin <= cond.zmax and via.zmax >= cond.zmin
 
         terminal_entries: list[dict[str, object]] = []
-        ground_attrs: list[int] = list(pec_attrs)
+        assigned_pgs: set[int] = set()
 
         # Track which vias were attached to a terminal so we don't also
         # send their surfaces to ground.
         vias_on_terminal: set[str] = set()
 
+        pec_surfaces = groups.get("pec_surfaces", {})
+
         for idx, terminal in enumerate(terminals, start=1):
             attrs: list[int] = []
+            # Thick conductor shells (named "<layer>_xy" / "<layer>_z")
             for surf_name, surf_info in groups["conductor_surfaces"].items():
                 surf_layer = surf_name.rsplit("_", 1)[0]
                 if surf_layer == terminal.layer:
                     attrs.append(surf_info["phys_group"])
+            # Planar (thin) conductor surfaces (keyed by layer name)
+            if terminal.layer in pec_surfaces:
+                attrs.append(pec_surfaces[terminal.layer]["phys_group"])
+            # Vias touching this terminal's layer
             for via_name, via_pgs in via_boundary.items():
                 if _via_touches(via_name, terminal.layer):
                     attrs.extend(via_pgs)
                     vias_on_terminal.add(via_name)
+
+            assigned_pgs.update(attrs)
             terminal_entries.append(
                 {
                     "Index": idx,
@@ -261,10 +270,16 @@ def generate_palace_config(
                 }
             )
 
-        for surf_name, surf_info in groups["conductor_surfaces"].items():
-            surf_layer = surf_name.rsplit("_", 1)[0]
-            if surf_layer not in terminal_layer_names:
-                ground_attrs.append(surf_info["phys_group"])
+        # Anything that wasn't assigned to a terminal becomes Ground.
+        ground_attrs: list[int] = []
+        for surf_info in groups["conductor_surfaces"].values():
+            pg = surf_info["phys_group"]
+            if pg not in assigned_pgs:
+                ground_attrs.append(pg)
+        for surf_info in pec_surfaces.values():
+            pg = surf_info["phys_group"]
+            if pg not in assigned_pgs:
+                ground_attrs.append(pg)
 
         # Vias that touch a non-terminal conductor -> tie to ground so they
         # don't float (Palace's solver has no current-flow through volumes).
@@ -285,7 +300,7 @@ def generate_palace_config(
             "Terminal": terminal_entries,
         }
         if ground_attrs:
-            boundaries["Ground"] = {"Attributes": sorted(ground_attrs)}
+            boundaries["Ground"] = {"Attributes": sorted(set(ground_attrs))}
 
     else:
         lumped_ports: list[dict[str, object]] = []

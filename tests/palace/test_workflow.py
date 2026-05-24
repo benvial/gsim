@@ -374,8 +374,52 @@ class TestElectrostaticSimWorkflow:
         boundaries = config["Boundaries"]
         assert "Terminal" in boundaries
         assert len(boundaries["Terminal"]) == 2
+        # Each terminal must have at least one attribute (regression: planar
+        # conductor terminals were silently grounded when the loop only
+        # scanned conductor_surfaces).
+        for term in boundaries["Terminal"]:
+            assert term["Attributes"], (
+                f"Terminal {term['Index']} has no attributes — "
+                "likely a layer/surface lookup miss"
+            )
         assert "LumpedPort" not in boundaries
         assert "WavePort" not in boundaries
+
+    def test_planar_conductor_terminal_not_grounded(
+        self, tmp_path_factory, cpw_component
+    ):
+        """Terminals on planar (thin) conductor layers must be picked up.
+
+        Regression: the terminal loop previously only scanned
+        ``conductor_surfaces`` (thick metals with shell surfaces) and
+        seeded ``ground_attrs`` with ``pec_attrs``. A terminal defined on
+        a planar layer therefore ended up with empty attributes and the
+        layer's PG was sent to Ground instead.
+        """
+        tmp_path = tmp_path_factory.mktemp("electrostatic_planar")
+        sim = ElectrostaticSim()
+        sim.set_output_dir(str(tmp_path / "palace-sim"))
+        sim.set_geometry(cpw_component)
+        sim.set_stack(substrate_thickness=2.0, air_above=300.0)
+        sim.add_terminal("T1", layer="metal1")
+        sim.add_terminal("T2", layer="metal1")
+        sim.set_electrostatic()
+        sim.mesh(preset="coarse", planar_conductors=True)
+        sim.write_config()
+
+        output_dir = sim._output_dir
+        assert output_dir is not None
+        config = json.loads((Path(output_dir) / "config.json").read_text())
+        boundaries = config["Boundaries"]
+        terminal_attrs: set[int] = set()
+        for term in boundaries["Terminal"]:
+            assert term["Attributes"], "Planar-conductor terminal has no attributes"
+            terminal_attrs.update(term["Attributes"])
+        # And the terminal's PG must not also appear in Ground.
+        ground_attrs = set(boundaries.get("Ground", {}).get("Attributes", []))
+        assert terminal_attrs.isdisjoint(ground_attrs), (
+            f"Terminal attrs {terminal_attrs} overlap Ground {ground_attrs}"
+        )
 
 
 # ---------------------------------------------------------------------------
