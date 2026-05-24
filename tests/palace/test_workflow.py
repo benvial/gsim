@@ -363,10 +363,19 @@ class TestElectrostaticSimWorkflow:
         mesh_path = Path(electrostatic_sim._output_dir) / "palace.msh"
         assert mesh_path.exists()
 
-    def test_write_config_not_implemented(self, electrostatic_sim):
-        """Electrostatic config generation is not yet implemented."""
-        with pytest.raises(NotImplementedError):
-            electrostatic_sim.write_config()
+    def test_write_config_generates_valid_json(self, electrostatic_sim):
+        """Electrostatic config generation produces valid Palace JSON."""
+        electrostatic_sim.write_config()
+        config_path = Path(electrostatic_sim._output_dir) / "config.json"
+        assert config_path.exists()
+        config = json.loads(config_path.read_text())
+        assert config["Problem"]["Type"] == "Electrostatic"
+        assert "Electrostatic" in config["Solver"]
+        boundaries = config["Boundaries"]
+        assert "Terminal" in boundaries
+        assert len(boundaries["Terminal"]) == 2
+        assert "LumpedPort" not in boundaries
+        assert "WavePort" not in boundaries
 
 
 # ---------------------------------------------------------------------------
