@@ -331,6 +331,8 @@ def extract_layer_stack(
     air_below: float = 0.0,
     boundary_margin: float = 30.0,
     include_substrate: bool = False,
+    max_z: float | None = None,
+    top_layer: str | None = None,
 ) -> LayerStack:
     """Extract layer stack from a gdsfactory LayerStack.
 
@@ -343,6 +345,11 @@ def extract_layer_stack(
         air_below: Height of air box below substrate/oxide in um (default: 0)
         boundary_margin: Lateral margin from GDS bbox in um (default: 30)
         include_substrate: Whether to include lossy substrate (default: False)
+        max_z: Optional z-cap (um) for dielectric/air stack construction.
+            Useful to trim unused upper process levels.
+        top_layer: Optional layer name whose ``zmax`` is used as z-cap.
+            If both ``max_z`` and ``top_layer`` are provided, the smaller
+            of the two caps is applied.
 
     Returns:
         LayerStack object for Palace simulation
@@ -351,7 +358,23 @@ def extract_layer_stack(
 
     z_min_overall = float("inf")
     z_max_overall = float("-inf")
+    z_max_conductor = float("-inf")
+    conductor_tops: list[float] = []
+    passivation_ranges: list[tuple[float, float, str]] = []
+    dielectric_layers: list[tuple[float, float, str, str]] = []
     materials_used: set[str] = set()
+
+    def _looks_like_passivation(layer_name: str, material_name: str) -> bool:
+        """Heuristic to detect top passivation layers from PDK stacks."""
+        lname = layer_name.strip().lower()
+        mname = material_name.strip().lower()
+        if "passiv" in lname or "nitride" in lname:  # codespell:ignore passiv
+            return True
+
+        if mname in {"passive", "sin", "si3n4", "silicon_nitride"}:
+            return True
+
+        return "nitride" in mname
 
     for layer_name, layer_level in gf_layer_stack.layers.items():
         zmin = layer_level.zmin if layer_level.zmin is not None else 0.0
@@ -385,6 +408,38 @@ def extract_layer_stack(
             z_min_overall = min(z_min_overall, zmin)
             z_max_overall = max(z_max_overall, zmax)
 
+        if layer_type in {"conductor", "via"}:
+            z_max_conductor = max(z_max_conductor, zmax)
+            conductor_tops.append(zmax)
+        elif layer_type == "dielectric":
+            dielectric_layers.append((zmin, zmax, material, layer_name))
+            if _looks_like_passivation(layer_name, material):
+                passivation_ranges.append((zmin, zmax, material))
+
+    z_cap = max_z
+    if top_layer is not None:
+        top = stack.layers.get(top_layer)
+        if top is None:
+            raise ValueError(f"top_layer '{top_layer}' not found in layer stack")
+        z_cap = top.zmax if z_cap is None else min(z_cap, top.zmax)
+
+    if z_cap is not None:
+        if z_cap <= z_min_overall:
+            raise ValueError(
+                "z-cap "
+                f"({z_cap}) must be greater than the stack bottom "
+                f"({z_min_overall})"
+            )
+        z_max_active = min(z_max_overall, z_cap)
+        active_tops = [z for z in conductor_tops if z <= z_max_active + 1e-9]
+        if active_tops:
+            z_max_conductor_active = max(active_tops)
+        else:
+            z_max_conductor_active = min(z_max_conductor, z_max_active)
+    else:
+        z_max_active = z_max_overall
+        z_max_conductor_active = z_max_conductor
+
     for material in materials_used:
         props = get_material_properties(material)
         if props:
@@ -398,8 +453,33 @@ def extract_layer_stack(
     if "air" not in stack.materials:
         stack.materials["air"] = MATERIALS_DB["air"].to_dict()
 
-    if "SiO2" not in stack.materials:
-        stack.materials["SiO2"] = MATERIALS_DB["SiO2"].to_dict()
+    sorted_dielectric_layers = sorted(dielectric_layers, key=lambda d: d[0])
+
+    def _is_dielectric_material(material_name: str) -> bool:
+        props = get_material_properties(material_name)
+        if props is None:
+            return True
+        return props.type == "dielectric"
+
+    # Choose a PDK-defined dielectric material for the bulk background slab.
+    # Prefer non-passivation layers (e.g. oxide / IMD materials).
+    bulk_material = None
+    for _zmin, _zmax, material, layer_name in sorted_dielectric_layers:
+        if not _is_dielectric_material(material):
+            continue
+        if not _looks_like_passivation(layer_name, material):
+            bulk_material = material
+            break
+    if bulk_material is None and sorted_dielectric_layers:
+        for _zmin, _zmax, material, _layer_name in sorted_dielectric_layers:
+            if _is_dielectric_material(material):
+                bulk_material = material
+                break
+    if bulk_material is None and sorted_dielectric_layers:
+        bulk_material = sorted_dielectric_layers[0][2]
+    if bulk_material is None:
+        # Rare fallback when a PDK stack defines no dielectric layers.
+        bulk_material = "SiO2"
 
     if include_substrate:
         stack.dielectrics.append(
@@ -416,35 +496,83 @@ def extract_layer_stack(
     else:
         oxide_zmin = -substrate_thickness
 
+    # Prefer explicit PDK passivation placement (e.g. IHP passivation layer).
+    # No synthetic passivation is added when the PDK does not define one.
+    passivation_candidates: list[tuple[float, float, str]] = []
+    for zmin, zmax, material in passivation_ranges:
+        if zmax <= z_max_conductor_active + 1e-9:
+            continue
+        clipped_zmin = max(zmin, z_max_conductor_active)
+        clipped_zmax = min(zmax, z_max_active)
+        if clipped_zmax > clipped_zmin + 1e-9:
+            passivation_candidates.append((clipped_zmin, clipped_zmax, material))
+
+    if passivation_candidates:
+        passive_zmin = min(zmin for zmin, _, _ in passivation_candidates)
+        passive_zmax = max(zmax for _, zmax, _ in passivation_candidates)
+        # Use the material from the lowest passivation segment.
+        passivation_material = min(passivation_candidates, key=lambda item: item[0])[2]
+    else:
+        passive_zmin = None
+        passive_zmax = None
+        passivation_material = None
+
+    def _ensure_material_defined(material_name: str) -> None:
+        if material_name in stack.materials:
+            return
+        props = get_material_properties(material_name)
+        if props:
+            stack.materials[material_name] = props.to_dict()
+        else:
+            stack.materials[material_name] = {
+                "type": "unknown",
+                "note": "Material not in database, please add properties manually",
+            }
+
+    _ensure_material_defined(bulk_material)
+
+    if passivation_material is not None:
+        _ensure_material_defined(passivation_material)
+
+    oxide_zmax = (
+        z_max_active if passive_zmin is None else min(passive_zmin, z_max_active)
+    )
+
     stack.dielectrics.append(
         {
             "name": "oxide",
             "zmin": oxide_zmin,
-            "zmax": z_max_overall,
-            "material": "SiO2",
+            "zmax": oxide_zmax,
+            "material": bulk_material,
         }
     )
 
-    passive_thickness = 0.4
-    stack.dielectrics.append(
-        {
-            "name": "passive",
-            "zmin": z_max_overall,
-            "zmax": z_max_overall + passive_thickness,
-            "material": "passive",
-        }
-    )
-    if "passive" not in stack.materials:
-        stack.materials["passive"] = MATERIALS_DB["passive"].to_dict()
+    top_of_stack = oxide_zmax
 
-    stack.dielectrics.append(
-        {
-            "name": "air_box",
-            "zmin": z_max_overall + passive_thickness,
-            "zmax": z_max_overall + passive_thickness + air_above,
-            "material": "air",
-        }
-    )
+    if (
+        passivation_material is not None
+        and passive_zmin is not None
+        and passive_zmax is not None
+    ):
+        stack.dielectrics.append(
+            {
+                "name": "passive",
+                "zmin": passive_zmin,
+                "zmax": passive_zmax,
+                "material": passivation_material,
+            }
+        )
+        top_of_stack = passive_zmax
+
+    if air_above > 0:
+        stack.dielectrics.append(
+            {
+                "name": "air_box",
+                "zmin": top_of_stack,
+                "zmax": top_of_stack + air_above,
+                "material": "air",
+            }
+        )
 
     if air_below > 0:
         stack.dielectrics.append(
@@ -462,6 +590,8 @@ def extract_layer_stack(
         "air_below": air_below,
         "substrate_thickness": substrate_thickness,
         "include_substrate": include_substrate,
+        "max_z": max_z,
+        "top_layer": top_layer,
     }
 
     return stack

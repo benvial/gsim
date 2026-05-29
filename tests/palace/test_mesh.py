@@ -22,7 +22,7 @@ class TestMeshConfig:
         config = MeshConfig()
         assert config.refined_mesh_size == 5.0
         assert config.max_mesh_size == 300.0
-        assert config.margin == 50.0
+        assert config.margin == 0.0
         assert config.fmax == 100e9
         assert config.show_gui is False
         assert config.boundary_conditions is not None
@@ -150,6 +150,55 @@ def test_add_dielectrics_explicit_airbox_z_extents(monkeypatch) -> None:
     assert "airbox" in tags
     # Air layer is skipped when explicit airbox is built.
     assert list(tags.keys()) == ["SiO2", "airbox"]
+
+
+def test_add_dielectrics_explicit_airbox_skips_named_air_regions(monkeypatch) -> None:
+    calls: list[tuple[float, float, float, float, float, float]] = []
+
+    def _fake_create_box(_kernel, xmin, ymin, zmin, xmax, ymax, zmax):
+        calls.append((xmin, ymin, zmin, xmax, ymax, zmax))
+        return len(calls)
+
+    monkeypatch.setattr(
+        "gsim.palace.mesh.geometry.gmsh_utils.create_box", _fake_create_box
+    )
+
+    class _Kernel:
+        def synchronize(self) -> None:
+            return
+
+    geometry = GeometryData(polygons=[], bbox=(0.0, 0.0, 10.0, 20.0), layer_bboxes={})
+    stack = LayerStack(
+        dielectrics=[
+            {"name": "oxide", "zmin": -2.0, "zmax": 0.5, "material": "SiO2"},
+            {
+                "name": "air_box_top",
+                "zmin": 0.5,
+                "zmax": 8.0,
+                "material": "ambient",
+            },
+        ],
+        materials={
+            "SiO2": {"type": "dielectric", "permittivity": 4.1},
+            # Intentionally non-air metadata to force name-based detection.
+            "ambient": {"type": "unknown"},
+        },
+    )
+
+    tags = add_dielectrics(
+        _Kernel(),
+        geometry,
+        stack,
+        margin_x=5.0,
+        margin_y=7.0,
+        air_margin=0.0,
+        airbox_z_above=100.0,
+        airbox_z_below=100.0,
+    )
+
+    assert list(tags.keys()) == ["SiO2", "airbox"]
+    # Oxide + explicit airbox only.
+    assert len(calls) == 2
 
 
 def _mk_layer(

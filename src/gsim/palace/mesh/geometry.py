@@ -226,7 +226,8 @@ def _merge_via_polygons(
     # Convert back to coordinate lists
     result = []
     # unary_union may return Polygon or MultiPolygon
-    geoms = merged.geoms if hasattr(merged, "geoms") else [merged]
+    geoms_attr = getattr(merged, "geoms", None)
+    geoms = list(geoms_attr) if geoms_attr is not None else [merged]
     for geom in geoms:
         if geom.is_empty:
             continue
@@ -551,7 +552,22 @@ def add_dielectrics(
     xmax_air = xmax0 + margin_x
     ymax_air = ymax0 + margin_y
 
-    def _is_air_or_vacuum(material_name: str) -> bool:
+    def _contains_air_token(name: str | None) -> bool:
+        """Return True when *name* clearly denotes air/vacuum."""
+        if not name:
+            return False
+
+        normalized = name.strip().lower().replace("-", "_")
+        if normalized in {"air", "vacuum"}:
+            return True
+
+        tokens = [tok for tok in normalized.split("_") if tok]
+        return "air" in tokens or "vacuum" in tokens
+
+    def _is_air_or_vacuum(
+        material_name: str,
+        dielectric_name: str | None = None,
+    ) -> bool:
         """Return True when *material_name* represents air/vacuum.
 
         Uses stack material metadata first (type + permittivity), then
@@ -560,16 +576,22 @@ def add_dielectrics(
         mat = stack.materials.get(material_name)
         if isinstance(mat, dict):
             mat_type = str(mat.get("type", "")).strip().lower()
-            if mat_type == "dielectric":
-                eps = mat.get("permittivity")
-                try:
-                    if eps is not None and abs(float(eps) - 1.0) <= 1e-9:
-                        return True
-                except (TypeError, ValueError):
-                    pass
+            eps = mat.get("permittivity")
+        else:
+            mat_type = str(getattr(mat, "type", "")).strip().lower()
+            eps = getattr(mat, "permittivity", None)
 
-        name = material_name.strip().lower()
-        return name in {"air", "vacuum"}
+        if mat_type == "dielectric":
+            try:
+                if eps is not None and abs(float(eps) - 1.0) <= 1e-9:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+        if _contains_air_token(material_name):
+            return True
+
+        return _contains_air_token(dielectric_name)
 
     z_min_all = math.inf
     z_max_all = -math.inf
@@ -585,9 +607,10 @@ def add_dielectrics(
     )
 
     for dielectric in stack.dielectrics:
+        dielectric_name = dielectric.get("name")
         material = dielectric["material"]
 
-        is_air_like = _is_air_or_vacuum(material)
+        is_air_like = _is_air_or_vacuum(material, dielectric_name=dielectric_name)
 
         # When building an explicit airbox, skip explicit air/vacuum layers.
         if is_air_like and use_airbox:
