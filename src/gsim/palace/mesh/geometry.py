@@ -367,7 +367,7 @@ def add_metals(
         conductors.
     """
     # layer_name -> {"volumes": [], "surfaces_xy": [], "surfaces_z": []}
-    metal_tags = {}
+    metal_tags: dict[str, dict[str, list]] = {}
     # Detect shaped-dielectric layers once (replaces thickness heuristic)
     shaped_dielectric_names = _detect_shaped_dielectric_layers(geometry, stack)
 
@@ -623,7 +623,10 @@ def add_metals(
 
     # Store shaped-dielectric layer names for downstream classification.
     # Uses a reserved key that is skipped by consumers iterating per-layer.
-    metal_tags["__shaped_dielectrics__"] = shaped_dielectric_names  # type: ignore[assignment]
+    # TODO: smuggling a set[str] into metal_tags under a reserved key forces a
+    # type-ignore here. Cleaner to return shaped_dielectric_names separately and
+    # update the consumer in classify_* (see metal_tags.get("__shaped_dielectrics__")).
+    metal_tags["__shaped_dielectrics__"] = shaped_dielectric_names  # ty: ignore[invalid-assignment]
 
     return metal_tags
 
