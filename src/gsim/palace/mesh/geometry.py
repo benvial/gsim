@@ -36,12 +36,17 @@ class GeometryData:
     layer_bboxes: dict  # layer_num -> (xmin, ymin, xmax, ymax)
 
 
-def extract_geometry(component, stack: LayerStack) -> GeometryData:
+def extract_geometry(
+    component, stack: LayerStack, *, decimate_tolerance: float | None = None
+) -> GeometryData:
     """Extract polygon geometry from a gdsfactory component.
 
     Args:
         component: gdsfactory Component
         stack: LayerStack for layer mapping
+        decimate_tolerance: If set, simplify polygons with Douglas-Peucker
+            using this relative tolerance (passed to ``decimate()``).
+            Typical values: 0.001 (conservative) to 0.01 (aggressive).
 
     Returns:
         GeometryData with polygons and bounding boxes
@@ -52,6 +57,30 @@ def extract_geometry(component, stack: LayerStack) -> GeometryData:
 
     # Get polygons from component
     polygons_by_index = component.get_polygons()
+
+    if decimate_tolerance is not None:
+        from gsim.common.polygon_utils import decimate
+
+        total_before = 0
+        total_after = 0
+        decimated_by_index = {}
+        for layer_index, polys in polygons_by_index.items():
+            total_before += sum(p.num_points_hull() for p in polys)
+            decimated_by_index[layer_index] = decimate(
+                polys, relative_tolerance=decimate_tolerance, verbose=True
+            )
+            total_after += sum(
+                p.num_points_hull() for p in decimated_by_index[layer_index]
+            )
+        if total_before > 0:
+            pct = (total_before - total_after) / total_before * 100
+            logger.info(
+                "Decimation: %d -> %d pts (%.1f%% removed)",
+                total_before,
+                total_after,
+                pct,
+            )
+        polygons_by_index = decimated_by_index
 
     # Build layer_index -> GDS tuple mapping
     layout = component.kcl.layout
