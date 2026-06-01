@@ -7,8 +7,8 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-import pyvista as pv
 import pytest
+import pyvista as pv
 
 from gsim import viz
 from gsim.viz import _aligned_block_tags, _normalize_solid_cell_block
@@ -61,8 +61,14 @@ def test_normalize_quadratic_tetra_preserves_order() -> None:
 
 def test_normalize_empty_block_returns_none() -> None:
     """Empty or non-2D blocks should return ``None`` without raising."""
-    assert _normalize_solid_cell_block("triangle", np.empty((0, 3), dtype=np.int64)) is None
-    assert _normalize_solid_cell_block("triangle", np.array([0, 1, 2], dtype=np.int64)) is None
+    assert (
+        _normalize_solid_cell_block("triangle", np.empty((0, 3), dtype=np.int64))
+        is None
+    )
+    assert (
+        _normalize_solid_cell_block("triangle", np.array([0, 1, 2], dtype=np.int64))
+        is None
+    )
 
 
 def test_normalize_known_type_with_wrong_node_count_returns_none() -> None:
@@ -73,7 +79,9 @@ def test_normalize_known_type_with_wrong_node_count_returns_none() -> None:
 
 def test_normalize_unknown_quad_linearizes_to_quad() -> None:
     """Unknown high-order quad variants should fall back to linear QUAD."""
-    cells = np.array([[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]], dtype=np.int64)
+    cells = np.array(
+        [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]], dtype=np.int64
+    )
     normalized = _normalize_solid_cell_block("quad16", cells)
     assert normalized is not None
     block, cell_type, topo_dim = normalized
@@ -114,6 +122,7 @@ def _write_minimal_msh(
     extra_cells: bool = False,
 ) -> None:
     """Write a minimal gmsh22 file for solid-renderer tests."""
+    cells: list[tuple[str, np.ndarray] | meshio.CellBlock]
     if use_3d:
         pts = np.array(
             [
@@ -123,8 +132,8 @@ def _write_minimal_msh(
                 [0.0, 0.0, 1.0],
             ]
         )
-        cells = [meshio.CellBlock("tetra", np.array([[0, 1, 2, 3]]))]
-        cell_data = {"gmsh:physical": [np.array([1])]}
+        cells = [("tetra", np.array([[0, 1, 2, 3]]))]
+        cell_data: dict[str, list[np.ndarray]] = {"gmsh:physical": [np.array([1])]}
         field_data = {"bulk": np.array([1, 3])}
     else:
         pts = np.array(
@@ -135,21 +144,19 @@ def _write_minimal_msh(
                 [0.0, 1.0, 0.0],
             ]
         )
-        tri_block = meshio.CellBlock("triangle", np.array([[0, 1, 2], [0, 2, 3]]))
-        blocks = [tri_block]
-        phys = [np.array([1, 2])]
+        cells = [("triangle", np.array([[0, 1, 2], [0, 2, 3]]))]
+        phys: list[np.ndarray] = [np.array([1, 2])]
         if extra_cells:
             # Add an unsupported cell block to exercise the skip-path.
-            blocks.append(meshio.CellBlock("line", np.array([[0, 1]])))
+            cells.append(("line", np.array([[0, 1]])))
             phys.append(np.array([99]))
-        cells = blocks
         cell_data = {"gmsh:physical": phys}
         field_data = {
             "metal": np.array([1, 2]),
             "air_boundary": np.array([2, 2]),
         }
 
-    mesh = meshio.Mesh(pts, cells, cell_data=cell_data, field_data=field_data)
+    mesh = meshio.Mesh(pts, cells, cell_data=cell_data, field_data=field_data)  # ty: ignore[invalid-argument-type]
     mesh.write(str(path), file_format="gmsh22")
 
 
