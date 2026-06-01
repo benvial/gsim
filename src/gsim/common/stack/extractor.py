@@ -501,7 +501,7 @@ def extract_layer_stack(
         if "silicon" not in stack.materials:
             stack.materials["silicon"] = MATERIALS_DB["silicon"].to_dict()
     else:
-        oxide_zmin = 0.0
+        oxide_zmin = z_min_overall if z_min_overall != float("inf") else 0.0
 
     stack.dielectrics.append(
         {
@@ -534,11 +534,14 @@ def extract_layer_stack(
     )
 
     if air_below > 0:
+        air_bottom_zmax = (
+            -substrate_thickness if include_substrate else oxide_zmin
+        )
         stack.dielectrics.append(
             {
                 "name": "air_box_bottom",
-                "zmin": -substrate_thickness - air_below,
-                "zmax": -substrate_thickness,
+                "zmin": air_bottom_zmax - air_below,
+                "zmax": air_bottom_zmax,
                 "material": "air",
             }
         )
