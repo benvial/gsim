@@ -1292,9 +1292,15 @@ def add_ports(
                 layer_zmin, layer_zmax = stack.get_z_range()
 
                 if port.max_size:
-                    # Fill the full simulation domain
-                    zmin = layer_zmin
-                    zmax = layer_zmax
+                    zmin = target_layer.zmin + port.z_margin
+                    zmax = target_layer.zmax - port.z_margin
+                    # Clamp to full layer stack range just in case
+                    zmin = max(zmin, layer_zmin)
+                    zmax = min(zmax, layer_zmax)
+                    # Ensure zmin < zmax (need some thickness for the port)
+                    if zmin >= zmax:
+                        zmin = target_layer.zmin
+                        zmax = target_layer.zmax
                 else:
                     zmin = zmin - port.z_margin
                     zmax = zmax + port.z_margin
