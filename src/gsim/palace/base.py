@@ -887,6 +887,8 @@ class PalaceSimMixin:
         verbose: bool,
         write_config: bool = True,
         periodic_axis: str | None = None,
+        decimate_tolerance: float | None = None,
+        gmsh_verbosity: int = 0,
     ) -> SimulationResult:
         """Internal mesh generation."""
         from gsim.palace.mesh.generator import generate_mesh
@@ -996,6 +998,7 @@ class PalaceSimMixin:
         high_order_elements: bool | None = None,
         high_order_order: int | None = None,
         high_order_optimize: bool | None = None,
+        decimate_tolerance: float | None = None,
     ) -> None:
         """Preview the mesh without running simulation.
 
@@ -1025,6 +1028,8 @@ class PalaceSimMixin:
             high_order_elements: Enable high-order geometric mesh elements.
             high_order_order: Polynomial order for high-order elements.
             high_order_optimize: Run gmsh high-order optimization after meshing.
+            decimate_tolerance: Relative tolerance for polygon decimation
+                (None = no decimation; typical 0.001-0.01).
 
         Example:
             >>> sim.preview(preset="fine", planar_conductors=True, show_gui=True)
@@ -1109,6 +1114,7 @@ class PalaceSimMixin:
                 high_order_elements=mesh_config.high_order_elements,
                 high_order_order=mesh_config.high_order_order,
                 high_order_optimize=mesh_config.high_order_optimize,
+                decimate_tolerance=decimate_tolerance,
             )
 
     # -------------------------------------------------------------------------
@@ -1130,9 +1136,11 @@ class PalaceSimMixin:
         show_gui: bool = False,
         model_name: str = "palace",
         verbose: bool = True,
+        verbosity: int = 0,
         auto_size: bool = False,
         cells_per_feature: int = 2,
         periodic_axis: str | None = None,
+        decimate_tolerance: float | None = None,
         merge_via_distance: float | None = None,
         curve_fit_mode: Literal["line", "spline", "bspline"] | None = None,
         curve_fit_layers: list[str] | None = None,
@@ -1163,6 +1171,7 @@ class PalaceSimMixin:
             show_gui: Show gmsh GUI during meshing
             model_name: Base name for output files
             verbose: Print progress messages
+            verbosity: Gmsh OCC verbosity level (0=silent, 1-99=increasing)
             auto_size: If True, scale refined_mesh_size down to the smallest
                 conductor feature / cells_per_feature. Off by default so presets
                 use their literal refined_mesh_size.
@@ -1170,6 +1179,9 @@ class PalaceSimMixin:
                 feature when auto_size=True. Default 2.
             periodic_axis: Optional periodic axis ("x" or "y") for periodic
                 meshing constraints on opposite domain sides.
+            decimate_tolerance: Relative tolerance for polygon decimation
+                (None = no decimation; typical 0.001-0.01). Reduces vertex
+                count on curved geometry before meshing.
             merge_via_distance: Max gap (um) between nearby via polygons to
                 merge before extrusion. Pass 0 to disable merging (keep
                 each via as a separate volume). Defaults to the preset's
@@ -1253,6 +1265,8 @@ class PalaceSimMixin:
             verbose=verbose,
             write_config=False,
             periodic_axis=periodic_axis,
+            decimate_tolerance=decimate_tolerance,
+            gmsh_verbosity=verbosity,
         )
 
         # Post-mesh summary: nodes, tets, refined / max sizes (in um).

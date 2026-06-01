@@ -76,7 +76,7 @@ def _setup_mesh_fields(
     conductor_line_count = 0
     port_line_count = 0
     pec_line_count = 0
-    dielectric_line_count = 0
+    shaped_dielectric_count = 0
 
     # Conductor-surface edges are always refined — the refined_cellsize only
     # takes effect where boundary curves drive the Threshold field, and metal
@@ -95,6 +95,23 @@ def _setup_mesh_fields(
             lines = gmsh_utils.get_boundary_lines(tag, kernel)
             boundary_lines.extend(lines)
             pec_line_count += len(lines)
+
+    # Shaped-dielectric volume boundaries are refined — the permittivity
+    # discontinuity at the core-cladding interface concentrates fields.
+    for vol_info in groups.get("volumes", {}).values():
+        if vol_info.get("is_shaped_dielectric"):
+            for tag in vol_info.get("tags", []):
+                try:
+                    boundary = gmsh.model.getBoundary(
+                        [(3, tag)], combined=False, oriented=False, recursive=False
+                    )
+                    for bdim, btag in boundary:
+                        if bdim == 2:
+                            lines = gmsh_utils.get_boundary_lines(btag, kernel)
+                            boundary_lines.extend(lines)
+                            shaped_dielectric_count += len(lines)
+                except Exception:
+                    pass
 
     # Port boundaries are always refined — drives S-parameter / impedance
     # accuracy regardless of preset.
@@ -156,12 +173,12 @@ def _setup_mesh_fields(
 
     logger.info(
         "Mesh refinement: %d boundary lines "
-        "(conductor=%d, port=%d, pec=%d, dielectric=%d)",
+        "(conductor=%d, port=%d, pec=%d, shaped_dielectric=%d)",
         len(boundary_lines),
         conductor_line_count,
         port_line_count,
         pec_line_count,
-        dielectric_line_count,
+        shaped_dielectric_count,
     )
 
     # Setup main refinement field
@@ -237,6 +254,8 @@ def generate_mesh(
     high_order_order: int = 2,
     high_order_optimize: bool = True,
     verbosity: int = 3,
+    decimate_tolerance: float | None = None,
+    verbosity: int = 0,
 ) -> MeshResult:
     """Generate mesh for Palace EM simulation.
 
@@ -276,6 +295,8 @@ def generate_mesh(
         high_order_elements: Enable high-order geometric mesh elements
         high_order_order: Polynomial order for high-order elements
         high_order_optimize: Run gmsh high-order optimization after meshing
+        decimate_tolerance: Relative tolerance for polygon decimation
+            (None = no decimation; typical 0.001-0.01)
         verbosity: Sets gmsh verbosity level
 
     Returns:
@@ -288,7 +309,7 @@ def generate_mesh(
 
     # Extract geometry
     logger.info("Extracting geometry...")
-    geometry = extract_geometry(component, stack)
+    geometry = extract_geometry(component, stack, decimate_tolerance=decimate_tolerance)
     logger.info("  Polygons: %s", len(geometry.polygons))
     logger.info("  Bbox: %s", geometry.bbox)
 

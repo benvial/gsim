@@ -339,12 +339,15 @@ def validate_mesh(sim) -> ValidationResult:
 
     has_conductors = bool(groups.get("conductor_surfaces"))
     has_pec = bool(groups.get("pec_surfaces"))
-    if not has_conductors and not has_pec:
+    has_shaped_dielectrics = any(
+        v.get("is_shaped_dielectric") for v in groups.get("volumes", {}).values()
+    )
+    if not has_conductors and not has_pec and not has_shaped_dielectrics:
         errors.append(
             "No conductor surfaces in mesh. "
             "Check that conductor layers have polygons and correct layer_type."
         )
-    else:
+    elif has_conductors or has_pec:
         if has_conductors:
             warnings_list.append(
                 f"Conductor surfaces: {list(groups['conductor_surfaces'].keys())}"
@@ -385,13 +388,10 @@ def validate_mesh(sim) -> ValidationResult:
         import json
 
         config_path = output_dir / "config.json"
-        if not config_path.exists():
-            try:
-                sim.write_config(validate_mesh=False)
-            except Exception as e:
-                errors.append(
-                    f"Could not auto-generate config.json during validate_mesh: {e}"
-                )
+        try:
+            sim.write_config(validate_mesh=False)
+        except Exception as e:
+            errors.append(f"Could not regenerate config.json during validate_mesh: {e}")
 
         if config_path.exists():
             try:
@@ -403,7 +403,7 @@ def validate_mesh(sim) -> ValidationResult:
                     or boundaries.get("Terminal")
                     or boundaries.get("Ground")
                 )
-                if not has_conductor_bounds:
+                if not has_conductor_bounds and not has_shaped_dielectrics:
                     errors.append("config.json has no Conductivity or PEC boundaries.")
                 if (
                     not boundaries.get("LumpedPort")
