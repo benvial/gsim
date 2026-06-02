@@ -39,7 +39,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         >>>
         >>> sim = DrivenSim()
         >>> sim.set_geometry(component)
-        >>> sim.set_stack(air_above=300.0)
+        >>> sim.set_stack()
+        >>> sim.set_airbox(margin_x=120.0, margin_above=120.0, margin_below=20.0)
         >>> sim.add_cpw_port("o1", layer="topmetal2", s_width=10, gap_width=6)
         >>> sim.add_cpw_port("o2", layer="topmetal2", s_width=10, gap_width=6)
         >>> sim.set_driven(fmin=1e9, fmax=100e9, num_points=40)
@@ -89,9 +90,9 @@ class DrivenSim(PalaceSimMixin, BaseModel):
 
     # Stack configuration (stored as kwargs until resolved)
     _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _airbox_config: dict[str, float] = PrivateAttr(default_factory=dict)
     _pec_blocks: list = PrivateAttr(default_factory=list)
     _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
-    _airbox_config: dict[str, float] = PrivateAttr(default_factory=dict)
 
     # Internal state
     _output_dir: Path | None = PrivateAttr(default=None)
@@ -143,8 +144,9 @@ class DrivenSim(PalaceSimMixin, BaseModel):
     def set_driven(
         self,
         *,
-        fmin: float = 1e9,
-        fmax: float = 100e9,
+        f: float | None = None,
+        fmin: float | None = None,
+        fmax: float | None = None,
         num_points: int = 40,
         scale: Literal["linear", "log"] = "linear",
         adaptive_tol: float = 0.02,
@@ -159,6 +161,9 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         """Configure driven (frequency sweep) simulation.
 
         Args:
+            f: Single frequency in Hz (convenience). Sets both fmin and fmax
+                to this value with num_points=1. Ignored when both fmin and
+                fmax are explicitly provided.
             fmin: Minimum frequency in Hz
             fmax: Maximum frequency in Hz
             num_points: Number of frequency points
@@ -184,14 +189,26 @@ class DrivenSim(PalaceSimMixin, BaseModel):
                 Appended to *save_fields_at* if both are given.
 
         Example:
+            >>> sim.set_driven(f=50e9)
             >>> sim.set_driven(fmin=1e9, fmax=100e9, num_points=40)
             >>> sim.set_driven(fmin=1e9, fmax=100e9, save_freq="center")
         """
+        # Resolve f vs fmin/fmax: explicit fmin/fmax take precedence over f
+        if fmin is not None and fmax is not None:
+            eff_fmin = fmin
+            eff_fmax = fmax
+        elif f is not None:
+            eff_fmin = f
+            eff_fmax = f
+            num_points = 1
+        else:
+            eff_fmin = fmin if fmin is not None else 1e9
+            eff_fmax = fmax if fmax is not None else 100e9
         fields_at: list[float] = list(save_fields_at or [])
 
         if save_freq is not None:
             if save_freq == "center":
-                fields_at.append((fmin + fmax) / 2)
+                fields_at.append((eff_fmin + eff_fmax) / 2)
             else:
                 raise ValueError(
                     f"Unknown save_freq value: {save_freq!r}. "
@@ -199,8 +216,8 @@ class DrivenSim(PalaceSimMixin, BaseModel):
                 )
 
         self.driven = DrivenConfig(
-            fmin=fmin,
-            fmax=fmax,
+            fmin=eff_fmin,
+            fmax=eff_fmax,
             num_points=num_points,
             scale=scale,
             adaptive_tol=adaptive_tol,

@@ -37,7 +37,8 @@ class ElectrostaticSim(PalaceSimMixin, BaseModel):
         >>>
         >>> sim = ElectrostaticSim()
         >>> sim.set_geometry(component)
-        >>> sim.set_stack(air_above=300.0)
+        >>> sim.set_stack()
+        >>> sim.set_airbox(margin_x=120.0, margin_above=120.0, margin_below=20.0)
         >>> sim.add_terminal("T1", layer="topmetal2")
         >>> sim.add_terminal("T2", layer="topmetal2")
         >>> sim.set_electrostatic()
@@ -83,9 +84,9 @@ class ElectrostaticSim(PalaceSimMixin, BaseModel):
 
     # Stack configuration (stored as kwargs until resolved)
     _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _airbox_config: dict[str, float] = PrivateAttr(default_factory=dict)
     _pec_blocks: list = PrivateAttr(default_factory=list)
     _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
-    _airbox_config: dict[str, float] = PrivateAttr(default_factory=dict)
 
     # Internal state
     _output_dir: Path | None = PrivateAttr(default=None)

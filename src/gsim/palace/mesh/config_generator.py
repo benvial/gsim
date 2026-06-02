@@ -15,7 +15,12 @@ from gsim.palace.ports.config import PortType
 
 if TYPE_CHECKING:
     from gsim.common.stack import LayerStack
-    from gsim.palace.models import DrivenConfig, EigenmodeConfig, ElectrostaticConfig
+    from gsim.palace.models import (
+        DrivenConfig,
+        EigenmodeConfig,
+        ElectrostaticConfig,
+        NumericalConfig,
+    )
     from gsim.palace.models.ports import TerminalConfig
     from gsim.palace.ports.config import PalacePort
 
@@ -31,6 +36,7 @@ def generate_palace_config(
     simulation_type: str = "driven",
     driven_config: DrivenConfig | None = None,
     eigenmode_config: EigenmodeConfig | None = None,
+    numerical_config: NumericalConfig | None = None,
     absorbing_boundary: bool = True,
     periodic_axis: str | None = None,
     hints: dict[str, Any] | None = None,
@@ -47,8 +53,13 @@ def generate_palace_config(
         output_path: Output directory path
         model_name: Base name for output files
         fmax: Maximum frequency (Hz) - used as fallback if driven_config not provided
-        driven_config: Optional DrivenConfig for frequency sweep settings
+        driven_config: Optional DrivenConfig for frequency sweep settings.
+            When provided, material dispersion is evaluated at the center
+            frequency ``(fmin + fmax) / 2`` of the sweep band.
         eigenmode_config: Optional EigenmodeConfig for eigenproblems settings
+        absorbing_boundary: Whether to add absorbing (PML) boundary
+        periodic_axis: Optional periodic axis identifier
+        hints: Additional config hints merged into the JSON
 
     Returns:
         Path to the generated config.json
@@ -94,32 +105,22 @@ def generate_palace_config(
             },
         )
 
-    linear_conf: dict[str, object] = {
-        "Type": "Default",
-        "KSPType": "GMRES",
-        "Tol": 1e-6,
-        "MaxIts": 400,
-    }
-    # TODO: Add MUMPS support
-    # linear_conf: dict[str, object] = {
-    #     "Type": "MUMPS",
-    #     "KSPType": "GMRES",
-    #     "Tol": 1e-6,
-    #     "MaxIts": 1,
-    #     "MGMaxLevels": 1,
-    #     "EstimatorMaxIts": 0,
-    #     "EstimatorTol": 1e-6,
-    #     "DivFreeTol": 1e-6,
-    #     "DivFreeMaxIts": 0,
-    #     "PCMatReal": False,
-    #     "ComplexCoarseSolve": True,
-    # }
-
-    solver_conf: dict[str, object] = {
-        "Linear": linear_conf,
-        "Order": 2,
-        "Device": "CPU",
-    }
+    solver_conf: dict[str, object]
+    if numerical_config is not None:
+        solver_conf = dict(numerical_config.to_solver_config())
+    else:
+        # Backward-compatible defaults for direct generate_palace_config() calls
+        # that do not provide a NumericalConfig.
+        solver_conf = {
+            "Linear": {
+                "Type": "Default",
+                "KSPType": "GMRES",
+                "Tol": 1e-6,
+                "MaxIts": 1000,
+            },
+            "Order": 2,
+            "Device": "CPU",
+        }
 
     if simulation_type == "driven":
         solver_conf["Driven"] = solver_driven
@@ -150,46 +151,71 @@ def generate_palace_config(
     }
 
     # Build domains section
-    materials: list[dict[str, object]] = []
-    for material_name, info in groups["volumes"].items():
-        is_via = info.get("is_via", False)
+    # Evaluate dispersion models at the center frequency of the sweep band
+    stack_materials = stack.materials
+    if driven_config is not None:
+        from gsim.palace.materials import resolve_palace_materials_at_frequency
 
-        if is_via:
-            # Via volumes: look up material from the layer stack
+        stack_materials = resolve_palace_materials_at_frequency(
+            stack.materials, driven_config.center_frequency
+        )
+
+    materials: list[dict[str, object]] = []
+    for volume_name, info in groups["volumes"].items():
+        material_name = volume_name
+        is_via = info.get("is_via", False)
+        is_shaped_dielectric = info.get("is_shaped_dielectric", False)
+
+        if is_via or is_shaped_dielectric:
             layer = stack.layers.get(material_name)
             if layer is None:
                 continue
-            mat_props = stack.materials.get(layer.material, {})
+            mat_props = stack_materials.get(layer.material, {})
         else:
-            mat_props = stack.materials.get(material_name, {})
+            mat_props = stack_materials.get(material_name, {})
 
         mat_entry: dict[str, object] = {"Attributes": [info["phys_group"]]}
 
-        if material_name in {"airbox", "air"}:
+        if volume_name in {"airbox", "air"}:
             mat_entry["Permittivity"] = 1.0
             mat_entry["LossTan"] = 0.0
         elif is_via:
             sigma = mat_props.get("conductivity", 0.0)
             mat_entry["Permittivity"] = 1.0
-            if sigma > 0:
+            if isinstance(sigma, (int, float)) and sigma > 0:
                 mat_entry["Conductivity"] = sigma
-        else:
-            # Use anisotropic tensor values when available
-            if "permittivity_diagonal" in mat_props:
-                mat_entry["Permittivity"] = mat_props["permittivity_diagonal"]
+        elif is_shaped_dielectric:
+            perm = mat_props.get("permittivity", 1.0)
+            mat_entry["Permittivity"] = perm
+
+            lt = mat_props.get("loss_tangent", 0.0)
+            if isinstance(lt, list) or (isinstance(lt, (int, float)) and lt > 0):
+                mat_entry["LossTan"] = lt
             else:
-                mat_entry["Permittivity"] = mat_props.get("permittivity", 1.0)
+                mat_entry["LossTan"] = 0.0
+
+            if "permeability" in mat_props:
+                mat_entry["Permeability"] = mat_props["permeability"]
+
+            if "material_axes" in mat_props:
+                mat_entry["MaterialAxes"] = mat_props["material_axes"]
+        else:
+            perm = mat_props.get("permittivity", 1.0)
+            mat_entry["Permittivity"] = perm
 
             if "permeability" in mat_props:
                 mat_entry["Permeability"] = mat_props["permeability"]
 
             sigma = mat_props.get("conductivity", 0.0)
-            if sigma > 0:
+            lt = mat_props.get("loss_tangent", 0.0)
+            if (isinstance(sigma, (int, float)) and sigma > 0) or isinstance(
+                sigma, list
+            ):
                 mat_entry["Conductivity"] = sigma
-            elif "loss_tangent_diagonal" in mat_props:
-                mat_entry["LossTan"] = mat_props["loss_tangent_diagonal"]
+            elif isinstance(lt, list) or (isinstance(lt, (int, float)) and lt > 0):
+                mat_entry["LossTan"] = lt
             else:
-                mat_entry["LossTan"] = mat_props.get("loss_tangent", 0.0)
+                mat_entry["LossTan"] = 0.0
 
             if "material_axes" in mat_props:
                 mat_entry["MaterialAxes"] = mat_props["material_axes"]
@@ -209,7 +235,7 @@ def generate_palace_config(
         layer_name = name.rsplit("_", 1)[0]
         layer = stack.layers.get(layer_name)
         if layer:
-            mat_props = stack.materials.get(layer.material, {})
+            mat_props = stack_materials.get(layer.material, {})
             conductors.append(
                 {
                     "Attributes": [info["phys_group"]],
@@ -624,6 +650,7 @@ def write_config(
     simulation_type: str = "driven",
     driven_config: DrivenConfig | None = None,
     eigenmode_config: EigenmodeConfig | None = None,
+    numerical_config: NumericalConfig | None = None,
     absorbing_boundary: bool = True,
     hints: dict[str, Any] | None = None,
     electrostatic_config: ElectrostaticConfig | None = None,
@@ -637,7 +664,12 @@ def write_config(
         mesh_result: Result from generate_mesh(write_config=False)
         stack: LayerStack for material properties
         ports: List of PalacePort objects
-        driven_config: Optional DrivenConfig for frequency sweep settings
+        driven_config: Optional DrivenConfig for frequency sweep settings.
+            When provided, material dispersion is evaluated at the center
+            frequency of the sweep band.
+        eigenmode_config: Optional EigenmodeConfig for eigenproblems settings
+        absorbing_boundary: Whether to add absorbing (PML) boundary
+        hints: Additional config hints merged into the JSON
 
     Returns:
         Path to the generated config.json
@@ -665,6 +697,7 @@ def write_config(
         simulation_type=simulation_type,
         driven_config=driven_config,
         eigenmode_config=eigenmode_config,
+        numerical_config=numerical_config,
         absorbing_boundary=absorbing_boundary,
         periodic_axis=mesh_result.periodic_axis,
         hints=hints,

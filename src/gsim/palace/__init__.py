@@ -16,7 +16,8 @@ Usage:
     # Create and configure simulation
     sim = DrivenSim()
     sim.set_geometry(component)
-    sim.set_stack(air_above=300.0)
+    sim.set_stack()
+    sim.set_airbox(margin_x=120.0, margin_above=120.0, margin_below=20.0)
     sim.add_cpw_port("o1", layer="topmetal2", s_width=10, gap_width=6)
     sim.set_driven(fmin=1e9, fmax=100e9)
 
@@ -44,8 +45,6 @@ from gsim.common.stack import (
     get_material_properties,
     get_stack,
     load_stack_yaml,
-    material_is_conductor,
-    material_is_dielectric,
     parse_layer_stack,
     plot_stack,
     print_stack,
@@ -58,6 +57,9 @@ from gsim.gcloud import run_simulation as _run_simulation
 from gsim.palace.driven import DrivenSim
 from gsim.palace.eigenmode import EigenmodeSim
 from gsim.palace.electrostatic import ElectrostaticSim
+
+# Material resolution with dispersion
+from gsim.palace.materials import resolve_palace_materials_at_frequency
 
 # Mesh utilities
 from gsim.palace.mesh import (
@@ -154,8 +156,6 @@ __all__ = [
     "load_fields",
     "load_sparams",
     "load_stack_yaml",
-    "material_is_conductor",
-    "material_is_dielectric",
     "parse_layer_stack",
     "plot_cross_section",
     "plot_mesh",
@@ -163,6 +163,7 @@ __all__ = [
     "print_job_summary",
     "print_stack",
     "print_stack_table",
+    "resolve_palace_materials_at_frequency",
     "run_simulation",
 ]
 

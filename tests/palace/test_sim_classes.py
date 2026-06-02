@@ -142,12 +142,12 @@ class TestMixinMethods:
             assert sim.output_dir.exists()
 
     def test_set_stack(self):
-        """Test set_stack works on all sim classes."""
+        """Test set_stack no longer stores airbox parameters."""
         for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
             sim = cls()
             sim.set_stack(air_above=500.0, air_below=25.0)
-            assert sim._stack_kwargs["air_above"] == 500.0
-            assert sim._stack_kwargs["air_below"] == 25.0
+            assert "air_above" not in sim._stack_kwargs
+            assert "air_below" not in sim._stack_kwargs
 
     def test_set_stack_default_air_above_zero(self):
         """Default stack setup should not add top air unless explicitly requested."""
@@ -221,6 +221,56 @@ class TestMixinMethods:
         assert captured["margin_x"] == 50.0
         assert captured["margin_y"] == 0.0
 
+    def test_curved_mesh_options_reach_generate_mesh(self, monkeypatch, tmp_path):
+        """Curve-fit, decimation, and verbosity options must be forwarded."""
+        captured: dict[str, object] = {}
+
+        def _fake_generate_mesh(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                mesh_path=tmp_path / "palace.msh",
+                config_path=None,
+                port_info=[],
+                mesh_stats={},
+                groups={},
+            )
+
+        monkeypatch.setattr(
+            "gsim.palace.mesh.generator.generate_mesh", _fake_generate_mesh
+        )
+        monkeypatch.setattr(DrivenSim, "_resolve_stack", lambda _self: object())
+
+        sim = DrivenSim()
+        sim.set_output_dir(tmp_path / "sim")
+
+        mesh_config = MeshConfig.default(
+            curve_fit_mode="bspline",
+            curve_fit_layers=["core"],
+            curve_fit_tolerance_um=0.02,
+            curve_fit_min_points=12,
+            curve_fit_corner_angle_deg=30.0,
+        )
+
+        sim._generate_mesh_internal(
+            output_dir=tmp_path / "sim",
+            mesh_config=mesh_config,
+            ports=[],
+            driven_config=sim.driven,
+            model_name="palace",
+            verbose=False,
+            write_config=False,
+            decimate_tolerance=0.005,
+            gmsh_verbosity=7,
+        )
+
+        assert captured["curve_fit_mode"] == "bspline"
+        assert captured["curve_fit_layers"] == ["core"]
+        assert captured["curve_fit_tolerance_um"] == 0.02
+        assert captured["curve_fit_min_points"] == 12
+        assert captured["curve_fit_corner_angle_deg"] == 30.0
+        assert captured["decimate_tolerance"] == 0.005
+        assert captured["verbosity"] == 7
+
     def test_set_material(self):
         """Test set_material works on all sim classes."""
         for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
@@ -235,9 +285,20 @@ class TestMixinMethods:
         """Test set_numerical works on all sim classes."""
         for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
             sim = cls()
-            sim.set_numerical(order=3, tolerance=1e-8)
+            sim.set_numerical(
+                order=3,
+                tolerance=1e-8,
+                max_iterations=1000,
+                solver_type="MUMPS",
+                preconditioner="AMS",
+                device="CPU",
+            )
             assert sim.numerical.order == 3
             assert sim.numerical.tolerance == 1e-8
+            assert sim.numerical.max_iterations == 1000
+            assert sim.numerical.solver_type == "MUMPS"
+            assert sim.numerical.preconditioner == "AMS"
+            assert sim.numerical.device == "CPU"
 
     def test_mesh_requires_output_dir(self):
         """Test mesh() raises if output_dir not set."""

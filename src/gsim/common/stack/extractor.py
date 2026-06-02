@@ -254,12 +254,10 @@ class LayerStack(BaseModel):
                         f"zmax={z_max_dielectric:.4f}"
                     )
 
-        # 4. Check we have at least substrate, oxide, and air
+        # 4. Check commonly expected dielectric regions
         dielectric_names = {d["name"] for d in self.dielectrics}
         if "substrate" not in dielectric_names:
             warnings.append("No 'substrate' dielectric region defined")
-        if "air_box" not in dielectric_names:
-            warnings.append("No 'air_box' dielectric region defined")
 
         valid = len(errors) == 0
         return ValidationResult(valid=valid, errors=errors, warnings=warnings)
@@ -327,10 +325,10 @@ def extract_layer_stack(
     gf_layer_stack: GfLayerStack,
     pdk_name: str = "unknown",
     substrate_thickness: float = 2.0,
-    air_above: float = 5.0,
-    air_below: float = 0.0,
     boundary_margin: float = 30.0,
     include_substrate: bool = False,
+    add_oxide_dielectric: bool = True,
+    add_passivation_dielectric: bool = True,
 ) -> LayerStack:
     """Extract layer stack from a gdsfactory LayerStack.
 
@@ -338,15 +336,20 @@ def extract_layer_stack(
         gf_layer_stack: gdsfactory LayerStack object
         pdk_name: Name of the PDK (for documentation)
         substrate_thickness: Thickness of substrate in um (default: 2.0)
-        air_above: Height of air box above top metal in um (default: 5).
-            Palace RF sims should override to 200+ for far-field radiation.
-        air_below: Height of air box below substrate/oxide in um (default: 0)
         boundary_margin: Lateral margin from GDS bbox in um (default: 30)
         include_substrate: Whether to include lossy substrate (default: False)
+        add_oxide_dielectric: Add synthetic oxide background dielectric region.
+            Set False to rely on dielectric regions/layers provided by the PDK.
+        add_passivation_dielectric: Add synthetic passivation dielectric above the
+            highest stack layer. Set False to rely on PDK-provided dielectrics.
 
     Returns:
         LayerStack object for Palace simulation
     """
+    # Auto-detect: if the PDK has dielectric layers on real GDS layers
+    # (not substrate layer 999), it's a photonic stack and the BOX
+    # should be preserved as SiO2 rather than merged into the substrate.
+    has_patterned_dielectrics = False
     stack = LayerStack(pdk_name=pdk_name)
 
     z_min_overall = float("inf")
@@ -355,6 +358,10 @@ def extract_layer_stack(
     passivation_ranges: list[tuple[float, float, str]] = []
     dielectric_layers: list[tuple[float, float, str, str]] = []
     materials_used: set[str] = set()
+    # Track dielectric layers on real GDS layers (not placeholder 999).
+    # If any exist, the PDK has patterned dielectric geometry (photonic
+    # stack) and the BOX should be preserved as SiO2.
+    _substrate_gds_layers: set[int] = set()
 
     def _looks_like_passivation(layer_name: str, material_name: str) -> bool:
         """Heuristic to detect top passivation layers from PDK stacks."""
@@ -380,6 +387,7 @@ def extract_layer_stack(
         sidewall_angle = getattr(layer_level, "sidewall_angle", 0.0) or 0.0
 
         if layer_type == "substrate" and not include_substrate:
+            _substrate_gds_layers.add(gds_layer[0])
             continue
 
         layer = Layer(
@@ -409,6 +417,11 @@ def extract_layer_stack(
 
     z_max_active = z_max_overall
     z_max_conductor_active = z_max_conductor
+        # Detect patterned dielectric layers: dielectric layers whose GDS
+        # layer is NOT a substrate placeholder (999) — these carry actual
+        # polygon geometry (e.g. waveguide cores).
+        if layer_type == "dielectric" and gds_layer[0] not in _substrate_gds_layers:
+            has_patterned_dielectrics = True
 
     for material in materials_used:
         props = get_material_properties(material)
@@ -452,12 +465,99 @@ def extract_layer_stack(
         bulk_material = "SiO2"
 
     if include_substrate:
+        if has_patterned_dielectrics:
+            # With shaped dielectrics (photonic mode): respect the PDK's
+            # actual layer z-ranges so the BOX stays as SiO2 rather than
+            # being merged into the substrate. Build dielectrics from the
+            # PDK's substrate + box layer z-ranges.
+            substrate_zmin = None
+            substrate_zmax = None
+            box_zmin = None
+            box_zmax = None
+            for layer in stack.layers.values():
+                if layer.layer_type == "substrate":
+                    substrate_zmin = min(
+                        layer.zmin,
+                        substrate_zmin if substrate_zmin is not None else layer.zmin,
+                    )
+                    substrate_zmax = max(
+                        layer.zmax,
+                        substrate_zmax if substrate_zmax is not None else layer.zmax,
+                    )
+                # BOX detection: dielectric layers below z=0 on the WAFER GDS
+                # layer that are SiO2-like (covers the buried oxide in SOI)
+                if (
+                    layer.layer_type == "dielectric"
+                    and layer.zmax <= 0.0 + 1e-6
+                    and _is_oxide_like(layer.material)
+                ):
+                    box_zmin = min(
+                        layer.zmin, box_zmin if box_zmin is not None else layer.zmin
+                    )
+                    box_zmax = max(
+                        layer.zmax, box_zmax if box_zmax is not None else layer.zmax
+                    )
+
+            # Extend substrate below the PDK's substrate z-range
+            if substrate_zmin is not None:
+                sub_zmin = min(substrate_zmin, -substrate_thickness)
+            else:
+                sub_zmin = -substrate_thickness
+
+            # Substrate silicon: from extended bottom to BOX bottom (or 0)
+            if box_zmin is not None:
+                stack.dielectrics.append(
+                    {
+                        "name": "substrate",
+                        "zmin": sub_zmin,
+                        "zmax": box_zmin,
+                        "material": "silicon",
+                    }
+                )
+                # BOX (buried oxide): from BOX bottom to BOX top (or 0)
+                stack.dielectrics.append(
+                    {
+                        "name": "box",
+                        "zmin": box_zmin,
+                        "zmax": box_zmax,
+                        "material": "SiO2",
+                    }
+                )
+                oxide_zmin = box_zmax
+            else:
+                # No BOX layer detected: use legacy behavior
+                stack.dielectrics.append(
+                    {
+                        "name": "substrate",
+                        "zmin": sub_zmin,
+                        "zmax": 0.0,
+                        "material": "silicon",
+                    }
+                )
+                oxide_zmin = 0.0
+        else:
+            # RF mode: single silicon substrate box (legacy)
+            stack.dielectrics.append(
+                {
+                    "name": "substrate",
+                    "zmin": -substrate_thickness,
+                    "zmax": 0.0,
+                    "material": "silicon",
+                }
+            )
+            oxide_zmin = 0.0
+        if "silicon" not in stack.materials:
+            stack.materials["silicon"] = MATERIALS_DB["silicon"].to_dict()
+    else:
+        oxide_zmin = 0.0
+
+    if add_oxide_dielectric:
         stack.dielectrics.append(
             {
-                "name": "substrate",
-                "zmin": -substrate_thickness,
-                "zmax": 0.0,
-                "material": "silicon",
+                "name": "oxide",
+                "zmin": oxide_zmin,
+                "zmax": z_max_overall,
+                "material": "SiO2",
             }
         )
         if "silicon" not in stack.materials:
@@ -544,25 +644,43 @@ def extract_layer_stack(
             }
         )
 
-    if air_below > 0:
+    if add_passivation_dielectric:
+        passive_thickness = 0.4
         stack.dielectrics.append(
             {
-                "name": "air_box_bottom",
-                "zmin": -substrate_thickness - air_below,
-                "zmax": -substrate_thickness,
-                "material": "air",
+                "name": "passive",
+                "zmin": z_max_overall,
+                "zmax": z_max_overall + passive_thickness,
+                "material": "passive",
             }
         )
+        if "passive" not in stack.materials:
+            stack.materials["passive"] = MATERIALS_DB["passive"].to_dict()
 
     stack.simulation = {
         "boundary_margin": boundary_margin,
-        "air_above": air_above,
-        "air_below": air_below,
         "substrate_thickness": substrate_thickness,
         "include_substrate": include_substrate,
+        "add_oxide_dielectric": add_oxide_dielectric,
+        "add_passivation_dielectric": add_passivation_dielectric,
     }
 
     return stack
+
+
+_OXIDE_NAMES = {"sio2", "oxide", "box", "buried_oxide", "si3n4", "nitride"}
+
+
+def _is_oxide_like(material: str) -> bool:
+    """Return True if *material* looks like an oxide/nitride dielectric."""
+    m = material.strip().lower()
+    if m in _OXIDE_NAMES:
+        return True
+    # Also check via MATERIAL_ALIASES resolution
+    from gsim.common.stack.materials import MATERIAL_ALIASES
+
+    canonical = MATERIAL_ALIASES.get(m, m)
+    return canonical.lower() in {"sio2", "si3n4"}
 
 
 def extract_from_pdk(
