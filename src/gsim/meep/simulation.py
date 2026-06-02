@@ -78,7 +78,9 @@ class Simulation(BaseModel):
     )
 
     geometry: Geometry = Field(default_factory=Geometry)
-    materials: dict[str, float | Material] = Field(default_factory=dict)
+    materials: dict[str, float | Material | dict[str, Any]] = Field(
+        default_factory=dict
+    )
     source: ModeSource = Field(default_factory=ModeSource)
     fiber_source: FiberSource | None = Field(
         default=None,
