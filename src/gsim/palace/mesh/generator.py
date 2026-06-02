@@ -199,6 +199,11 @@ def _setup_mesh_fields(
         material_name = dielectric["material"]
         material_props = stack.materials.get(material_name, {})
         permittivity = material_props.get("permittivity", 1.0)
+        if isinstance(permittivity, list):
+            try:
+                permittivity = max(float(v) for v in permittivity)
+            except (TypeError, ValueError):
+                permittivity = 1.0
 
         if permittivity > 1:
             local_max = max_cellsize / math.sqrt(permittivity)
