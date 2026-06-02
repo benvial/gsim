@@ -15,7 +15,7 @@ groups:
   - air
   - passive
 mesh:
-  elements: 7817
+  elements: 6372
   invalid_elements: 0
-  nodes: 1154
-  tetrahedra: 4759
+  nodes: 921
+  tetrahedra: 3920

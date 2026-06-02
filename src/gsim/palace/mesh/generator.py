@@ -43,6 +43,33 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _collect_pec_surface_lines(groups: dict) -> list[int]:
+    """Collect boundary curves from PEC surfaces for mesh refinement.
+
+    When planar conductors are embedded in dielectric volumes, the boolean
+    pipeline may merge the conductor's boundary curves into the volume edges.
+    This helper queries the live gmsh model for the boundary curves of each
+    PEC surface and returns those that are valid dim-1 entities.
+    """
+    lines: list[int] = []
+    for surface_info in groups.get("pec_surfaces", {}).values():
+        for stag in surface_info.get("tags", []):
+            try:
+                boundary = gmsh.model.getBoundary(
+                    [(2, stag)], combined=False, oriented=False, recursive=False
+                )
+                for bdim, btag in boundary:
+                    if bdim == 1:
+                        try:
+                            gmsh.model.getBoundingBox(1, btag)
+                            lines.append(btag)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+    return lines
+
+
 def _get_domain_bbox(tol: float = 1e-3) -> tuple[float, float, float, float]:
     """Return the simulation domain XY bounding box from gmsh.
 
@@ -56,12 +83,10 @@ def _get_domain_bbox(tol: float = 1e-3) -> tuple[float, float, float, float]:
     except Exception:
         return (0.0, 0.0, 0.0, 0.0)
     return (xmin - tol, ymin - tol, xmax + tol, ymax + tol)
-
-
 def _line_on_domain_boundary(
     line_tag: int,
     domain_bbox: tuple[float, float, float, float],
-    tol: float = 1e-3,
+    tol: float = 1.0,
 ) -> bool:
     """Return True when a curve lies on the XY domain boundary.
 
@@ -171,10 +196,30 @@ def _setup_mesh_fields(
     # conductor perimeter.
     for line_info in groups.get("refinement_lines", {}).values():
         for ltag in line_info.get("tags", []):
-            if _line_on_domain_boundary(ltag, domain_bbox):
+            try:
+                if _line_on_domain_boundary(ltag, domain_bbox):
+                    continue
+            except Exception:
                 continue
             boundary_lines.append(ltag)
             pec_line_count += 1
+
+    # For planar conductors, the PEC surface boundary curves may have been
+    # merged into volume edges by the boolean pipeline.  The fallback in
+    # assign_physical_groups already populates refinement_lines by querying
+    # the live model, so _collect_pec_surface_lines is only needed when
+    # that fallback was skipped (e.g. in unit tests with mocked groups).
+    if not groups.get("refinement_lines"):
+        pec_surface_lines = _collect_pec_surface_lines(groups)
+        for ltag in pec_surface_lines:
+            if ltag not in boundary_lines:
+                try:
+                    if _line_on_domain_boundary(ltag, domain_bbox):
+                        continue
+                except Exception:
+                    continue
+                boundary_lines.append(ltag)
+                pec_line_count += 1
 
     # Shaped-dielectric volume boundaries are refined — the permittivity
     # discontinuity at the core-cladding interface concentrates fields.
@@ -520,6 +565,24 @@ def generate_mesh(
             stack,
             pec_block_tags=pec_block_tags or None,
         )
+
+        # After assign_physical_groups, refinement_lines may reference
+        # curves that were merged during boolean. Refresh them from the
+        # live model so _setup_mesh_fields sees only valid tags.
+        for layer_name, line_info in groups.get("refinement_lines", {}).items():
+            valid_tags = []
+            for ltag in line_info.get("tags", []):
+                try:
+                    gmsh.model.getBoundingBox(1, ltag)
+                    valid_tags.append(ltag)
+                except Exception:
+                    pass
+            line_info["tags"] = valid_tags
+        # Prune empty entries so the downstream loop stays quiet.
+        groups["refinement_lines"] = {
+            k: v for k, v in groups.get("refinement_lines", {}).items()
+            if v.get("tags")
+        }
 
         if periodic_info:
             donor_surfaces = periodic_info.get("master_surfaces")
