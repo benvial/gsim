@@ -174,12 +174,22 @@ class PalaceSimMixin:
                 "margin_above=..., margin_below=...)."
             )
 
+        legacy_air_kwargs: dict[str, float] = {}
+        if air_above is None and air_below is None:
+            # Keep backwards-compatible defaults for direct stack extraction,
+            # while still treating explicit air_* inputs as deprecated.
+            legacy_air_kwargs = {
+                "air_above": 0.0,
+                "air_below": 0.0,
+            }
+
         self._stack_kwargs = {
             "yaml_path": yaml_path,
             "substrate_thickness": substrate_thickness,
             "include_substrate": include_substrate,
             "add_oxide_dielectric": add_oxide_dielectric,
             "add_passivation_dielectric": add_passivation_dielectric,
+            **legacy_air_kwargs,
             **kwargs,
         }
         # Stack will be resolved lazily during mesh() or simulate()
