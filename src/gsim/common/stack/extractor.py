@@ -254,12 +254,10 @@ class LayerStack(BaseModel):
                         f"zmax={z_max_dielectric:.4f}"
                     )
 
-        # 4. Check we have at least substrate, oxide, and air
+        # 4. Check commonly expected dielectric regions
         dielectric_names = {d["name"] for d in self.dielectrics}
         if "substrate" not in dielectric_names:
             warnings.append("No 'substrate' dielectric region defined")
-        if "air_box" not in dielectric_names:
-            warnings.append("No 'air_box' dielectric region defined")
 
         valid = len(errors) == 0
         return ValidationResult(valid=valid, errors=errors, warnings=warnings)
@@ -327,10 +325,10 @@ def extract_layer_stack(
     gf_layer_stack: GfLayerStack,
     pdk_name: str = "unknown",
     substrate_thickness: float = 2.0,
-    air_above: float = 5.0,
-    air_below: float = 0.0,
     boundary_margin: float = 30.0,
     include_substrate: bool = False,
+    add_oxide_dielectric: bool = True,
+    add_passivation_dielectric: bool = True,
 ) -> LayerStack:
     """Extract layer stack from a gdsfactory LayerStack.
 
@@ -338,11 +336,12 @@ def extract_layer_stack(
         gf_layer_stack: gdsfactory LayerStack object
         pdk_name: Name of the PDK (for documentation)
         substrate_thickness: Thickness of substrate in um (default: 2.0)
-        air_above: Height of air box above top metal in um (default: 5).
-            Palace RF sims should override to 200+ for far-field radiation.
-        air_below: Height of air box below substrate/oxide in um (default: 0)
         boundary_margin: Lateral margin from GDS bbox in um (default: 30)
         include_substrate: Whether to include lossy substrate (default: False)
+        add_oxide_dielectric: Add synthetic oxide background dielectric region.
+            Set False to rely on dielectric regions/layers provided by the PDK.
+        add_passivation_dielectric: Add synthetic passivation dielectric above the
+            highest stack layer. Set False to rely on PDK-provided dielectrics.
 
     Returns:
         LayerStack object for Palace simulation
@@ -503,52 +502,35 @@ def extract_layer_stack(
     else:
         oxide_zmin = 0.0
 
-    stack.dielectrics.append(
-        {
-            "name": "oxide",
-            "zmin": oxide_zmin,
-            "zmax": z_max_overall,
-            "material": "SiO2",
-        }
-    )
-
-    passive_thickness = 0.4
-    stack.dielectrics.append(
-        {
-            "name": "passive",
-            "zmin": z_max_overall,
-            "zmax": z_max_overall + passive_thickness,
-            "material": "passive",
-        }
-    )
-    if "passive" not in stack.materials:
-        stack.materials["passive"] = MATERIALS_DB["passive"].to_dict()
-
-    stack.dielectrics.append(
-        {
-            "name": "air_box",
-            "zmin": z_max_overall + passive_thickness,
-            "zmax": z_max_overall + passive_thickness + air_above,
-            "material": "air",
-        }
-    )
-
-    if air_below > 0:
+    if add_oxide_dielectric:
         stack.dielectrics.append(
             {
-                "name": "air_box_bottom",
-                "zmin": -substrate_thickness - air_below,
-                "zmax": -substrate_thickness,
-                "material": "air",
+                "name": "oxide",
+                "zmin": oxide_zmin,
+                "zmax": z_max_overall,
+                "material": "SiO2",
             }
         )
 
+    if add_passivation_dielectric:
+        passive_thickness = 0.4
+        stack.dielectrics.append(
+            {
+                "name": "passive",
+                "zmin": z_max_overall,
+                "zmax": z_max_overall + passive_thickness,
+                "material": "passive",
+            }
+        )
+        if "passive" not in stack.materials:
+            stack.materials["passive"] = MATERIALS_DB["passive"].to_dict()
+
     stack.simulation = {
         "boundary_margin": boundary_margin,
-        "air_above": air_above,
-        "air_below": air_below,
         "substrate_thickness": substrate_thickness,
         "include_substrate": include_substrate,
+        "add_oxide_dielectric": add_oxide_dielectric,
+        "add_passivation_dielectric": add_passivation_dielectric,
     }
 
     return stack

@@ -123,19 +123,21 @@ class PalaceSimMixin:
         stack: LayerStack | None = None,
         *,
         yaml_path: str | Path | None = None,
-        air_above: float = 200.0,
-        air_below: float = 0.0,
+        air_above: float | None = None,
+        air_below: float | None = None,
         substrate_thickness: float = 2.0,
         include_substrate: bool = False,
+        add_oxide_dielectric: bool = True,
+        add_passivation_dielectric: bool = True,
         **kwargs,
     ) -> None:
         """Configure the layer stack.
 
         Three modes of use:
 
-        1. **Active PDK** (default — auto-detects IHP, QPDK, etc.)::
+         1. **Active PDK** (default — auto-detects IHP, QPDK, etc.)::
 
-               sim.set_stack(air_above=300.0, substrate_thickness=2.0)
+             sim.set_stack(substrate_thickness=2.0)
 
         2. **YAML file**::
 
@@ -148,14 +150,16 @@ class PalaceSimMixin:
         Args:
             stack: Custom gsim LayerStack (bypasses PDK extraction).
             yaml_path: Path to custom YAML stack file.
-            air_above: Air box height above top metal in um.
-            air_below: Air box height below substrate/oxide in um.
+            air_above: Deprecated and ignored. Use set_airbox().
+            air_below: Deprecated and ignored. Use set_airbox().
             substrate_thickness: Thickness below z=0 in um.
             include_substrate: Include lossy silicon substrate.
+            add_oxide_dielectric: Add synthetic oxide background dielectric.
+            add_passivation_dielectric: Add synthetic passivation dielectric.
             **kwargs: Additional args passed to extract_layer_stack.
 
         Example:
-            >>> sim.set_stack(air_above=300.0, substrate_thickness=2.0)
+            >>> sim.set_stack(substrate_thickness=2.0)
         """
         if stack is not None:
             # Directly use a pre-built LayerStack — skip lazy resolution
@@ -163,12 +167,19 @@ class PalaceSimMixin:
             self._stack_kwargs = {"_prebuilt": True}
             return
 
+        if air_above is not None or air_below is not None:
+            logger.warning(
+                "set_stack(air_above/air_below) is deprecated and ignored. "
+                "Use set_airbox(margin_x=..., margin_y=..., "
+                "margin_above=..., margin_below=...)."
+            )
+
         self._stack_kwargs = {
             "yaml_path": yaml_path,
-            "air_above": air_above,
-            "air_below": air_below,
             "substrate_thickness": substrate_thickness,
             "include_substrate": include_substrate,
+            "add_oxide_dielectric": add_oxide_dielectric,
+            "add_passivation_dielectric": add_passivation_dielectric,
             **kwargs,
         }
         # Stack will be resolved lazily during mesh() or simulate()
@@ -362,6 +373,14 @@ class PalaceSimMixin:
         for name, props in self.materials.items():
             legacy_stack.materials[name] = props.to_dict()
 
+        # Keep stack free of synthetic air regions; Palace airboxes are
+        # generated explicitly from set_airbox().
+        legacy_stack.dielectrics = [
+            d
+            for d in legacy_stack.dielectrics
+            if str(d.get("material", "")).lower() != "air"
+        ]
+
         # Store the LayerStack
         self.stack = legacy_stack
 
@@ -381,6 +400,14 @@ class PalaceSimMixin:
         margin_y: float | None = None,
         auto_size: bool = False,
         cells_per_feature: int = 2,
+        curve_fit_mode: Literal["line", "spline", "bspline"] | None = None,
+        curve_fit_layers: list[str] | None = None,
+        curve_fit_tolerance_um: float | None = None,
+        curve_fit_min_points: int | None = None,
+        curve_fit_corner_angle_deg: float | None = None,
+        high_order_elements: bool | None = None,
+        high_order_order: int | None = None,
+        high_order_optimize: bool | None = None,
     ) -> MeshConfig:
         """Build mesh config from preset with optional overrides.
 
@@ -452,10 +479,24 @@ class PalaceSimMixin:
                         mesh_config.refined_mesh_size,
                     )
 
+        existing_config = getattr(self, "mesh_config", None)
+
+        # Preserve curve-fit settings from sim.mesh_config unless overridden.
+        if existing_config is not None:
+            mesh_config.curve_fit_mode = existing_config.curve_fit_mode
+            mesh_config.curve_fit_layers = list(existing_config.curve_fit_layers)
+            mesh_config.curve_fit_tolerance_um = existing_config.curve_fit_tolerance_um
+            mesh_config.curve_fit_min_points = existing_config.curve_fit_min_points
+            mesh_config.curve_fit_corner_angle_deg = (
+                existing_config.curve_fit_corner_angle_deg
+            )
+            mesh_config.high_order_elements = existing_config.high_order_elements
+            mesh_config.high_order_order = existing_config.high_order_order
+            mesh_config.high_order_optimize = existing_config.high_order_optimize
+
         # Preserve planar_conductors from sim.mesh_config if not
         # explicitly provided via sim.mesh(planar_conductors=...)
         if planar_conductors is None:
-            existing_config = getattr(self, "mesh_config", None)
             if existing_config is not None:
                 mesh_config.planar_conductors = existing_config.planar_conductors
         else:
@@ -473,9 +514,29 @@ class PalaceSimMixin:
         if margin_y is not None:
             mesh_config.margin_y = margin_y
         if airbox_margin is not None:
-            mesh_config.airbox_margin = airbox_margin
+            raise ValueError(
+                "airbox_margin has been removed from mesh()/preview(). "
+                "Use set_airbox(margin_x=..., margin_y=..., "
+                "margin_above=..., margin_below=...)."
+            )
         if fmax is not None:
             mesh_config.fmax = fmax
+        if curve_fit_mode is not None:
+            mesh_config.curve_fit_mode = curve_fit_mode
+        if curve_fit_layers is not None:
+            mesh_config.curve_fit_layers = curve_fit_layers
+        if curve_fit_tolerance_um is not None:
+            mesh_config.curve_fit_tolerance_um = curve_fit_tolerance_um
+        if curve_fit_min_points is not None:
+            mesh_config.curve_fit_min_points = curve_fit_min_points
+        if curve_fit_corner_angle_deg is not None:
+            mesh_config.curve_fit_corner_angle_deg = curve_fit_corner_angle_deg
+        if high_order_elements is not None:
+            mesh_config.high_order_elements = high_order_elements
+        if high_order_order is not None:
+            mesh_config.high_order_order = high_order_order
+        if high_order_optimize is not None:
+            mesh_config.high_order_optimize = high_order_optimize
         mesh_config.show_gui = show_gui
 
         return mesh_config
@@ -841,6 +902,9 @@ class PalaceSimMixin:
 
         # Resolve stack
         stack = self._resolve_stack()
+        airbox_cfg = self._airbox_config or {}
+        domain_margin_x = airbox_cfg.get("margin_x", mesh_config.effective_margin_x)
+        domain_margin_y = airbox_cfg.get("margin_y", mesh_config.effective_margin_y)
 
         if verbose:
             logger.info("Generating mesh in %s", output_dir)
@@ -869,14 +933,23 @@ class PalaceSimMixin:
             simulation_type=self.simulation_type,
             driven_config=driven_config,
             eigenmode_config=self.eigenmode,
+            numerical_config=self.numerical,
             write_config=write_config,
             planar_conductors=mesh_config.planar_conductors,
             pec_blocks=self._pec_blocks or None,
             absorbing_boundary=self.absorbing_boundary,
             periodic_axis=periodic_axis,
             merge_via_distance=mesh_config.merge_via_distance,
-            decimate_tolerance=decimate_tolerance,
+            curve_fit_mode=mesh_config.curve_fit_mode,
+            curve_fit_layers=mesh_config.curve_fit_layers,
+            curve_fit_tolerance_um=mesh_config.curve_fit_tolerance_um,
+            curve_fit_min_points=mesh_config.curve_fit_min_points,
+            curve_fit_corner_angle_deg=mesh_config.curve_fit_corner_angle_deg,
+            high_order_elements=mesh_config.high_order_elements,
+            high_order_order=mesh_config.high_order_order,
+            high_order_optimize=mesh_config.high_order_optimize,
             verbosity=gmsh_verbosity,
+            decimate_tolerance=decimate_tolerance,
         )
 
         # Store mesh_result for deferred config generation
@@ -918,6 +991,14 @@ class PalaceSimMixin:
         show_gui: bool = True,
         auto_size: bool = False,
         cells_per_feature: int = 2,
+        curve_fit_mode: Literal["line", "spline", "bspline"] | None = None,
+        curve_fit_layers: list[str] | None = None,
+        curve_fit_tolerance_um: float | None = None,
+        curve_fit_min_points: int | None = None,
+        curve_fit_corner_angle_deg: float | None = None,
+        high_order_elements: bool | None = None,
+        high_order_order: int | None = None,
+        high_order_optimize: bool | None = None,
         decimate_tolerance: float | None = None,
     ) -> None:
         """Preview the mesh without running simulation.
@@ -931,7 +1012,7 @@ class PalaceSimMixin:
             margin: XY margin around design (um)
             margin_x: X-axis margin (um). Overrides margin for X.
             margin_y: Y-axis margin (um). Overrides margin for Y.
-            airbox_margin: Extra airbox around stack (um); 0 = disabled
+            airbox_margin: Deprecated. Use set_airbox().
             fmax: Max frequency for mesh sizing (Hz)
             planar_conductors: Treat conductors as 2D PEC surfaces
             show_gui: Show gmsh GUI for interactive preview
@@ -939,6 +1020,15 @@ class PalaceSimMixin:
                 conductor feature / cells_per_feature. Off by default.
             cells_per_feature: Target cells across the smallest conductor
                 feature when auto_size=True. Default 2.
+            curve_fit_mode: Patterned dielectric boundary mode (line/spline/bspline).
+            curve_fit_layers: Layer names where spline fitting is applied.
+            curve_fit_tolerance_um: Point merge tolerance before fitting.
+            curve_fit_min_points: Min contour points required to fit curves.
+            curve_fit_corner_angle_deg: Turn-angle threshold used to split
+                sharp corners from smooth curve-fit segments.
+            high_order_elements: Enable high-order geometric mesh elements.
+            high_order_order: Polynomial order for high-order elements.
+            high_order_optimize: Run gmsh high-order optimization after meshing.
             decimate_tolerance: Relative tolerance for polygon decimation
                 (None = no decimation; typical 0.001-0.01).
 
@@ -968,6 +1058,14 @@ class PalaceSimMixin:
             show_gui=show_gui,
             auto_size=auto_size,
             cells_per_feature=cells_per_feature,
+            curve_fit_mode=curve_fit_mode,
+            curve_fit_layers=curve_fit_layers,
+            curve_fit_tolerance_um=curve_fit_tolerance_um,
+            curve_fit_min_points=curve_fit_min_points,
+            curve_fit_corner_angle_deg=curve_fit_corner_angle_deg,
+            high_order_elements=high_order_elements,
+            high_order_order=high_order_order,
+            high_order_optimize=high_order_optimize,
         )
 
         # Resolve stack
@@ -975,6 +1073,10 @@ class PalaceSimMixin:
 
         # Get ports
         ports = self._get_ports_for_preview(stack)
+
+        airbox_cfg = self._airbox_config or {}
+        domain_margin_x = airbox_cfg.get("margin_x", mesh_config.effective_margin_x)
+        domain_margin_y = airbox_cfg.get("margin_y", mesh_config.effective_margin_y)
 
         # Generate mesh in temp directory
         airbox_cfg = getattr(self, "_airbox_config", {})
@@ -1000,10 +1102,19 @@ class PalaceSimMixin:
                 simulation_type=self.simulation_type,
                 driven_config=self.driven,
                 eigenmode_config=self.eigenmode,
+                numerical_config=self.numerical,
                 planar_conductors=mesh_config.planar_conductors,
                 pec_blocks=self._pec_blocks or None,
                 absorbing_boundary=self.absorbing_boundary,
                 merge_via_distance=mesh_config.merge_via_distance,
+                curve_fit_mode=mesh_config.curve_fit_mode,
+                curve_fit_layers=mesh_config.curve_fit_layers,
+                curve_fit_tolerance_um=mesh_config.curve_fit_tolerance_um,
+                curve_fit_min_points=mesh_config.curve_fit_min_points,
+                curve_fit_corner_angle_deg=mesh_config.curve_fit_corner_angle_deg,
+                high_order_elements=mesh_config.high_order_elements,
+                high_order_order=mesh_config.high_order_order,
+                high_order_optimize=mesh_config.high_order_optimize,
                 decimate_tolerance=decimate_tolerance,
             )
 
@@ -1032,6 +1143,14 @@ class PalaceSimMixin:
         periodic_axis: str | None = None,
         decimate_tolerance: float | None = None,
         merge_via_distance: float | None = None,
+        curve_fit_mode: Literal["line", "spline", "bspline"] | None = None,
+        curve_fit_layers: list[str] | None = None,
+        curve_fit_tolerance_um: float | None = None,
+        curve_fit_min_points: int | None = None,
+        curve_fit_corner_angle_deg: float | None = None,
+        high_order_elements: bool | None = None,
+        high_order_order: int | None = None,
+        high_order_optimize: bool | None = None,
     ) -> SimulationResult:
         """Generate the mesh for Palace simulation.
 
@@ -1047,7 +1166,7 @@ class PalaceSimMixin:
             margin: XY margin around design (um), overrides preset
             margin_x: X-axis margin (um). Overrides margin for X.
             margin_y: Y-axis margin (um). Overrides margin for Y.
-            airbox_margin: Extra airbox around stack (um); 0 = disabled
+            airbox_margin: Deprecated. Use set_airbox().
             fmax: Max frequency for mesh sizing (Hz), overrides preset
             planar_conductors: Treat conductors as 2D PEC surfaces
             show_gui: Show gmsh GUI during meshing
@@ -1068,6 +1187,15 @@ class PalaceSimMixin:
                 merge before extrusion. Pass 0 to disable merging (keep
                 each via as a separate volume). Defaults to the preset's
                 value (typically 2.0 um).
+            curve_fit_mode: Patterned dielectric boundary mode (line/spline/bspline).
+            curve_fit_layers: Layer names where spline fitting is applied.
+            curve_fit_tolerance_um: Point merge tolerance before fitting.
+            curve_fit_min_points: Min contour points required to fit curves.
+            curve_fit_corner_angle_deg: Turn-angle threshold used to split
+                sharp corners from smooth curve-fit segments.
+            high_order_elements: Enable high-order geometric mesh elements.
+            high_order_order: Polynomial order for high-order elements.
+            high_order_optimize: Run gmsh high-order optimization after meshing.
 
         Returns:
             SimulationResult with mesh path
@@ -1101,6 +1229,14 @@ class PalaceSimMixin:
             show_gui=show_gui,
             auto_size=auto_size,
             cells_per_feature=cells_per_feature,
+            curve_fit_mode=curve_fit_mode,
+            curve_fit_layers=curve_fit_layers,
+            curve_fit_tolerance_um=curve_fit_tolerance_um,
+            curve_fit_min_points=curve_fit_min_points,
+            curve_fit_corner_angle_deg=curve_fit_corner_angle_deg,
+            high_order_elements=high_order_elements,
+            high_order_order=high_order_order,
+            high_order_optimize=high_order_optimize,
         )
 
         if merge_via_distance is not None:
@@ -1155,8 +1291,22 @@ class PalaceSimMixin:
 
         return result
 
-    def write_config(self, *, validate_mesh: bool = True) -> Path:
+    def write_config(
+        self,
+        *,
+        validate_mesh: bool = True,
+        photonic: bool = False,
+        photononic: bool | None = None,
+    ) -> Path:
         """Write Palace config.json after mesh generation.
+
+        By default this validates that the generated mesh/config include
+        conductor boundaries required for EM conductor solves. For photonic
+        simulations, pass ``photonic=True`` to skip this validation.
+
+        Args:
+            photonic: Skip conductor-oriented mesh validation when ``True``.
+            photononic: Deprecated alias for ``photonic``.
 
         Returns:
             Path to the generated config.json
@@ -1167,8 +1317,16 @@ class PalaceSimMixin:
         Example:
             >>> result = sim.mesh("./sim")
             >>> config_path = sim.write_config()
+            >>> # Photonic workflow without conductor boundaries
+            >>> config_path = sim.write_config(photonic=True)
         """
         from gsim.palace.mesh.generator import write_config as gen_write_config
+
+        if photononic is not None:
+            logger.warning(
+                "write_config(photononic=...) is deprecated; use photonic=..."
+            )
+            photonic = photonic or photononic
 
         if self._last_mesh_result is None:
             raise ValueError("No mesh result. Call mesh() first.")
@@ -1189,15 +1347,18 @@ class PalaceSimMixin:
             simulation_type=self.simulation_type,
             eigenmode_config=self.eigenmode,
             driven_config=self.driven,
+            numerical_config=self.numerical,
             absorbing_boundary=self.absorbing_boundary,
             hints=self._hints,
             electrostatic_config=electrostatic_config,
             terminals=terminals or [],
         )
 
-        # Validate mesh and config unless explicitly skipped.
-        if validate_mesh:
-            self.validate_mesh()
+        # Validate mesh and config unless this is a photonic workflow.
+        if not photonic and validate_mesh:
+            validation = self.validate_mesh()
+            if not validation.valid:
+                raise ValueError(f"Mesh validation failed:\n{validation}")
 
         return config_path
 
@@ -1392,7 +1553,7 @@ class PalaceSimMixin:
                 uses all available CPUs.
             num_threads: Number of OpenMP threads to use for OpenMP builds, default is 1
                 or the value of OMP_NUM_THREADS in the environment
-            verbose: Print progress messages
+            verbose: Print progress messages and stream Palace output in real time
 
         Returns:
             Parsed Palace result object (``SParams``) when ``port-S.csv`` is
@@ -1523,37 +1684,63 @@ class PalaceSimMixin:
             cmd.extend(["-nt", str(num_threads)])
         cmd.extend(["config.json"])
 
+        def _emit_info(msg: str, *args: object) -> None:
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(msg, *args)
+            else:
+                logger.warning(msg, *args)
+
+        def _emit_warning(msg: str, *args: object) -> None:
+            logger.warning(msg, *args)
+
         if verbose:
             if use_apptainer:
-                logger.info("Running Palace simulation in %s via Apptainer", output_dir)
+                _emit_info("Running Palace simulation in %s via Apptainer", output_dir)
             else:
-                logger.info("Running Palace simulation in %s directly", output_dir)
-            logger.info("Command: %s", " ".join(cmd))
-            logger.info("Processes: %d", num_processes)
+                _emit_info("Running Palace simulation in %s directly", output_dir)
+            _emit_info("Command: %s", " ".join(cmd))
+            _emit_info("Processes: %d", num_processes)
 
         # Run simulation
         try:
-            result = subprocess.run(  # noqa: S603
-                cmd,
-                cwd=output_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            if verbose:
+                streamed_lines: list[str] = []
+                with subprocess.Popen(  # noqa: S603
+                    cmd,
+                    cwd=output_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                ) as process:
+                    if process.stdout is not None:
+                        for line in process.stdout:
+                            line = line.rstrip("\n")
+                            streamed_lines.append(line)
+                            if line:
+                                _emit_info(line)
+                    returncode = process.wait()
 
-            # Log output if verbose
-            if verbose and result.stdout:
-                logger.info(result.stdout)
-            if verbose and result.stderr:
-                logger.warning(result.stderr)
-
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Palace simulation failed with return code {e.returncode}"
-            if e.stdout:
-                error_msg += f"\n\nStdout:\n{e.stdout}"
-            if e.stderr:
-                error_msg += f"\n\nStderr:\n{e.stderr}"
-            raise RuntimeError(error_msg) from e
+                if returncode != 0:
+                    tail = "\n".join(streamed_lines[-200:])
+                    error_msg = (
+                        f"Palace simulation failed with return code {returncode}"
+                    )
+                    if tail:
+                        error_msg += f"\n\nOutput (tail):\n{tail}"
+                    raise RuntimeError(error_msg)
+            else:
+                result = subprocess.run(  # noqa: S603
+                    cmd,
+                    cwd=output_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.stdout:
+                    logger.debug(result.stdout)
+                if result.stderr:
+                    _emit_warning(result.stderr)
         except FileNotFoundError as e:
             if use_apptainer:
                 raise RuntimeError(
@@ -1567,12 +1754,12 @@ class PalaceSimMixin:
             ) from e
 
         if verbose:
-            logger.info("Simulation completed successfully")
+            _emit_info("Simulation completed successfully")
 
         postpro_dir = output_dir / "output/palace/"
 
         if verbose:
-            logger.info("Results saved to %s", postpro_dir)
+            _emit_info("Results saved to %s", postpro_dir)
 
         files = {
             file.name: file

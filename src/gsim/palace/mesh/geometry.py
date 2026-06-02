@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from shapely import Polygon as ShapelyPolygon
 from shapely import buffer
@@ -765,8 +765,31 @@ def add_dielectrics(
         )
         dielectric_tags[material].append(box_tag)
 
-    # Surrounding airbox (boolean pipeline handles the overlap)
+    # Resolve stack z envelope even if dielectric list is sparse.
+    if not (math.isfinite(z_min_all) and math.isfinite(z_max_all)):
+        for layer in stack.layers.values():
+            z_min_all = min(z_min_all, layer.zmin)
+            z_max_all = max(z_max_all, layer.zmax)
+
+    # Explicit single airbox (boolean pipeline handles overlap/subtraction).
     if use_airbox:
+        if not (math.isfinite(z_min_all) and math.isfinite(z_max_all)):
+            raise ValueError(
+                "Cannot create airbox because stack z extents could not be resolved"
+            )
+
+        airbox_x = airbox_margin_x
+        airbox_y = airbox_margin_y
+        airbox_above = airbox_z_above
+        airbox_below = airbox_z_below
+        if (
+            airbox_x is None
+            or airbox_y is None
+            or airbox_above is None
+            or airbox_below is None
+        ):
+            raise ValueError("Explicit airbox margins must all be provided")
+
         airbox_tag = gmsh_utils.create_box(
             kernel,
             xmin_air - airbox_margin_x,
@@ -781,6 +804,119 @@ def add_dielectrics(
     kernel.synchronize()
 
     return dielectric_tags
+
+
+def add_patterned_dielectrics(
+    kernel,
+    geometry: GeometryData,
+    stack: LayerStack,
+    min_volume_thickness: float = 0.05,
+    curve_fit_mode: Literal["line", "spline", "bspline"] = "line",
+    curve_fit_layers: list[str] | None = None,
+    curve_fit_tolerance_um: float = 0.0,
+    curve_fit_min_points: int = 8,
+    curve_fit_corner_angle_deg: float = 45.0,
+) -> dict[str, list[int]]:
+    """Add patterned dielectric volumes from stack dielectric layers.
+
+    This extrudes component polygons for stack layers classified as
+    ``dielectric`` so patterned optical/routing cores become explicit
+    3D dielectric regions in the boolean pipeline.
+
+    Args:
+        kernel: gmsh OCC kernel
+        geometry: Extracted geometry data
+        stack: LayerStack with layer definitions
+        min_volume_thickness: Skip very thin dielectric layers that cannot
+            be robustly meshed as 3D volumes.
+        curve_fit_mode: Boundary curve mode for selected layers.
+        curve_fit_layers: Layer names where spline/bspline fitting is allowed.
+        curve_fit_tolerance_um: Point merge tolerance before curve fitting.
+        curve_fit_min_points: Minimum contour points to attempt curve fitting.
+        curve_fit_corner_angle_deg: Turn-angle threshold for corner detection
+            during spline/bspline segmentation.
+
+    Returns:
+        Dict mapping dielectric layer name -> list of volume tags.
+    """
+    patterned_tags: dict[str, list[int]] = {}
+    curve_layers = set(curve_fit_layers or [])
+
+    # Shaped dielectric layers are already extruded by ``add_metals`` and
+    # tracked via ``metal_tags["__shaped_dielectrics__"]``. Re-extruding them
+    # here would create overlapping volumes with duplicate ``Entity`` names,
+    # which collide in ``build_entities`` / ``assign_physical_groups`` and
+    # cause the layer to drop out of ``groups["volumes"]``.
+    shaped_dielectric_names = _detect_shaped_dielectric_layers(geometry, stack)
+
+    polygons_by_layer: dict[int, list[tuple[list[float], list[float], list]]] = {}
+    for layernum, pts_x, pts_y, holes in geometry.polygons:
+        polygons_by_layer.setdefault(layernum, []).append((pts_x, pts_y, holes))
+
+    for layernum, polys in polygons_by_layer.items():
+        layer_info = get_layer_info(stack, layernum)
+        if layer_info is None or layer_info["type"] != "dielectric":
+            continue
+
+        layer_name = layer_info["name"]
+        if layer_name in shaped_dielectric_names:
+            continue
+        zmin = layer_info["zmin"]
+        thickness = layer_info["thickness"]
+
+        if thickness <= 0 or thickness < min_volume_thickness:
+            logger.debug(
+                "Skipping patterned dielectric layer '%s' with thickness %.3f um",
+                layer_name,
+                thickness,
+            )
+            continue
+
+        surfaces = []
+        surface_loop_mode = (
+            curve_fit_mode
+            if curve_fit_mode != "line" and layer_name in curve_layers
+            else "line"
+        )
+        for pts_x, pts_y, holes in polys:
+            surfacetag = gmsh_utils.create_polygon_surface(
+                kernel,
+                pts_x,
+                pts_y,
+                zmin,
+                holes=holes,
+                loop_mode=surface_loop_mode,
+                fit_tolerance_um=curve_fit_tolerance_um,
+                min_points_for_curve_fit=curve_fit_min_points,
+                corner_turn_threshold_deg=curve_fit_corner_angle_deg,
+            )
+            if surfacetag is not None:
+                surfaces.append(surfacetag)
+
+        if not surfaces:
+            continue
+
+        if len(surfaces) > 1:
+            dimtags = [(2, s) for s in surfaces]
+            fused, _ = kernel.fuse(
+                [dimtags[0]],
+                dimtags[1:],
+                removeObject=True,
+                removeTool=True,
+            )
+            kernel.synchronize()
+            surfaces = [t for d, t in fused if d == 2]
+
+        volumes = []
+        for surfacetag in surfaces:
+            result = kernel.extrude([(2, surfacetag)], 0, 0, thickness)
+            volumes.append(result[1][1])
+
+        if volumes:
+            patterned_tags.setdefault(layer_name, []).extend(volumes)
+
+    kernel.synchronize()
+    return patterned_tags
 
 
 def extract_pec_polygons(component, gds_layer: tuple[int, int]) -> list:
@@ -927,6 +1063,7 @@ def add_pec_blocks(
 def build_entities(
     metal_tags: dict,
     dielectric_tags: dict,
+    patterned_dielectric_tags: dict | None,
     port_tags: dict,
     port_info: list,
     pec_block_tags: dict | None = None,
@@ -936,15 +1073,15 @@ def build_entities(
 
     Mesh-order convention (lower = higher priority, gets cut first):
         0  - conductor (2D PEC) surfaces and PEC block surfaces
-        1  - via volumes (3D, higher priority than dielectrics), shaped
-             dielectric volumes (3D, polygon-extruded dielectrics), and
-             port surfaces
-        2  - dielectrics (non-airbox volumes)
-        3  - airbox volume (lowest priority, carved by everything else)
+        1  - via volumes (3D, higher priority than dielectrics) and port surfaces
+        2  - patterned dielectric volumes from stack layers
+        3  - background dielectric boxes (non-airbox volumes)
+        4  - airbox volume (lowest priority, carved by everything else)
 
     Args:
         metal_tags: from ``add_metals()``
         dielectric_tags: from ``add_dielectrics()``
+        patterned_dielectric_tags: from ``add_patterned_dielectrics()``
         port_tags: from ``add_ports()``
         port_info: metadata list from ``add_ports()``
         pec_block_tags: from ``add_pec_blocks()``, optional
@@ -1103,9 +1240,25 @@ def build_entities(
             )
 
     # --- Dielectric volumes (dim=3) ---
+    if patterned_dielectric_tags:
+        for layer_name, vol_tags in patterned_dielectric_tags.items():
+            entities.append(
+                Entity(
+                    name=layer_name,
+                    dim=3,
+                    mesh_order=2,
+                    tags=vol_tags,
+                )
+            )
+
+    patterned_names = set(patterned_dielectric_tags or {})
     for material, vol_tags in dielectric_tags.items():
-        order = 3 if material == "airbox" else 2
-        entity_name = "air" if material == "airbox" else material
+        # If a patterned dielectric entity already uses this name, prefer the
+        # patterned volume entity to avoid name collisions in group assignment.
+        entity_name = "air" if material == "airbox" else str(material)
+        if entity_name in patterned_names:
+            continue
+        order = 4 if entity_name == "air" else 3
         entities.append(
             Entity(
                 name=entity_name,
@@ -1289,7 +1442,15 @@ def add_ports(
                     }
                 )
             else:
+                # Build a robust z-envelope for waveports. When synthetic
+                # dielectric boxes are disabled, stack.get_z_range() can miss
+                # patterned core levels; include layer extents as well.
                 layer_zmin, layer_zmax = stack.get_z_range()
+                if stack.layers:
+                    zmin_layers = min(layer.zmin for layer in stack.layers.values())
+                    zmax_layers = max(layer.zmax for layer in stack.layers.values())
+                    layer_zmin = min(layer_zmin, zmin_layers)
+                    layer_zmax = max(layer_zmax, zmax_layers)
 
                 if port.max_size:
                     # Fill the full simulation domain
@@ -1300,6 +1461,13 @@ def add_ports(
                     zmax = zmax + port.z_margin
                     zmin = max(zmin, layer_zmin)
                     zmax = min(zmax, layer_zmax)
+
+                # Guard against inverted/degenerate z extents.
+                if zmax <= zmin:
+                    z_center = target_layer.zmin + 0.5 * target_layer.thickness
+                    z_half = max(port.z_margin, 0.01)
+                    zmin = z_center - z_half
+                    zmax = z_center + z_half
 
                 angle = port.orientation % 360
                 is_y_axis = 45 <= angle < 135 or 225 <= angle < 315

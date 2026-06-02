@@ -149,6 +149,18 @@ class TestDrivenSimWorkflow:
         result = driven_sim.validate_mesh()
         assert result.valid, f"Mesh validation failed: {result}"
 
+    def test_write_config_photonic_bypasses_validation(self, driven_sim, monkeypatch):
+        def _validate_mesh_should_not_run(_self):
+            raise AssertionError("validate_mesh() should be bypassed for photonic")
+
+        monkeypatch.setattr(
+            type(driven_sim),
+            "validate_mesh",
+            _validate_mesh_should_not_run,
+        )
+        config_path = driven_sim.write_config(photonic=True)
+        assert Path(config_path).exists()
+
 
 # ---------------------------------------------------------------------------
 # DrivenSim with inplane lumped ports
@@ -528,3 +540,64 @@ class TestNumericalConfig:
         assert sim.numerical.order == 2
         assert sim.numerical.tolerance == 1e-8
         assert sim.numerical.max_iterations == 600
+
+    def test_numerical_settings_flow_to_config(self, cpw_component, tmp_path):
+        sim = DrivenSim()
+        sim.set_output_dir(str(tmp_path / "numerical-config"))
+        sim.set_geometry(cpw_component)
+        sim.set_stack(substrate_thickness=2.0, air_above=300.0)
+        sim.add_cpw_port("o1", layer="metal1", s_width=10, gap_width=6, length=5.0)
+        sim.add_cpw_port("o2", layer="metal1", s_width=10, gap_width=6, length=5.0)
+        sim.set_driven(fmin=1e9, fmax=100e9)
+        sim.set_numerical(
+            order=3,
+            tolerance=2e-7,
+            max_iterations=777,
+            solver_type="Default",
+            preconditioner="AMS",
+            device="CPU",
+        )
+
+        sim.mesh(preset="coarse")
+        sim.write_config()
+        assert sim._output_dir is not None
+        config_path = sim._output_dir / "config.json"
+        config = json.loads(config_path.read_text())
+
+        linear = config["Solver"]["Linear"]
+        assert linear["Type"] == "Default"
+        assert linear["KSPType"] == "GMRES"
+        assert linear["Tol"] == 2e-7
+        assert linear["MaxIts"] == 777
+        assert linear["Preconditioner"] == "AMS"
+        assert config["Solver"]["Order"] == 3
+        assert config["Solver"]["Device"] == "CPU"
+
+    def test_mumps_solver_config_defaults(self, cpw_component, tmp_path):
+        sim = DrivenSim()
+        sim.set_output_dir(str(tmp_path / "numerical-mumps"))
+        sim.set_geometry(cpw_component)
+        sim.set_stack(substrate_thickness=2.0, air_above=300.0)
+        sim.add_cpw_port("o1", layer="metal1", s_width=10, gap_width=6, length=5.0)
+        sim.add_cpw_port("o2", layer="metal1", s_width=10, gap_width=6, length=5.0)
+        sim.set_driven(fmin=1e9, fmax=100e9)
+        sim.set_numerical(solver_type="MUMPS", tolerance=1e-8)
+
+        sim.mesh(preset="coarse")
+        sim.write_config()
+        assert sim._output_dir is not None
+        config_path = sim._output_dir / "config.json"
+        config = json.loads(config_path.read_text())
+
+        linear = config["Solver"]["Linear"]
+        assert linear["Type"] == "MUMPS"
+        assert linear["KSPType"] == "GMRES"
+        assert linear["Tol"] == 1e-8
+        assert linear["MaxIts"] == 1
+        assert linear["MGMaxLevels"] == 1
+        assert linear["EstimatorMaxIts"] == 0
+        assert linear["EstimatorTol"] == 1e-6
+        assert linear["DivFreeTol"] == 1e-6
+        assert linear["DivFreeMaxIts"] == 0
+        assert linear["PCMatReal"] is False
+        assert linear["ComplexCoarseSolve"] is True

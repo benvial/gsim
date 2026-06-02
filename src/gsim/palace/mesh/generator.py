@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass, field
 from numbers import Integral
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import gmsh
 
@@ -21,6 +21,7 @@ from .geometry import (
     GeometryData,
     add_dielectrics,
     add_metals,
+    add_patterned_dielectrics,
     add_pec_blocks,
     add_ports,
     build_entities,
@@ -30,7 +31,7 @@ from .groups import assign_physical_groups
 
 if TYPE_CHECKING:
     from gsim.common.stack import LayerStack
-    from gsim.palace.models import DrivenConfig, EigenmodeConfig
+    from gsim.palace.models import DrivenConfig, EigenmodeConfig, NumericalConfig
     from gsim.palace.models.pec import PECBlockConfig
     from gsim.palace.ports.config import PalacePort
 
@@ -76,6 +77,7 @@ def _setup_mesh_fields(
     port_line_count = 0
     pec_line_count = 0
     shaped_dielectric_count = 0
+    dielectric_line_count = 0
 
     # Conductor-surface edges are always refined — the refined_cellsize only
     # takes effect where boundary curves drive the Threshold field, and metal
@@ -127,16 +129,58 @@ def _setup_mesh_fields(
                 boundary_lines.extend(lines)
                 port_line_count += len(lines)
 
+    # Dielectric interfaces are also field-concentration regions for
+    # photonic structures; refine high-permittivity dielectric boundaries
+    # (for example, core/air interfaces) when they exist as volume groups.
+    for volume_name, volume_info in groups.get("volumes", {}).items():
+        if volume_info.get("is_via", False):
+            continue
+
+        layer = stack.layers.get(volume_name)
+        material_name = layer.material if layer is not None else volume_name
+        material_props = stack.materials.get(material_name, {})
+        permittivity = material_props.get("permittivity", 1.0)
+        if isinstance(permittivity, list):
+            try:
+                permittivity = max(float(v) for v in permittivity)
+            except (TypeError, ValueError):
+                permittivity = 1.0
+        if not isinstance(permittivity, int | float) or permittivity <= 1.0:
+            continue
+
+        for vtag in volume_info.get("tags", []):
+            try:
+                boundaries = gmsh.model.getBoundary(
+                    [(3, vtag)],
+                    combined=False,
+                    oriented=False,
+                    recursive=False,
+                )
+            except Exception:
+                logger.debug(
+                    "Skipping dielectric boundary refinement for stale volume tag %s",
+                    vtag,
+                )
+                continue
+
+            for dim, stag in boundaries:
+                if dim != 2:
+                    continue
+                lines = gmsh_utils.get_boundary_lines(stag, kernel)
+                boundary_lines.extend(lines)
+                dielectric_line_count += len(lines)
+
     boundary_lines = sorted(set(boundary_lines))
 
     logger.info(
         "Mesh refinement: %d boundary lines "
-        "(conductor=%d, port=%d, pec=%d, shaped_dielectric=%d)",
+        "(conductor=%d, port=%d, pec=%d, shaped_dielectric=%d, dielectric=%d)",
         len(boundary_lines),
         conductor_line_count,
         port_line_count,
         pec_line_count,
         shaped_dielectric_count,
+        dielectric_line_count,
     )
 
     # Setup main refinement field
@@ -196,14 +240,23 @@ def generate_mesh(
     simulation_type: str = "driven",
     driven_config: DrivenConfig | None = None,
     eigenmode_config: EigenmodeConfig | None = None,
+    numerical_config: NumericalConfig | None = None,
     write_config: bool = True,
     planar_conductors: bool = False,
     pec_blocks: list[PECBlockConfig] | None = None,
     absorbing_boundary: bool = True,
     periodic_axis: str | None = None,
     merge_via_distance: float = 2.0,
+    curve_fit_mode: Literal["line", "spline", "bspline"] = "line",
+    curve_fit_layers: list[str] | None = None,
+    curve_fit_tolerance_um: float = 0.0,
+    curve_fit_min_points: int = 8,
+    curve_fit_corner_angle_deg: float = 45.0,
+    high_order_elements: bool = False,
+    high_order_order: int = 2,
+    high_order_optimize: bool = True,
+    verbosity: int = 3,
     decimate_tolerance: float | None = None,
-    verbosity: int = 0,
 ) -> MeshResult:
     """Generate mesh for Palace EM simulation.
 
@@ -227,12 +280,22 @@ def generate_mesh(
         simulation_type: Type of simulation (driven, eigenmode or electrostatics)
         driven_config: Optional DrivenConfig for frequency sweep settings
         eigenmode_config: Optional EigenmodeConfig for eigenmode problems
+        numerical_config: Optional NumericalConfig for solver settings
         write_config: Whether to write config.json (default True)
         pec_blocks: PEC configuration
         planar_conductors: If True, treat conductors as 2D PEC surfaces
         absorbing_boundary: If True, use absorbing boundary conditions on outer surfaces
         periodic_axis: ("x" or "y") for meshing constraints on opposite domain sides
         merge_via_distance: Max gap between vias to merge (um)
+        curve_fit_mode: Patterned dielectric boundary mode: line/spline/bspline
+        curve_fit_layers: Layer names where curve fitting is applied
+        curve_fit_tolerance_um: Point merge tolerance before curve fitting
+        curve_fit_min_points: Min contour points required for curve fitting
+        curve_fit_corner_angle_deg: Turn-angle threshold used to identify
+            sharp corners during curve fitting segmentation
+        high_order_elements: Enable high-order geometric mesh elements
+        high_order_order: Polynomial order for high-order elements
+        high_order_optimize: Run gmsh high-order optimization after meshing
         decimate_tolerance: Relative tolerance for polygon decimation
             (None = no decimation; typical 0.001-0.01)
         verbosity: Sets gmsh verbosity level
@@ -302,11 +365,30 @@ def generate_mesh(
             airbox_z_below=airbox_z_below,
         )
 
+        logger.info("Adding patterned dielectric layers...")
+        patterned_dielectric_tags = add_patterned_dielectrics(
+            kernel,
+            geometry,
+            stack,
+            curve_fit_mode=curve_fit_mode,
+            curve_fit_layers=curve_fit_layers,
+            curve_fit_tolerance_um=curve_fit_tolerance_um,
+            curve_fit_min_points=curve_fit_min_points,
+            curve_fit_corner_angle_deg=curve_fit_corner_angle_deg,
+        )
+
+        all_dielectric_tags = {
+            name: list(tags) for name, tags in dielectric_tags.items()
+        }
+        for layer_name, vol_tags in patterned_dielectric_tags.items():
+            all_dielectric_tags.setdefault(layer_name, []).extend(vol_tags)
+
         # Build entities and run boolean pipeline
         logger.info("Running boolean pipeline...")
         entities = build_entities(
             metal_tags,
             dielectric_tags,
+            patterned_dielectric_tags,
             port_tags,
             port_info,
             pec_block_tags=pec_block_tags or None,
@@ -322,7 +404,7 @@ def generate_mesh(
         groups = assign_physical_groups(
             kernel,
             metal_tags,
-            dielectric_tags,
+            all_dielectric_tags,
             port_tags,
             port_info,
             entities,
@@ -390,8 +472,32 @@ def generate_mesh(
         if show_gui:
             gmsh.fltk.run()
 
+        if high_order_elements:
+            logger.info(
+                "Enabling high-order elements (order=%d, optimize=%s)",
+                high_order_order,
+                high_order_optimize,
+            )
+            gmsh.option.setNumber("Mesh.ElementOrder", high_order_order)
+            gmsh.option.setNumber("Mesh.SecondOrderLinear", 0)
+            gmsh.option.setNumber(
+                "Mesh.HighOrderOptimize", 1 if high_order_optimize else 0
+            )
+
         logger.info("Generating mesh...")
         gmsh.model.mesh.generate(3)
+
+        if high_order_elements:
+            gmsh.model.mesh.setOrder(high_order_order)
+            if high_order_optimize:
+                try:
+                    gmsh.model.mesh.optimize("HighOrder")
+                except Exception as exc:
+                    logger.warning(
+                        "High-order optimization failed, using unoptimized high-order "
+                        "elements: %s",
+                        exc,
+                    )
 
         # Collect mesh statistics
         mesh_stats = collect_mesh_stats()
@@ -419,6 +525,7 @@ def generate_mesh(
                 simulation_type,
                 driven_config,
                 eigenmode_config,
+                numerical_config,
                 absorbing_boundary,
                 periodic_axis,
             )

@@ -15,7 +15,12 @@ from gsim.palace.ports.config import PortType
 
 if TYPE_CHECKING:
     from gsim.common.stack import LayerStack
-    from gsim.palace.models import DrivenConfig, EigenmodeConfig, ElectrostaticConfig
+    from gsim.palace.models import (
+        DrivenConfig,
+        EigenmodeConfig,
+        ElectrostaticConfig,
+        NumericalConfig,
+    )
     from gsim.palace.models.ports import TerminalConfig
     from gsim.palace.ports.config import PalacePort
 
@@ -31,6 +36,7 @@ def generate_palace_config(
     simulation_type: str = "driven",
     driven_config: DrivenConfig | None = None,
     eigenmode_config: EigenmodeConfig | None = None,
+    numerical_config: NumericalConfig | None = None,
     absorbing_boundary: bool = True,
     periodic_axis: str | None = None,
     hints: dict[str, Any] | None = None,
@@ -99,32 +105,22 @@ def generate_palace_config(
             },
         )
 
-    linear_conf: dict[str, object] = {
-        "Type": "Default",
-        "KSPType": "GMRES",
-        "Tol": 1e-6,
-        "MaxIts": 400,
-    }
-    # TODO: Add MUMPS support
-    # linear_conf: dict[str, object] = {
-    #     "Type": "MUMPS",
-    #     "KSPType": "GMRES",
-    #     "Tol": 1e-6,
-    #     "MaxIts": 1,
-    #     "MGMaxLevels": 1,
-    #     "EstimatorMaxIts": 0,
-    #     "EstimatorTol": 1e-6,
-    #     "DivFreeTol": 1e-6,
-    #     "DivFreeMaxIts": 0,
-    #     "PCMatReal": False,
-    #     "ComplexCoarseSolve": True,
-    # }
-
-    solver_conf: dict[str, object] = {
-        "Linear": linear_conf,
-        "Order": 2,
-        "Device": "CPU",
-    }
+    solver_conf: dict[str, object]
+    if numerical_config is not None:
+        solver_conf = dict(numerical_config.to_solver_config())
+    else:
+        # Backward-compatible defaults for direct generate_palace_config() calls
+        # that do not provide a NumericalConfig.
+        solver_conf = {
+            "Linear": {
+                "Type": "Default",
+                "KSPType": "GMRES",
+                "Tol": 1e-6,
+                "MaxIts": 1000,
+            },
+            "Order": 2,
+            "Device": "CPU",
+        }
 
     if simulation_type == "driven":
         solver_conf["Driven"] = solver_driven
@@ -165,7 +161,8 @@ def generate_palace_config(
         )
 
     materials: list[dict[str, object]] = []
-    for material_name, info in groups["volumes"].items():
+    for volume_name, info in groups["volumes"].items():
+        material_name = volume_name
         is_via = info.get("is_via", False)
         is_shaped_dielectric = info.get("is_shaped_dielectric", False)
 
@@ -179,7 +176,7 @@ def generate_palace_config(
 
         mat_entry: dict[str, object] = {"Attributes": [info["phys_group"]]}
 
-        if material_name in {"airbox", "air"}:
+        if volume_name in {"airbox", "air"}:
             mat_entry["Permittivity"] = 1.0
             mat_entry["LossTan"] = 0.0
         elif is_via:
@@ -653,6 +650,7 @@ def write_config(
     simulation_type: str = "driven",
     driven_config: DrivenConfig | None = None,
     eigenmode_config: EigenmodeConfig | None = None,
+    numerical_config: NumericalConfig | None = None,
     absorbing_boundary: bool = True,
     hints: dict[str, Any] | None = None,
     electrostatic_config: ElectrostaticConfig | None = None,
@@ -699,6 +697,7 @@ def write_config(
         simulation_type=simulation_type,
         driven_config=driven_config,
         eigenmode_config=eigenmode_config,
+        numerical_config=numerical_config,
         absorbing_boundary=absorbing_boundary,
         periodic_axis=mesh_result.periodic_axis,
         hints=hints,
