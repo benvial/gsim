@@ -13,11 +13,11 @@ groups:
   - P3
   - P4
   volumes:
-  - SiO2
   - air
-  - passive
+  - si
+  - sin
 mesh:
-  elements: 22024
+  elements: 29451
   invalid_elements: 0
-  nodes: 2970
-  tetrahedra: 14830
+  nodes: 3997
+  tetrahedra: 19603

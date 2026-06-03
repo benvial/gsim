@@ -142,12 +142,19 @@ class TestMixinMethods:
             assert sim.output_dir.exists()
 
     def test_set_stack(self):
-        """Test set_stack works on all sim classes."""
+        """Test set_stack no longer stores airbox parameters."""
         for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
             sim = cls()
             sim.set_stack(air_above=500.0, air_below=25.0)
-            assert sim._stack_kwargs["air_above"] == 500.0
-            assert sim._stack_kwargs["air_below"] == 25.0
+            assert "air_above" not in sim._stack_kwargs
+            assert "air_below" not in sim._stack_kwargs
+
+    def test_set_stack_default_air_above_zero(self):
+        """Default stack setup should not pass legacy air kwargs at all."""
+        sim = DrivenSim()
+        sim.set_stack()
+        assert "air_above" not in sim._stack_kwargs
+        assert "air_below" not in sim._stack_kwargs
 
     def test_set_airbox(self):
         """Test set_airbox stores explicit airbox margins and z extents."""
@@ -161,11 +168,98 @@ class TestMixinMethods:
                 "z_below": 80.0,
             }
 
+    def test_set_airbox_defaults_to_zero(self):
+        """Unassigned set_airbox arguments should default to 0.0."""
+        for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
+            sim = cls()
+            sim.set_airbox()
+            assert sim._airbox_config == {
+                "margin_x": 0.0,
+                "margin_y": 0.0,
+                "z_above": 0.0,
+                "z_below": 0.0,
+            }
+
+    def test_set_airbox_partial_defaults(self):
+        """Any omitted set_airbox field should still become 0.0."""
+        sim = DrivenSim()
+        sim.set_airbox(margin_x=50.0)
+        assert sim._airbox_config == {
+            "margin_x": 50.0,
+            "margin_y": 0.0,
+            "z_above": 0.0,
+            "z_below": 0.0,
+        }
+
     def test_set_airbox_invalid(self):
         """set_airbox should reject negative margins/extents."""
         sim = DrivenSim()
         with pytest.raises(ValueError):
             sim.set_airbox(margin_x=-1.0, z_above=100.0, z_below=100.0)
+
+    def test_mesh_routes_airbox_kwargs_through_set_airbox(self, monkeypatch, tmp_path):
+        """mesh() air-region kwargs should be applied via set_airbox()."""
+        captured: dict[str, float | None] = {}
+
+        def _fake_set_airbox(
+            _self,
+            *,
+            margin_x=None,
+            margin_y=None,
+            z_above=None,
+            z_below=None,
+        ):
+            captured["margin_x"] = margin_x
+            captured["margin_y"] = margin_y
+            captured["z_above"] = z_above
+            captured["z_below"] = z_below
+
+        def _fake_generate_mesh_internal(_self, **_kwargs):
+            return SimpleNamespace(mesh_stats={}, mesh_path=tmp_path / "palace.msh")
+
+        sim = DrivenSim()
+        sim.set_output_dir(tmp_path / "sim")
+
+        monkeypatch.setattr(DrivenSim, "set_airbox", _fake_set_airbox)
+
+        def _fake_validate_config(_self):
+            return SimpleNamespace(valid=True, errors=[])
+
+        monkeypatch.setattr(
+            DrivenSim,
+            "validate_config",
+            _fake_validate_config,
+        )
+        monkeypatch.setattr(DrivenSim, "_resolve_stack", lambda _self: object())
+        monkeypatch.setattr(
+            DrivenSim,
+            "_configure_ports_on_component",
+            lambda _self, _stack: None,
+        )
+        monkeypatch.setattr(
+            "gsim.palace.ports.extract_ports",
+            lambda _component, _stack: [],
+        )
+        monkeypatch.setattr(
+            DrivenSim,
+            "_generate_mesh_internal",
+            _fake_generate_mesh_internal,
+        )
+
+        sim.mesh(
+            margin_x=50.0,
+            margin_y=10.0,
+            z_above=120.0,
+            z_below=80.0,
+            verbose=False,
+        )
+
+        assert captured == {
+            "margin_x": 50.0,
+            "margin_y": 10.0,
+            "z_above": 120.0,
+            "z_below": 80.0,
+        }
 
     def test_set_airbox_margin_y_zero_reaches_generate_mesh(
         self, monkeypatch, tmp_path
@@ -215,6 +309,56 @@ class TestMixinMethods:
         assert captured["margin_x"] == 50.0
         assert captured["margin_y"] == 0.0
 
+    def test_curved_mesh_options_reach_generate_mesh(self, monkeypatch, tmp_path):
+        """Curve-fit, decimation, and verbosity options must be forwarded."""
+        captured: dict[str, object] = {}
+
+        def _fake_generate_mesh(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                mesh_path=tmp_path / "palace.msh",
+                config_path=None,
+                port_info=[],
+                mesh_stats={},
+                groups={},
+            )
+
+        monkeypatch.setattr(
+            "gsim.palace.mesh.generator.generate_mesh", _fake_generate_mesh
+        )
+        monkeypatch.setattr(DrivenSim, "_resolve_stack", lambda _self: object())
+
+        sim = DrivenSim()
+        sim.set_output_dir(tmp_path / "sim")
+
+        mesh_config = MeshConfig.default(
+            curve_fit_mode="bspline",
+            curve_fit_layers=["core"],
+            curve_fit_tolerance_um=0.02,
+            curve_fit_min_points=12,
+            curve_fit_corner_angle_deg=30.0,
+        )
+
+        sim._generate_mesh_internal(
+            output_dir=tmp_path / "sim",
+            mesh_config=mesh_config,
+            ports=[],
+            driven_config=sim.driven,
+            model_name="palace",
+            verbose=False,
+            write_config=False,
+            decimate_tolerance=0.005,
+            gmsh_verbosity=7,
+        )
+
+        assert captured["curve_fit_mode"] == "bspline"
+        assert captured["curve_fit_layers"] == ["core"]
+        assert captured["curve_fit_tolerance_um"] == 0.02
+        assert captured["curve_fit_min_points"] == 12
+        assert captured["curve_fit_corner_angle_deg"] == 30.0
+        assert captured["decimate_tolerance"] == 0.005
+        assert captured["verbosity"] == 7
+
     def test_set_material(self):
         """Test set_material works on all sim classes."""
         for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
@@ -229,9 +373,20 @@ class TestMixinMethods:
         """Test set_numerical works on all sim classes."""
         for cls in [DrivenSim, EigenmodeSim, ElectrostaticSim]:
             sim = cls()
-            sim.set_numerical(order=3, tolerance=1e-8)
+            sim.set_numerical(
+                order=3,
+                tolerance=1e-8,
+                max_iterations=1000,
+                solver_type="MUMPS",
+                preconditioner="AMS",
+                device="CPU",
+            )
             assert sim.numerical.order == 3
             assert sim.numerical.tolerance == 1e-8
+            assert sim.numerical.max_iterations == 1000
+            assert sim.numerical.solver_type == "MUMPS"
+            assert sim.numerical.preconditioner == "AMS"
+            assert sim.numerical.device == "CPU"
 
     def test_mesh_requires_output_dir(self):
         """Test mesh() raises if output_dir not set."""

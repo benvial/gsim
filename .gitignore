@@ -20,6 +20,7 @@ uv.lock
 *.sage.py
 *.so
 *.spec
+*.lyp
 .Python
 .cache
 .coverage

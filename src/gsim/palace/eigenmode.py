@@ -38,7 +38,8 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
         >>>
         >>> sim = EigenmodeSim()
         >>> sim.set_geometry(component)
-        >>> sim.set_stack(air_above=300.0)
+        >>> sim.set_stack()
+        >>> sim.set_airbox(margin_x=120.0, margin_above=120.0, margin_below=20.0)
         >>> sim.add_port("o1", layer="topmetal2", length=5.0)
         >>> sim.set_eigenmode(num_modes=10, target=50e9)
         >>> sim.set_output_dir("./sim")
@@ -83,9 +84,9 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
 
     # Stack configuration (stored as kwargs until resolved)
     _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _airbox_config: dict[str, float] = PrivateAttr(default_factory=dict)
     _pec_blocks: list = PrivateAttr(default_factory=list)
     _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
-    _airbox_config: dict[str, float] = PrivateAttr(default_factory=dict)
 
     # Internal state
     _output_dir: Path | None = PrivateAttr(default=None)

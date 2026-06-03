@@ -79,6 +79,48 @@ class NumericalConfig(BaseModel):
         "and solves if Palace was built with GPU support.",
     )
 
+    def to_linear_solver_config(self) -> dict[str, object]:
+        """Convert to Palace ``Solver.Linear`` config.
+
+        Notes:
+            - For ``solver_type='MUMPS'``, direct-solver defaults follow the
+              existing Palace TODO template in this codebase.
+            - ``preconditioner`` is only applied for ``solver_type='Default'``.
+        """
+        linear_conf: dict[str, object] = {
+            "Type": self.solver_type,
+            "KSPType": "GMRES",
+            "Tol": self.tolerance,
+            "MaxIts": self.max_iterations,
+        }
+
+        if self.solver_type == "MUMPS":
+            linear_conf.update(
+                {
+                    "MaxIts": 1,
+                    "MGMaxLevels": 1,
+                    "EstimatorMaxIts": 0,
+                    "EstimatorTol": 1e-6,
+                    "DivFreeTol": 1e-6,
+                    "DivFreeMaxIts": 0,
+                    "PCMatReal": False,
+                    "ComplexCoarseSolve": True,
+                }
+            )
+
+        if self.solver_type == "Default" and self.preconditioner != "Default":
+            linear_conf["Preconditioner"] = self.preconditioner
+
+        return linear_conf
+
+    def to_solver_config(self) -> dict[str, object]:
+        """Convert to Palace ``Solver`` section config."""
+        return {
+            "Linear": self.to_linear_solver_config(),
+            "Order": self.order,
+            "Device": self.device,
+        }
+
     def to_palace_config(self) -> dict:
         """Convert to Palace JSON config format."""
         solver_config: dict[str, str | int | float] = {

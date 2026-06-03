@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import gdsfactory as gf
@@ -68,12 +69,12 @@ def get_stack(
         yaml_path: Path to custom YAML stack file. If None, uses active PDK.
         **kwargs: Additional args passed to the stack builder:
             - substrate_thickness: Thickness below z=0 in um (default: 2.0)
-            - air_above: Air box height above top metal in um (default: 5).
-              Palace RF sims typically override to 200+ for far-field radiation.
-            - air_below: Air box height below substrate/oxide in um
-              (default: 0)
             - include_substrate: Include lossy silicon substrate (default: False).
               When False, omits substrate for RF simulation.
+            - add_oxide_dielectric: Add synthetic oxide dielectric background
+              region (default: True).
+            - add_passivation_dielectric: Add synthetic passivation dielectric
+              cap (default: True).
 
     Returns:
         LayerStack object
@@ -89,10 +90,22 @@ def get_stack(
         stack = get_stack(yaml_path="custom_stack.yaml")
 
         # With custom settings
-        stack = get_stack(air_above=300, substrate_thickness=5.0)
+        stack = get_stack(substrate_thickness=5.0)
     """
     if yaml_path is not None:
         return load_stack_yaml(yaml_path)
+
+    if "air_above" in kwargs or "air_below" in kwargs:
+        # Deprecated: air volumes must be configured through simulation.set_airbox().
+        kwargs.pop("air_above", None)
+        kwargs.pop("air_below", None)
+        warnings.warn(
+            "get_stack(air_above/air_below) is deprecated and ignored. "
+            "Use simulation.set_airbox(margin_x=..., margin_y=..., "
+            "z_above=..., z_below=...).",
+            UserWarning,
+            stacklevel=2,
+        )
 
     pdk = gf.get_active_pdk()
     if pdk is None:
