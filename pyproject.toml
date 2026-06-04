@@ -216,6 +216,7 @@ ignore = [
   "PLW2901",  # redefined-loop-name
   "PTH123",  # Path.open preferred
   "S110",  # try-except-pass
+  "S112",  # try-except-continue (best-effort gmsh tag queries)
   "RET504",  # unnecessary-assign
   "S324",  # hashlib-insecure-hash-function
   "TC001",  # typing-only-first-party-import
