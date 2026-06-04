@@ -105,7 +105,7 @@ import matplotlib.pyplot as plt
 
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 6))
 
-for w, sp in zip(widths, results):
+for w, sp in zip(widths, results, strict=True):
     ax1.plot(sp.freq, sp.s11.db, label=f"w={w:.1f} um")
     ax2.plot(sp.freq, sp.s21.db, label=f"w={w:.1f} um")
 

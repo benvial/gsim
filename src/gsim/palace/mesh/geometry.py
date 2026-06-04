@@ -6,6 +6,7 @@ and creating 3D geometry in gmsh.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 from dataclasses import dataclass
@@ -480,17 +481,21 @@ def add_metals(
             # Adding independent line loops at the conductor z-height gives
             # gmsh explicit curves to refine around the metal perimeter.
             for pts_x, pts_y, holes in polys:
-                loop_tag = gmsh_utils._create_wire_loop(
+                loop_tag = gmsh_utils._create_wire_loop(  # noqa: SLF001
                     kernel, list(pts_x), list(pts_y), zmin
                 )
                 if loop_tag is not None:
-                    metal_tags[layer_name].setdefault("refinement_lines", []).append(loop_tag)
+                    metal_tags[layer_name].setdefault("refinement_lines", []).append(
+                        loop_tag
+                    )
                 for hx, hy in holes:
-                    hole_loop = gmsh_utils._create_wire_loop(
+                    hole_loop = gmsh_utils._create_wire_loop(  # noqa: SLF001
                         kernel, list(hx), list(hy), zmin
                     )
                     if hole_loop is not None:
-                        metal_tags[layer_name].setdefault("refinement_lines", []).append(hole_loop)
+                        metal_tags[layer_name].setdefault(
+                            "refinement_lines", []
+                        ).append(hole_loop)
         elif layer_type == "via":
             # Decide between 3D volume (with conductivity) and 2D PEC fallback
             material_name = layer_info["material"]
@@ -619,10 +624,8 @@ def add_metals(
             all_curves = list(kernel.getEntities(1))
             all_curve_bboxes: dict[int, tuple] = {}
             for _, ctag in all_curves:
-                try:
+                with contextlib.suppress(Exception):
                     all_curve_bboxes[ctag] = kernel.getBoundingBox(1, ctag)
-                except Exception:
-                    pass
             for ltag in old_line_tags:
                 if ltag in valid_lines:
                     continue
@@ -633,7 +636,9 @@ def add_metals(
                 for ctag, bbox in all_curve_bboxes.items():
                     if ctag in valid_lines:
                         continue
-                    if all(abs(a - b) < 0.01 for a, b in zip(bbox, old_bbox)):
+                    if all(
+                        abs(a - b) < 0.01 for a, b in zip(bbox, old_bbox, strict=True)
+                    ):
                         valid_lines.append(ctag)
                         break
         tag_info["refinement_lines"] = sorted(set(valid_lines))
@@ -853,13 +858,15 @@ def add_dielectrics(
         # core) carves out of the surrounding oxide/substrate boxes, so those
         # boxes need to be large enough to fully surround the shaped volume.
         #
-        # Also extend substrates (dielectrics starting at z ≈ 0) to margins.
+        # Also extend substrates (dielectrics starting at z ~ 0) to margins.
         # A bulk substrate like sapphire or silicon should fill the same
         # transverse extent as the surrounding air so the mesh domain is
         # consistent and the substrate edge does not artificially truncate
         # fields.
         is_bulk_substrate = d_zmin <= 1e-6
-        if (is_bulk_substrate or _detect_shaped_dielectric_layers(geometry, stack)) and not is_air_like:
+        if (
+            is_bulk_substrate or _detect_shaped_dielectric_layers(geometry, stack)
+        ) and not is_air_like:
             xmin = xmin_air
             ymin = ymin_air
             xmax = xmax_air

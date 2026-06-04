@@ -6,6 +6,7 @@ from the ``pg_map`` produced by ``run_boolean_pipeline``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -151,10 +152,8 @@ def assign_physical_groups(
                     all_curves = list(kernel.getEntities(1))
                     curve_bboxes: dict[int, tuple] = {}
                     for _, ctag in all_curves:
-                        try:
+                        with contextlib.suppress(Exception):
                             curve_bboxes[ctag] = kernel.getBoundingBox(1, ctag)
-                        except Exception:
-                            pass
                     for ltag in refinement_lines:
                         if ltag in valid_lines:
                             continue
@@ -183,7 +182,10 @@ def assign_physical_groups(
                         for stag in surf_tags:
                             try:
                                 b = gmsh.model.getBoundary(
-                                    [(2, stag)], combined=False, oriented=False, recursive=False
+                                    [(2, stag)],
+                                    combined=False,
+                                    oriented=False,
+                                    recursive=False,
                                 )
                                 for bdim, btag in b:
                                     if bdim == 1:
@@ -202,7 +204,10 @@ def assign_physical_groups(
                     for stag in surf_tags:
                         try:
                             b = gmsh.model.getBoundary(
-                                [(2, stag)], combined=False, oriented=False, recursive=False
+                                [(2, stag)],
+                                combined=False,
+                                oriented=False,
+                                recursive=False,
                             )
                             for bdim, btag in b:
                                 if bdim == 1:

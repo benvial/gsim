@@ -163,9 +163,7 @@ def test_add_patterned_dielectrics_skips_covered_dielectric_layers():
     kernel = gmsh.model.occ
 
     metal_tags = add_metals(kernel, geometry, stack, planar_conductors=True)
-    dielectric_tags = add_dielectrics(
-        kernel, geometry, stack, margin_x=50, margin_y=50
-    )
+    dielectric_tags = add_dielectrics(kernel, geometry, stack, margin_x=50, margin_y=50)
     patterned_tags = add_patterned_dielectrics(kernel, geometry, stack)
 
     # Patterned tags must be empty because SUBSTRATE and VACUUM are fully

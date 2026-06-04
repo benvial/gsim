@@ -84,6 +84,8 @@ def _get_domain_bbox(tol: float = 1e-3) -> tuple[float, float, float, float]:
     except Exception:
         return (0.0, 0.0, 0.0, 0.0)
     return (xmin - tol, ymin - tol, xmax + tol, ymax + tol)
+
+
 def _line_on_domain_boundary(
     line_tag: int,
     domain_bbox: tuple[float, float, float, float],
@@ -587,7 +589,7 @@ def generate_mesh(
         # After assign_physical_groups, refinement_lines may reference
         # curves that were merged during boolean. Refresh them from the
         # live model so _setup_mesh_fields sees only valid tags.
-        for layer_name, line_info in groups.get("refinement_lines", {}).items():
+        for line_info in groups.get("refinement_lines", {}).values():
             valid_tags = []
             for ltag in line_info.get("tags", []):
                 try:
@@ -598,8 +600,7 @@ def generate_mesh(
             line_info["tags"] = valid_tags
         # Prune empty entries so the downstream loop stays quiet.
         groups["refinement_lines"] = {
-            k: v for k, v in groups.get("refinement_lines", {}).items()
-            if v.get("tags")
+            k: v for k, v in groups.get("refinement_lines", {}).items() if v.get("tags")
         }
 
         if periodic_info:
