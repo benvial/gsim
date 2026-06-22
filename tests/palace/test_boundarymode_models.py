@@ -42,7 +42,6 @@ class TestBoundaryModeConfig:
             tolerance=1e-7,
             max_size=80,
             solver_type="SLEPc",
-            attributes=[4, 9],
         )
 
         result = cfg.to_palace_config()
@@ -53,9 +52,4 @@ class TestBoundaryModeConfig:
         assert result["Tol"] == pytest.approx(1e-7)
         assert result["MaxSize"] == 80
         assert result["Type"] == "SLEPc"
-        assert result["Attributes"] == [4, 9]
-
-    def test_reject_empty_attributes(self):
-        """Empty attributes list is invalid when provided."""
-        with pytest.raises(ValueError, match="non-empty"):
-            BoundaryModeConfig(attributes=[])
+        assert "Attributes" not in result

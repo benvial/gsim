@@ -83,7 +83,6 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
         tolerance: float = 1e-6,
         max_size: int = 0,
         solver_type: str = "Default",
-        attributes: list[int] | None = None,
     ) -> None:
         """Configure boundary mode solver parameters.
 
@@ -95,7 +94,6 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             tolerance: Relative eigensolver tolerance.
             max_size: Eigensolver max subspace size.
             solver_type: Palace eigensolver type.
-            attributes: Optional 3D boundary attributes for submesh extraction.
         """
         self.boundary_mode = BoundaryModeConfig(
             freq=freq,
@@ -105,15 +103,14 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             tolerance=tolerance,
             max_size=max_size,
             solver_type=solver_type,
-            attributes=attributes,
         )
 
     def set_cross_section(self, plane: str | CrossSectionPlaneConfig) -> None:
         """Set the explicit cross-section plane for 2D mode extraction.
 
         Args:
-            plane: Plane spec as ``"x=<value>"``, ``"y=<value>"``,
-                ``"z=<value>"``, or a prebuilt CrossSectionPlaneConfig.
+            plane: Plane spec as ``"x=<value>"`` or ``"y=<value>"``, or
+                a prebuilt CrossSectionPlaneConfig.
         """
         if isinstance(plane, CrossSectionPlaneConfig):
             self.cross_section = plane
@@ -129,8 +126,18 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
         if self.cross_section is None:
             errors.append(
                 "Boundary mode requires an explicit cross-section plane. "
-                "Call set_cross_section('x=<value>'), set_cross_section('y=<value>'), "
-                "or set_cross_section('z=<value>')."
+                "Call set_cross_section('x=<value>') or set_cross_section('y=<value>')."
+            )
+        elif self.cross_section.axis == "z":
+            errors.append(
+                "Boundary mode native 2D currently supports only x/y cross sections. "
+                "Use set_cross_section('x=<value>') or set_cross_section('y=<value>')."
+            )
+
+        if self.ports or self.cpw_ports or self.wave_ports:
+            errors.append(
+                "Boundary mode uses cross_section-only native 2D meshing. "
+                "add_port(), add_cpw_port(), and add_wave_port() are not supported."
             )
 
         return ValidationResult(

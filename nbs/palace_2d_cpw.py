@@ -153,11 +153,12 @@ mode_sim.set_output_dir("./palace-sim-cpw-waveport-2d")
 mode_sim.set_geometry(c.copy())
 mode_sim.set_stack(stack)
 mode_sim.set_cross_section("x=0")
-mode_sim.add_wave_port("o1", layer="topmetal2", max_size=True, mode=1, excited=False)
+mode_sim.set_boundary_mode(freq=50e9, num_modes=2, save=2)
 
 # Inspect the geometric cross section before meshing.
 section = cross_section.extract_plane_section(c.copy(), stack, axis="x", value=0.0)
 print(f"Cross section x=0 intersects {len(section)} layer regions")
+print("Stack dielectric regions:", stack.dielectrics)
 
 mode_sim.mesh(
     preset="default",
@@ -168,12 +169,10 @@ mode_sim.mesh(
     margin_y=50.0,
 )
 
-# Select the wave-port boundary attribute as the 2D solver cross section.
-port_attr = mode_sim._last_mesh_result.groups["port_surfaces"]["P1"]["phys_group"]
-mode_sim.set_boundary_mode(freq=50e9, num_modes=2, save=2, attributes=[port_attr])
-
-# Show the 2D boundary mesh (P1 surface only).
-mode_sim.plot_mesh(show_groups=["P1"], style="wireframe", interactive=True)
+# Show the native 2D domains used by the BoundaryMode solver.
+domain_groups = list(mode_sim._last_mesh_result.groups["volumes"].keys())
+print("2D domain groups:", domain_groups)
+mode_sim.plot_mesh(show_groups=domain_groups, style="solid", interactive=True)
 
 mode_sim.write_config()
 mode_results = mode_sim.run_local(

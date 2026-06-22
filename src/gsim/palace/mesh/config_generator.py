@@ -259,8 +259,9 @@ def generate_palace_config(
     conductors: list[dict[str, object]] = []
 
     for name, info in groups["conductor_surfaces"].items():
-        # Extract layer name from "layer_xy" or "layer_z"
-        layer_name = name.rsplit("_", 1)[0]
+        # Extract layer name from "layer_xy" / "layer_z" (3D) or use
+        # the raw key directly for native 2D conductor boundaries.
+        layer_name = name.rsplit("_", 1)[0] if name.endswith(("_xy", "_z")) else name
         layer = stack.layers.get(layer_name)
         if layer:
             mat_props = stack_materials.get(layer.material, {})
@@ -276,6 +277,7 @@ def generate_palace_config(
     pec_attrs: list[int] = [
         info["phys_group"] for info in groups.get("pec_surfaces", {}).values()
     ]
+    boundaries: dict[str, object]
 
     is_electrostatic = simulation_type in ("electrostatic", "electrostatics")
 
@@ -355,6 +357,13 @@ def generate_palace_config(
         }
         if ground_attrs:
             boundaries["Ground"] = {"Attributes": sorted(set(ground_attrs))}
+
+    elif simulation_type == "boundarymode":
+        boundaries = {}
+        if conductors:
+            boundaries["Conductivity"] = conductors
+        if pec_attrs:
+            boundaries["PEC"] = {"Attributes": sorted(set(pec_attrs))}
 
     else:
         lumped_ports: list[dict[str, object]] = []

@@ -286,8 +286,6 @@ class BoundaryModeConfig(BaseModel):
         tolerance: Relative convergence tolerance for the eigensolver.
         max_size: Maximum eigensolver subspace size (0 = default).
         solver_type: Palace eigensolver type.
-        attributes: Optional list of 3D boundary attributes to extract a
-            cross-section submesh from a 3D mesh.
     """
 
     model_config = ConfigDict(validate_assignment=True)
@@ -317,17 +315,6 @@ class BoundaryModeConfig(BaseModel):
         default="Default",
         description="Palace eigensolver type for BoundaryMode",
     )
-    attributes: list[int] | None = Field(
-        default=None,
-        description="Optional 3D boundary attributes for submesh extraction",
-    )
-
-    @model_validator(mode="after")
-    def validate_attributes(self) -> Self:
-        """Validate optional boundary attributes list."""
-        if self.attributes is not None and len(self.attributes) == 0:
-            raise ValueError("attributes must be non-empty when provided")
-        return self
 
     def to_palace_config(self) -> dict:
         """Convert to Palace JSON config format."""
@@ -343,8 +330,6 @@ class BoundaryModeConfig(BaseModel):
             self.max_size > 0
         ):  # Even when the default is zero, passing it explicitly makes Palace fail
             config["MaxSize"] = self.max_size
-        if self.attributes is not None:
-            config["Attributes"] = self.attributes
         return config
 
 

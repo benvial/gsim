@@ -965,6 +965,7 @@ class PalaceSimMixin:
             driven_config=driven_config,
             eigenmode_config=self.eigenmode,
             boundary_mode_config=getattr(self, "boundary_mode", None),
+            cross_section=getattr(self, "cross_section", None),
             write_config=write_config,
             planar_conductors=mesh_config.planar_conductors,
             pec_blocks=self._pec_blocks or None,
@@ -1305,10 +1306,13 @@ class PalaceSimMixin:
 
         # Resolve stack and configure ports
         stack = self._resolve_stack()
-        self._configure_ports_on_component(stack)
+        if self.simulation_type == "boundarymode":
+            palace_ports = []
+        else:
+            self._configure_ports_on_component(stack)
 
-        # Extract ports
-        palace_ports = extract_ports(component, stack)
+            # Extract ports
+            palace_ports = extract_ports(component, stack)
 
         # Generate mesh (config is written separately by simulate() or write_config())
         result = self._generate_mesh_internal(

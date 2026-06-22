@@ -160,6 +160,23 @@ class TestBoundaryModeSimValidation:
         with pytest.raises(ValueError, match="Invalid plane spec"):
             sim.set_cross_section("foo")
 
+    def test_z_cross_section_rejected_for_native_2d(self):
+        """Native 2D BoundaryMode currently supports only x/y sections."""
+        sim = BoundaryModeSim()
+        sim.set_cross_section("z=0")
+        result = sim.validate_config()
+        assert not result.valid
+        assert any("supports only x/y" in e for e in result.errors)
+
+    def test_port_api_rejected_for_boundarymode(self):
+        """BoundaryMode native 2D does not accept explicit port definitions."""
+        sim = BoundaryModeSim()
+        sim.set_cross_section("x=0")
+        sim.add_wave_port("o1", layer="metal1")
+        result = sim.validate_config()
+        assert not result.valid
+        assert any("cross_section-only native 2D" in e for e in result.errors)
+
     def test_set_boundary_mode_updates_model(self):
         """set_boundary_mode should populate BoundaryModeConfig fields."""
         sim = BoundaryModeSim()
@@ -171,7 +188,6 @@ class TestBoundaryModeSimValidation:
             tolerance=1e-8,
             max_size=60,
             solver_type="SLEPc",
-            attributes=[7, 11],
         )
         cfg = sim.boundary_mode
         assert cfg.freq == pytest.approx(8e9)
@@ -181,7 +197,6 @@ class TestBoundaryModeSimValidation:
         assert cfg.tolerance == pytest.approx(1e-8)
         assert cfg.max_size == 60
         assert cfg.solver_type == "SLEPc"
-        assert cfg.attributes == [7, 11]
 
 
 class TestMixinMethods:
