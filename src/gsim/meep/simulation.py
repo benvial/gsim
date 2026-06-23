@@ -549,6 +549,121 @@ class Simulation(BaseModel):
             )
         return overrides
 
+    def _resolve_stack_and_materials(
+        self, *, wavelength: float
+    ) -> tuple[Any, dict[str, Any]]:
+        """Resolve layer stack and material data for mode solving.
+
+        Lighter than :meth:`build_config` — no port extension, no domain
+        config, no FDTD source/monitor setup. Resolves the layer stack,
+        applies z-crop if configured, and resolves material optical
+        properties at the given wavelength via the three-tier pipeline
+        (user override > PDK overlay > built-in database).
+
+        Args:
+            wavelength: Free-space wavelength in µm for material evaluation.
+
+        Returns:
+            ``(stack, materials_dict)`` where ``stack`` is the resolved
+            ``LayerStack`` and ``materials_dict`` maps material name to
+            ``MaterialData``.
+        """
+        from gsim.meep.materials import resolve_materials
+
+        self._ensure_stack()
+        stack = self.geometry.stack
+        if stack is None:
+            raise ValueError("Stack resolution failed.")
+
+        # Apply z-crop if configured (idempotent — z_crop clears itself).
+        if self.geometry.z_crop is not None:
+            self._apply_z_crop()
+
+        # Collect material names from stack layers and dielectrics.
+        used_materials: set[str] = set()
+        for layer in stack.layers.values():
+            used_materials.add(layer.material)
+        for diel in stack.dielectrics:
+            used_materials.add(diel["material"])
+
+        material_data = resolve_materials(
+            used_materials,
+            overrides=self._material_overrides(),
+            wavelength_um=wavelength,
+            overlay=self._pdk_overlay,
+        )
+
+        return stack, material_data
+
+    # -------------------------------------------------------------------------
+    # solve_mode — standalone eigenmode solving
+    # -------------------------------------------------------------------------
+
+    def solve_mode(
+        self,
+        *,
+        port: str | None = None,
+        position: tuple[float, float] | None = None,
+        x_span: float | None = None,
+        wavelength: float,
+        band_num: int = 1,
+        parity: str = "NO_PARITY",
+        resolution: float = 32,
+    ) -> Any:
+        """Compute a waveguide eigenmode via MEEP.
+
+        Resolves the layer stack and materials via the three-tier pipeline,
+        then delegates to :func:`solve_cross_section_mode` or
+        :func:`solve_slab_mode` depending on whether a component is set.
+
+        Args:
+            port: Port name to auto-extract cross-section location and
+                *x*-span.
+            position: Arbitrary ``(x, y)`` — *y* is used for the cut
+                plane. Requires ``x_span``.
+            x_span: Total *x*-extent of the cell in µm. Auto-derived
+                from port width when ``port`` is given.
+            wavelength: Free-space wavelength in µm.
+            band_num: Mode band index (1 = fundamental).
+            parity: Parity string.
+            resolution: Pixels per µm (default 32).
+
+        Returns:
+            :class:`ModeResult` with effective index, field profiles, etc.
+        """
+        from gsim.meep.mode_solver import (
+            solve_cross_section_mode,
+            solve_slab_mode,
+        )
+
+        _stack, _materials = self._resolve_stack_and_materials(wavelength=wavelength)
+        stack = self.geometry.stack
+        if stack is None:
+            raise ValueError("Stack resolution failed.")
+
+        component = self.geometry.component
+
+        if component is not None and (port is not None or position is not None):
+            return solve_cross_section_mode(
+                component=component,
+                stack=stack,
+                port=port,
+                position=position,
+                x_span=x_span,
+                wavelength=wavelength,
+                band_num=band_num,
+                parity=parity,
+                resolution=resolution,
+            )
+
+        return solve_slab_mode(
+            stack=stack,
+            wavelength=wavelength,
+            band_num=band_num,
+            parity=parity,
+            resolution=resolution,
+        )
+
     # -------------------------------------------------------------------------
     # build_config — single source of truth
     # -------------------------------------------------------------------------

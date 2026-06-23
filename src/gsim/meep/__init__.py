@@ -23,19 +23,20 @@ Example::
 """
 
 from gsim.gcloud import RunResult, register_result_parser
+from gsim.meep.mode_solver import solve_cross_section_mode, solve_slab_mode
 from gsim.meep.models import (
     FDTD,
     Domain,
     DomainConfig,
     Geometry,
     Material,
+    ModeResult,
     ModeSource,
     ResolutionConfig,
     SimConfig,
     SourceConfig,
     SParameterResult,
     Symmetry,
-    # Config models used by Simulation.write_config()
     WavelengthConfig,
 )
 from gsim.meep.simulation import BuildResult, Simulation
@@ -58,6 +59,7 @@ __all__ = [
     "DomainConfig",
     "Geometry",
     "Material",
+    "ModeResult",
     "ModeSource",
     "ResolutionConfig",
     "SParameterResult",
@@ -66,4 +68,6 @@ __all__ = [
     "SourceConfig",
     "Symmetry",
     "WavelengthConfig",
+    "solve_cross_section_mode",
+    "solve_slab_mode",
 ]

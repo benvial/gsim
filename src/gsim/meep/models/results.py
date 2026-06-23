@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
@@ -366,3 +367,34 @@ class SParameterResult(BaseModel):
             ),
         )
         return fig
+
+
+class ModeResult(BaseModel):
+    """Eigenmode solution from standalone mode solving.
+
+    Returned by :func:`solve_slab_mode` and :func:`solve_cross_section_mode`.
+    Contains the effective index, field profiles over the cross-section,
+    the dominant wavevector, and metadata about the mode.
+
+    Attributes:
+        n_eff: Effective index (real part of propagation constant / k0).
+        wavelength: Free-space wavelength in µm.
+        frequency: Frequency in MEEP units (1/µm = 1/wavelength).
+        fields: Complex field arrays keyed by component name
+            (e.g. ``{"Ex": array, "Ey": array, "Ez": array, ...}``).
+        kdom: Dominant wavevector [kx, ky, kz] in MEEP units (2π/µm).
+        n_group: Group index, if computable.
+        band_num: Mode band index (1 = fundamental).
+        parity: Parity of the mode (``"NO_PARITY"``, ``"EVEN_Y"``, etc.).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    n_eff: float
+    wavelength: float
+    frequency: float
+    fields: dict[str, np.ndarray] = Field(default_factory=dict)
+    kdom: list[float] = Field(default_factory=list)
+    n_group: float | None = None
+    band_num: int = 1
+    parity: str = "NO_PARITY"

@@ -22,7 +22,7 @@ from gsim.meep.models.config import (
     SymmetryEntry,
     WavelengthConfig,
 )
-from gsim.meep.models.results import SParameterResult
+from gsim.meep.models.results import ModeResult, SParameterResult
 
 # Backward compatibility alias
 FDTDConfig = WavelengthConfig
@@ -38,6 +38,7 @@ __all__ = [
     "LayerStackEntry",
     "Material",
     "MaterialData",
+    "ModeResult",
     "ModeSource",
     "PortData",
     "ResolutionConfig",
