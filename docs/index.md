@@ -2,6 +2,17 @@
 
 Electromagnetic simulation for photonics and electronics, powered by [GDSFactory+](https://gdsfactory.com).
 
+<div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">
+
+<a href="https://github.com/gdsfactory/gsim/actions/workflows/test.yml"><img alt="CI" src="https://github.com/gdsfactory/gsim/actions/workflows/test.yml/badge.svg"></a>
+<a href="https://codecov.io/gh/gdsfactory/gsim"><img alt="codecov" src="https://img.shields.io/codecov/c/github/gdsfactory/gsim?style=flat"></a>
+<a href="https://pypi.org/project/gsim/"><img alt="PyPI" src="https://img.shields.io/pypi/v/gsim?style=flat"></a>
+<a href="https://pypi.org/project/gsim/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/gsim?style=flat"></a>
+<a href="https://github.com/gdsfactory/gsim/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/gdsfactory/gsim?style=flat"></a>
+<a href="https://pepy.tech/project/gsim"><img alt="Downloads" src="https://static.pepy.tech/badge/gsim"></a>
+
+</div>
+
 ## Overview
 
 gsim connects GDSFactory layout designs to multiple EM solvers for photonic and electronic simulation. It handles

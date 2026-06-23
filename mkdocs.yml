@@ -14,7 +14,7 @@ theme:
 extra_css:
 - assets/custom.css
 nav:
-- home: index.md
+- gsim: index.md
 - FDTD for Photonics:
   - Y-Branch: nbs/meep_ybranch.md
   - Ring Coupler: nbs/meep_ring_coupler.md

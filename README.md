@@ -4,6 +4,13 @@
 
 ![gsim-logo](./docs/assets/img/gsim-small.png)
 
+[![CI](https://github.com/gdsfactory/gsim/actions/workflows/test.yml/badge.svg)](https://github.com/gdsfactory/gsim/actions/workflows/test.yml)
+[![codecov](https://img.shields.io/codecov/c/github/gdsfactory/gsim?style=flat)](https://codecov.io/gh/gdsfactory/gsim)
+[![PyPI](https://img.shields.io/pypi/v/gsim?style=flat)](https://pypi.org/project/gsim/)
+[![Python](https://img.shields.io/pypi/pyversions/gsim?style=flat)](https://pypi.org/project/gsim/)
+[![License](https://img.shields.io/github/license/gdsfactory/gsim?style=flat)](https://github.com/gdsfactory/gsim/blob/main/LICENSE)
+[![Downloads](https://static.pepy.tech/badge/gsim)](https://pepy.tech/project/gsim)
+
 ## Overview
 
 gsim connects GDSFactory layout designs to multiple EM solvers for photonic and electronic simulation. It handles
