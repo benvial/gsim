@@ -382,7 +382,9 @@ class ModeResult(BaseModel):
         frequency: Frequency in MEEP units (1/µm = 1/wavelength).
         fields: Complex field arrays keyed by component name
             (e.g. ``{"Ex": array, "Ey": array, "Ez": array, ...}``).
-        kdom: Dominant wavevector [kx, ky, kz] in MEEP units (2π/µm).
+        kdom: Dominant wavevector [kx, ky, kz] in MPB k-units (``k*a/(2*pi)``,
+            equivalent to ``n_eff/lambda`` in 1/um).  The true propagation
+            constant is ``beta = 2*pi*|kdom|`` rad/um; ``n_eff = |kdom|*lambda``.
         n_group: Group index, if computable.
         band_num: Mode band index (1 = fundamental).
         parity: Parity of the mode (``"NO_PARITY"``, ``"EVEN_Y"``, etc.).

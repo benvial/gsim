@@ -431,6 +431,91 @@ def _compute_eigenmode(
 
 
 # ------------------------------------------------------------------
+# Mode validation
+# ------------------------------------------------------------------
+
+
+def _validate_mode(
+    result: ModeResult,
+    material_data: dict[str, object],
+    _stack: object,
+    *,
+    is_slab: bool = False,
+) -> None:
+    """Warn if the mode result appears unphysical (leaky / below cutoff).
+
+    Checks performed:
+    - **Minimum cladding index**: if ``n_eff`` is below the lowest
+      non-air refractive index in the stack, the mode is likely a
+      radiation / leaky mode rather than a guided mode.
+    - **Slab kz cleanliness**: for a 1D slab mode the dominant
+      wavevector should have negligible *z*-component (kz ~= 0).
+      A large ``kz`` indicates a spurious mode picked up by MPB.
+    - **Negative group index**: ``n_group < 0`` is unphysical for
+      forward-propagating dielectric modes.
+    """
+    import logging
+    import math
+
+    logger = logging.getLogger(__name__)
+
+    # --- minimum cladding index ---
+    n_clad_min = None
+    n_core_max = None
+    for mat in material_data.values():
+        eps = getattr(mat, "epsilon_diag", None)
+        if eps is None:
+            continue
+        if isinstance(eps, list):
+            eps = eps[0]
+        if eps <= 0:
+            continue
+        n = math.sqrt(float(eps))
+        if n_clad_min is None or n < n_clad_min:
+            n_clad_min = n
+        if n_core_max is None or n > n_core_max:
+            n_core_max = n
+
+    issues: list[str] = []
+
+    if n_clad_min is not None and result.n_eff <= n_clad_min:
+        issues.append(
+            f"n_eff={result.n_eff:.6f} is <= minimum cladding index "
+            f"(n_clad_min={n_clad_min:.6f}); mode is likely a radiation"
+            f" / leaky mode, not a guided mode"
+        )
+
+    if n_core_max is not None and result.n_eff > n_core_max + 0.01:
+        issues.append(
+            f"n_eff={result.n_eff:.6f} exceeds maximum core index "
+            f"(n_core_max={n_core_max:.6f}); result may be unphysical"
+        )
+
+    # --- slab kz purity ---
+    if is_slab and len(result.kdom) >= 3:
+        kz = abs(result.kdom[2])
+        kx = abs(result.kdom[0])
+        if kx > 0 and kz > kx * 0.05:
+            issues.append(
+                f"Slab mode has significant kz ({kz:.4f} vs kx={kx:.4f}); "
+                f"result may be a spurious 2D parasitic mode picked up by MPB"
+            )
+
+    # --- negative group index ---
+    if result.n_group is not None and result.n_group < 0:
+        issues.append(
+            f"n_group={result.n_group:.6f} is negative; "
+            f"unphysical for forward-propagating dielectric modes"
+        )
+
+    if issues:
+        summary = "; ".join(issues)
+        logger.warning(
+            "Mode band %d physical validity concern: %s", result.band_num, summary
+        )
+
+
+# ------------------------------------------------------------------
 # Public utilities
 # ------------------------------------------------------------------
 
@@ -580,6 +665,8 @@ def solve_slab_mode(
     finally:
         sim.reset_meep()
 
+    _validate_mode(result, material_data, stack, is_slab=True)
+
     if not compute_group_index:
         return result
 
@@ -709,6 +796,8 @@ def solve_cross_section_mode(
         )
     finally:
         sim.reset_meep()
+
+    _validate_mode(result, material_data, stack, is_slab=False)
 
     if not compute_group_index:
         return result
