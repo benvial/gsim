@@ -13,10 +13,10 @@
 # ---
 
 # %% [markdown]
-# # Standalone MEEP Eigenmode Solver
+# # Standalone MEEP Eigenmode Solver — 1D Slab Modes
 #
 # The `gsim.meep` module exposes a standalone eigenmode solver for
-# **1D slab modes** and **2D waveguide cross-section modes**. This runs
+# **1D slab modes**. This runs
 # MEEP locally - no cloud job required - and returns the effective index,
 # field profiles, and wavevectors.
 #
@@ -25,10 +25,8 @@
 # | Function | What it does |
 # |---|---|
 # | `solve_slab_mode(stack, wavelength)` | 1D slab mode from a layer stack |
-# | `solve_cross_section_mode(component, stack, port=..., wavelength)` | 2D waveguide cross-section at a port |
 # | `mode_z_grid(stack, n_points)` | Z-axis coordinates for field arrays |
 # | `refractive_index_profile(stack, z_grid, wavelength)` | n(z) from the layer stack |
-# | `sim.solve_mode(port=..., wavelength)` | Simulation wrapper - delegates to one of the above |
 #
 # All solvers return a `ModeResult` with `.n_eff`, `.fields`, `.kdom`, `.n_group`, etc.
 
@@ -45,10 +43,8 @@ import numpy as np
 
 from gsim.common.stack import get_stack
 from gsim.meep import (
-    mode_x_grid,
     mode_z_grid,
     refractive_index_profile,
-    solve_cross_section_mode,
     solve_slab_mode,
 )
 
@@ -83,25 +79,6 @@ print(f"n_eff   = {result.n_eff:.6f}")
 print(f"n_group = {result.n_group}")
 print(f"kdom    = {[f'{k:.6f}' for k in result.kdom]}")
 print(f"band    = {result.band_num}, parity = {result.parity}")
-
-# %% [markdown]
-# ### Cross-section mode in 3 lines
-
-# %%
-c = gf.components.straight(length=10, width=0.5)
-
-result = solve_cross_section_mode(
-    component=c,
-    stack=stack,
-    port="o1",
-    wavelength=1.55,
-    band_num=1,
-    resolution=32,
-)
-
-print(f"n_eff   = {result.n_eff:.6f}")
-print(f"n_group = {result.n_group}")
-print(f"fields  = {list(result.fields.keys())}")
 
 
 # %% [markdown]
@@ -209,7 +186,7 @@ fig.tight_layout()
 # %%
 comps = sorted(
     result_slab.fields.keys(),
-    key=lambda c: ("ExEyEzHxHyHz".index(c) if c in "ExEyEzHxHyHz" else 99),
+    key=lambda c: "ExEyEzHxHyHz".index(c) if c in "ExEyEzHxHyHz" else 99,
 )
 n_cols = min(3, len(comps))
 n_rows = (len(comps) + n_cols - 1) // n_cols
@@ -237,140 +214,21 @@ fig.tight_layout()
 
 
 # %% [markdown]
-# ### Cross-section mode — 2D (X, Z) field maps
-#
-# :func:`solve_cross_section_mode` returns **full 2D arrays** in
-# ``ModeResult.fields`` with shape ``(nz, nx)`` — the Z-axis (rows) and
-# X-axis (columns) span the cell cross-section at the Y-cut plane.
-#
-# Use :func:`mode_z_grid` for the Z-axis and :func:`mode_x_grid` for the
-# X-axis to reconstruct the coordinate system.
-
-# %%
-c = gf.components.straight(length=10, width=0.5)
-
-result_xz = solve_cross_section_mode(
-    component=c,
-    stack=stack,
-    port="o1",
-    wavelength=1.55,
-    band_num=1,
-    resolution=32,
-)
-
-print(f"n_eff = {result_xz.n_eff:.6f}")
-for comp, arr in result_xz.fields.items():
-    print(f"  {comp}: shape={arr.shape}  |max|={np.abs(arr).max():.6f}")
-
-nz, nx = next(iter(result_xz.fields.values())).shape
-x_um = mode_x_grid(n_points=nx, x_span=2.5)
-z_um = mode_z_grid(stack, n_points=nz)
-
-print(f"\nX grid: {x_um[0]:.3f} … {x_um[-1]:.3f} µm  ({nx} points)")
-print(f"Z grid: {z_um[0]:.3f} … {z_um[-1]:.3f} µm  ({nz} points)")
-
-# %% [markdown]
-# ### Dominant field component (|E|)
-#
-# The fundamental TE-like mode has its primary electric field in Ey.
-# The 2D colour map shows the mode confined to the waveguide core region.
-
-# %%
-dom_comp = max(result_xz.fields, key=lambda k: np.abs(result_xz.fields[k]).max())
-field_2d = np.abs(result_xz.fields[dom_comp])
-
-fig, ax = plt.subplots(figsize=(7, 4))
-im = ax.pcolormesh(x_um, z_um, field_2d, shading="auto", cmap="inferno")
-cbar = plt.colorbar(im, ax=ax, label=f"|{dom_comp}| (arb. units)")
-ax.set_xlabel("x (µm)")
-ax.set_ylabel("z (µm)")
-ax.set_title(
-    f"Cross-section mode profile |{dom_comp}|  "
-    f"lambda={result_xz.wavelength:.2f} um, n_eff={result_xz.n_eff:.4f}"
-)
-ax.set_aspect("equal")
-fig.tight_layout()
-
-# %% [markdown]
-# ### Refractive index overlay
-#
-# Overlay the layer-stack boundaries on top of the field map to see
-# how the mode is shaped by the material distribution.  The X-extent is
-# determined by the GDS geometry at the cut plane — inside the waveguide
-# core the Si layer is present; outside it the SiO2 cladding fills the
-# cell.
-
-# %%
-n_prof_2d = refractive_index_profile(stack, z_um, wavelength=1.55)
-n_xz = np.tile(n_prof_2d[:, np.newaxis], (1, nx))
-
-fig, ax = plt.subplots(figsize=(7, 4))
-im = ax.pcolormesh(x_um, z_um, field_2d, shading="auto", cmap="inferno", alpha=0.85)
-cbar = plt.colorbar(im, ax=ax, label=f"|{dom_comp}| (arb. units)")
-ct = ax.contour(x_um, z_um, n_xz, levels=[1.4, 2.0, 3.0], colors="cyan", linewidths=0.8)
-ax.clabel(ct, fmt="n=%.1f", fontsize=7)
-ax.set_xlabel("x (µm)")
-ax.set_ylabel("z (µm)")
-ax.set_title(
-    f"|{dom_comp}| with refractive-index contours  (n_eff={result_xz.n_eff:.4f})"
-)
-ax.set_aspect("equal")
-fig.tight_layout()
-
-# %% [markdown]
-# ### All field components (2D grid)
-#
-# Each E- and H-component as a 2D colour map.  For a straight waveguide
-# propagating along X, the transverse components (Ey, Ez, Hy, Hz)
-# dominate; the longitudinal components (Ex, Hx) are typically small.
-
-# %%
-comps = sorted(
-    result_xz.fields.keys(),
-    key=lambda c: ("ExEyEzHxHyHz".index(c) if c in "ExEyEzHxHyHz" else 99),
-)
-n_cols = 3
-n_rows = (len(comps) + n_cols - 1) // n_cols
-
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 3.5 * n_rows), squeeze=False)
-for idx, comp in enumerate(comps):
-    ax = axes[idx // n_cols][idx % n_cols]
-    a2 = np.abs(result_xz.fields[comp])
-    im = ax.pcolormesh(x_um, z_um, a2, shading="auto", cmap="inferno")
-    plt.colorbar(im, ax=ax, label=f"|{comp}|")
-    ax.set_title(comp)
-    ax.set_xlabel("x (µm)")
-    ax.set_ylabel("z (µm)")
-    ax.set_aspect("equal")
-
-for idx in range(len(comps), n_rows * n_cols):
-    axes[idx // n_cols][idx % n_cols].set_visible(False)
-
-fig.suptitle(
-    f"All field components — cross-section mode  "
-    f"lambda={result_xz.wavelength:.2f} um, n_eff={result_xz.n_eff:.4f}",
-    fontweight="bold",
-)
-fig.tight_layout()
-
-
-# %% [markdown]
 # ## Part 3 - Advanced
 
 # %% [markdown]
 # ### Simulation wrapper
 #
 # `Simulation.solve_mode()` resolves the stack and materials internally,
-# then delegates to the standalone functions.
+# then delegates to :func:`solve_slab_mode`.
 
 # %%
 from gsim import meep as meep_mod
 
 sim = meep_mod.Simulation()
-sim.geometry.component = c
 sim.geometry.stack = stack
 
-result = sim.solve_mode(port="o1", wavelength=1.55)
+result = sim.solve_mode(wavelength=1.55)
 print(f"n_eff = {result.n_eff:.6f}")
 
 # %% [markdown]
@@ -382,7 +240,7 @@ n_effs: list[float] = []
 n_groups: list[float | None] = []
 
 for wl in wavelengths:
-    r = sim.solve_mode(port="o1", wavelength=wl, band_num=1)
+    r = sim.solve_mode(wavelength=wl, band_num=1)
     n_effs.append(r.n_eff)
     n_groups.append(r.n_group)
     print(f"  lambda = {wl:.2f} um -> n_eff = {r.n_eff:.6f}, n_group = {r.n_group}")
@@ -421,7 +279,6 @@ n_group_meep: list[float | None] = []
 
 for wl in wl_fine:
     r = sim.solve_mode(
-        port="o1",
         wavelength=wl,
         band_num=1,
     )
@@ -851,13 +708,10 @@ fig.tight_layout()
 # | Feature | API |
 # |---|---|
 # | Slab modes (1D) | `solve_slab_mode(stack, wavelength=...)` |
-# | Cross-section modes (2D) | `solve_cross_section_mode(component, stack, port=..., wavelength=...)` |
-# | Simulation wrapper | `sim.solve_mode(port=..., wavelength=...)` |
+# | Simulation wrapper | `sim.solve_mode(wavelength=...)` |
 # | Z-grid utility | `mode_z_grid(stack, n_points)` |
-# | X-grid utility | `mode_x_grid(n_points, x_span)` |
 # | Index profile | `refractive_index_profile(stack, z_grid, wavelength)` |
-# | Field profiles (slab) | `result.fields["Ey"]` — 1D complex array along *z* |
-# | Field profiles (cross-section) | `result.fields["Ey"]` — 2D complex array ``(nz, nx)`` |
+# | Field profiles | `result.fields["Ey"]` — 1D complex array along *z* |
 # | Dispersion sweep | Loop over wavelengths -> n_eff(lambda) |
 # | Group index | `result.n_group` — direct from `mode.group_velocity` |
 # | Multi-band | `band_num=1, 2, 3, ...` |
