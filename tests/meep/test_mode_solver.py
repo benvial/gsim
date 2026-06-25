@@ -465,7 +465,7 @@ class TestModeSolverIntegration:
 
     @pytest.mark.meep_local
     def test_solve_slab_mode_compute_group_index(self):
-        """solve_slab_mode with compute_group_index=True returns n_group."""
+        """solve_slab_mode returns n_group (always computed if available)."""
         from gsim.common.stack import get_stack
         from gsim.meep.mode_solver import solve_slab_mode
 
@@ -475,7 +475,6 @@ class TestModeSolverIntegration:
             wavelength=1.55,
             band_num=1,
             parity="NO_PARITY",
-            compute_group_index=True,
         )
         assert result.n_eff > 1.0
         assert result.n_group is not None
