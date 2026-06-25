@@ -40,10 +40,19 @@ _PARITY_MAP: dict[str, int] = {
 
 def _import_meep():
     """Lazily import meep — raises ImportError with install instructions if missing."""
+    import logging
+
     try:
         import meep as mp
     except ImportError:
         raise ImportError(_MEET_NOT_FOUND_MSG) from None
+    _level = logging.getLogger("meep.native").getEffectiveLevel()
+    if _level == logging.NOTSET or _level >= logging.WARNING:
+        mp.verbosity(0)
+    elif _level >= logging.INFO:
+        mp.verbosity(1)
+    else:
+        mp.verbosity(2)
     return mp
 
 
@@ -99,7 +108,11 @@ def _build_slab_xz_cell(
     # For slab mode solving, the x-extent is arbitrary — just needs to be
     # wide enough to avoid edge effects.
     x_span = 4.0
-    cell_size = mp.Vector3(x_span, 0.0, z_max - z_min)
+    z_span = z_max - z_min
+    # Snap to integer pixel counts to avoid meep grid-volume warnings.
+    x_span = round(x_span * resolution) / resolution
+    z_span = round(z_span * resolution) / resolution
+    cell_size = mp.Vector3(x_span, 0.0, z_span)
 
     geometry: list[object] = []
     for layer in stack.layers.values():
@@ -170,7 +183,10 @@ def _build_component_xz_cell(
     z_min = min(layer.zmin for layer in stack.layers.values())
     z_max = max(layer.zmax for layer in stack.layers.values())
     z_center = (z_min + z_max) / 2.0
-    cell_size = mp.Vector3(x_span, 0.0, z_max - z_min)
+    # Snap to integer pixel counts to avoid meep grid-volume warnings.
+    x_span = round(x_span * resolution) / resolution
+    z_span = round((z_max - z_min) * resolution) / resolution
+    cell_size = mp.Vector3(x_span, 0.0, z_span)
 
     geometry: list[object] = []
     for layer in stack.layers.values():
@@ -510,7 +526,7 @@ def _validate_mode(
 
     if issues:
         summary = "; ".join(issues)
-        logger.warning(
+        logger.info(
             "Mode band %d physical validity concern: %s", result.band_num, summary
         )
 

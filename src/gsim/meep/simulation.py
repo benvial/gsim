@@ -895,6 +895,20 @@ class Simulation(BaseModel):
         else:
             monitor_z_span = None
 
+        # Compute meep verbosity from `meep.native` logger level, with
+        # `run(verbose="full")` override.
+        _run_verbose = getattr(self, "_run_verbose", None)
+        if _run_verbose == "full":
+            meep_verbosity = 2
+        else:
+            _level = logging.getLogger("meep.native").getEffectiveLevel()
+            if _level == logging.NOTSET or _level >= logging.WARNING:
+                meep_verbosity = 0
+            elif _level >= logging.INFO:
+                meep_verbosity = 1
+            else:
+                meep_verbosity = 2
+
         # Build SimConfig
         sim_config = SimConfig(
             is_3d=is_3d,
@@ -916,6 +930,7 @@ class Simulation(BaseModel):
             accuracy=accuracy_cfg,
             diagnostics=diagnostics_cfg,
             verbose_interval=diagnostics_cfg.verbose_interval,
+            meep_verbosity=meep_verbosity,
             symmetries=symmetry_entries,
         )
         # Forward any private hints into the config
@@ -1072,6 +1087,7 @@ class Simulation(BaseModel):
             ``SParameterResult`` when ``wait=True``, or ``job_id`` string
             when ``wait=False``.
         """
+        self._run_verbose = verbose
         self.upload(verbose=False)
         self.start(verbose=verbose != "quiet")
         if not wait:
@@ -1116,6 +1132,7 @@ class Simulation(BaseModel):
         from gsim.meep.models.results import SParameterResult
 
         # Always regenerate config to reflect current settings
+        self._run_verbose = "quiet" if not verbose else "status"
         if output_dir is None:
             output_dir = Path(tempfile.mkdtemp(prefix="meep_local_"))
         output_dir = Path(output_dir)

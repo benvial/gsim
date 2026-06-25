@@ -1526,6 +1526,8 @@ def main():
     config_path = "%%CONFIG_FILENAME%%"
     config = load_config(config_path)
 
+    mp.verbosity(config.get("meep_verbosity", 0))
+
     logger.info("Building materials...")
     materials = build_materials(config)
 

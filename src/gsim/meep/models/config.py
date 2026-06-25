@@ -428,6 +428,15 @@ class SimConfig(BaseModel):
     verbose_interval: float = Field(
         ge=0, description="MEEP time units between progress prints (0=off)"
     )
+    meep_verbosity: int = Field(
+        default=0,
+        ge=0,
+        le=3,
+        description=(
+            "Meep C++ verbosity level (0=minimal, 3=debugging). "
+            "Set via `meep.native` logger level or `run(verbose='full')`."
+        ),
+    )
     diagnostics: DiagnosticsConfig
     symmetries: list[SymmetryEntry]
     split_chunks_evenly: bool = Field(default=False)
