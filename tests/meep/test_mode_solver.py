@@ -391,7 +391,7 @@ class TestRefractiveIndexProfile:
 
 
 class TestSimulationSolveMode:
-    """Simulation.solve_mode() wrapper — no meep required."""
+    """Simulation.solve_mode() wrapper tests."""
 
     def test_method_exists(self):
         """solve_mode method exists on Simulation."""
@@ -419,6 +419,7 @@ class TestSimulationSolveMode:
         with pytest.raises(TypeError):
             sim.solve_mode(port="o1")
 
+    @pytest.mark.meep_local
     def test_delegates_to_mode_solver(self):
         """solve_mode delegates to cross-section solver, returns ModeResult."""
         import gdsfactory as gf
