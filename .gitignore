@@ -51,7 +51,6 @@ pip-log.txt
 
 # folders
 .kilo/
-PLAN_mode_solver.md
 .cursor/
 .eggs/
 .hypothesis/

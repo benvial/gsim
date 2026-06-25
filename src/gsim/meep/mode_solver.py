@@ -72,6 +72,26 @@ def _meep_medium(material_data: MaterialData) -> Any:
     return mp.Medium(epsilon=eps)
 
 
+def _layer_has_any_polygon(component: Component, layer: object) -> bool:
+    """Return ``True`` if *layer* has at least one GDS polygon in *component*.
+
+    Used as a fallback gate: when ``_layer_y_intervals_at_x`` /
+    ``_layer_x_intervals_at_y`` return no intervals AND this returns
+    ``False``, the layer is treated as a full-width background layer
+    (e.g. buried oxide, cladding) spanning the entire simulation domain.
+    """
+    gds_layer = getattr(layer, "gds_layer", None)
+    if gds_layer is None:
+        return False
+    try:
+        polys = component.get_polygons_points(layers=(tuple(gds_layer),), merge=True)
+        if not isinstance(polys, dict):
+            return False
+        return any(len(v) > 0 for v in polys.values())
+    except Exception:
+        return False
+
+
 # ------------------------------------------------------------------
 # Slab (1D) geometry builder
 # ------------------------------------------------------------------
@@ -81,6 +101,8 @@ def _build_slab_xz_cell(
     stack: LayerStack,
     materials: dict[str, MaterialData],
     resolution: float,
+    z_margin: float = 0.0,
+    pml_thickness: float = 0.0,
 ) -> tuple[Any, Any]:
     """Build a 2D XZ MEEP simulation cell for a 1D slab (uniform layers).
 
@@ -91,6 +113,10 @@ def _build_slab_xz_cell(
         stack: Resolved :class:`LayerStack`.
         materials: ``MaterialData`` keyed by material name.
         resolution: Pixels per µm.
+        z_margin: Extra distance (µm) added symmetrically above and below
+            the stack.  Default 0 — cell exactly spans the stack extent.
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+            Set to e.g. 1.0 to enable PML absorbing boundaries.
 
     Returns:
         ``(sim, cell_size)`` — initialized MEEP :class:`Simulation` object
@@ -105,7 +131,10 @@ def _build_slab_xz_cell(
     # For slab mode solving, the x-extent is arbitrary — just needs to be
     # wide enough to avoid edge effects.
     x_span = 4.0
-    z_span = z_max - z_min
+    z_span = (z_max - z_min) + 2 * z_margin
+    if pml_thickness > 0:
+        x_span += 2 * pml_thickness
+        z_span += 2 * pml_thickness
     # Snap to integer pixel counts to avoid meep grid-volume warnings.
     x_span = round(x_span * resolution) / resolution
     z_span = round(z_span * resolution) / resolution
@@ -135,6 +164,8 @@ def _build_slab_xz_cell(
         resolution=resolution,
         default_material=mp.Medium(epsilon=1.0),
     )
+    if pml_thickness > 0:
+        sim_kwargs["boundary_layers"] = [mp.PML(thickness=pml_thickness)]
     sim = mp.Simulation(**sim_kwargs)
     return sim, cell_size
 
@@ -151,6 +182,8 @@ def _build_component_xz_cell(
     x_span: float,
     materials: dict[str, MaterialData],
     resolution: float,
+    z_margin: float = 0.0,
+    pml_thickness: float = 0.0,
 ) -> tuple[Any, Any]:
     """Build a 2D XZ MEEP simulation cell at a *y*-slice of a component.
 
@@ -165,6 +198,10 @@ def _build_component_xz_cell(
         x_span: Total *x* extent of the simulation cell (µm).
         materials: ``MaterialData`` keyed by material name.
         resolution: Pixels per µm.
+        z_margin: Extra distance (µm) added symmetrically above and below
+            the stack.  Default 0 — cell exactly spans the stack extent.
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+            Set to e.g. 1.0 to enable PML absorbing boundaries.
 
     Returns:
         ``(sim, cell_size)`` — initialized MEEP :class:`Simulation` object
@@ -175,9 +212,14 @@ def _build_component_xz_cell(
     z_min = min(layer.zmin for layer in stack.layers.values())
     z_max = max(layer.zmax for layer in stack.layers.values())
     z_center = (z_min + z_max) / 2.0
+    if pml_thickness > 0:
+        x_span += 2 * pml_thickness
     # Snap to integer pixel counts to avoid meep grid-volume warnings.
     x_span = round(x_span * resolution) / resolution
-    z_span = round((z_max - z_min) * resolution) / resolution
+    z_span = (z_max - z_min) + 2 * z_margin
+    if pml_thickness > 0:
+        z_span += 2 * pml_thickness
+    z_span = round(z_span * resolution) / resolution
     cell_size = mp.Vector3(x_span, 0.0, z_span)
 
     geometry: list[object] = []
@@ -193,6 +235,8 @@ def _build_component_xz_cell(
             continue
 
         intervals = _layer_x_intervals_at_y(component, layer, y_cut)
+        if not intervals and not _layer_has_any_polygon(component, layer):
+            intervals = [(-x_span / 2, x_span / 2)]
         for x0, x1 in intervals:
             x_center = (x0 + x1) / 2.0
             x_size = x1 - x0
@@ -211,6 +255,93 @@ def _build_component_xz_cell(
         resolution=resolution,
         default_material=mp.Medium(epsilon=1.0),
     )
+    if pml_thickness > 0:
+        sim_kwargs["boundary_layers"] = [mp.PML(thickness=pml_thickness)]
+    sim = mp.Simulation(**sim_kwargs)
+    return sim, cell_size
+
+
+def _build_component_yz_cell(
+    component: Component,
+    stack: LayerStack,
+    x_cut: float,
+    y_span: float,
+    materials: dict[str, MaterialData],
+    resolution: float,
+    z_margin: float = 0.0,
+    pml_thickness: float = 0.0,
+) -> tuple[Any, Any]:
+    """Build a 2D YZ MEEP simulation cell at an *x*-slice of a component.
+
+    For each non-air layer, the component's GDS polygons are intersected
+    with the vertical line *x = x_cut*.  Each contiguous interval on *y*
+    becomes a rectangular block with the layer's material and *z* extent.
+
+    Args:
+        component: GDSFactory component (must have polygons).
+        stack: Resolved :class:`LayerStack`.
+        x_cut: *x* coordinate of the cross-section plane (µm).
+        y_span: Total *y* extent of the simulation cell (µm).
+        materials: ``MaterialData`` keyed by material name.
+        resolution: Pixels per µm.
+        z_margin: Extra distance (µm) added symmetrically above and below
+            the stack.  Default 0 — cell exactly spans the stack extent.
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+            Set to e.g. 1.0 to enable PML absorbing boundaries.
+
+    Returns:
+        ``(sim, cell_size)`` — initialized MEEP :class:`Simulation` object
+        and ``mp.Vector3`` cell dimensions.
+    """
+    mp = _import_meep()
+
+    z_min = min(layer.zmin for layer in stack.layers.values())
+    z_max = max(layer.zmax for layer in stack.layers.values())
+    z_center = (z_min + z_max) / 2.0
+    if pml_thickness > 0:
+        y_span += 2 * pml_thickness
+    y_span = round(y_span * resolution) / resolution
+    z_span = (z_max - z_min) + 2 * z_margin
+    if pml_thickness > 0:
+        z_span += 2 * pml_thickness
+    z_span = round(z_span * resolution) / resolution
+    cell_size = mp.Vector3(0.0, y_span, z_span)
+
+    geometry: list[object] = []
+    for layer in stack.layers.values():
+        if layer.material == "air":
+            continue
+        mat_data = materials.get(layer.material)
+        if mat_data is None:
+            continue
+        medium = _meep_medium(mat_data)
+        z_size = layer.zmax - layer.zmin
+        if z_size <= 0:
+            continue
+
+        intervals = _layer_y_intervals_at_x(component, layer, x_cut)
+        if not intervals and not _layer_has_any_polygon(component, layer):
+            intervals = [(-y_span / 2, y_span / 2)]
+        for y0, y1 in intervals:
+            y_center = (y0 + y1) / 2.0
+            y_size = y1 - y0
+            if y_size <= 0:
+                continue
+            block = mp.Block(
+                size=mp.Vector3(mp.inf, y_size, z_size),
+                center=mp.Vector3(0.0, y_center, layer.zmin + z_size / 2.0 - z_center),
+                material=medium,
+            )
+            geometry.append(block)
+
+    sim_kwargs: dict = dict(
+        cell_size=cell_size,
+        geometry=geometry,
+        resolution=resolution,
+        default_material=mp.Medium(epsilon=1.0),
+    )
+    if pml_thickness > 0:
+        sim_kwargs["boundary_layers"] = [mp.PML(thickness=pml_thickness)]
     sim = mp.Simulation(**sim_kwargs)
     return sim, cell_size
 
@@ -317,7 +448,7 @@ def _layer_x_intervals_at_y(
 def _merge_intervals(
     intervals: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
-    """Merge overlapping *x*-intervals."""
+    """Merge overlapping intervals."""
     if not intervals:
         return []
     merged: list[tuple[float, float]] = [intervals[0]]
@@ -328,6 +459,78 @@ def _merge_intervals(
         else:
             merged.append((start, end))
     return merged
+
+
+def _layer_y_intervals_at_x(
+    component: Component,
+    layer: object,
+    x_cut: float,
+) -> list[tuple[float, float]]:
+    """Return sorted *y*-intervals where *layer*'s polygons intersect *x = x_cut*.
+
+    Analogous to :func:`_layer_x_intervals_at_y` but slicing vertically
+    at a fixed *x* coordinate.  Used for YZ waveguide cross-sections.
+
+    Args:
+        component: GDSFactory component.
+        layer: A :class:`Layer` with ``.gds_layer`` attribute.
+        x_cut: *x* coordinate of the slicing line.
+
+    Returns:
+        Sorted list of ``(y_min, y_max)`` tuples.
+    """
+    from shapely.geometry import LineString, MultiLineString
+
+    gds_layer = getattr(layer, "gds_layer", None)
+    if gds_layer is None:
+        return []
+
+    try:
+        polys = component.get_polygons_points(layers=(tuple(gds_layer),), merge=True)
+    except Exception:
+        try:
+            polys = component.dup().get_polygons_points(
+                layers=(tuple(gds_layer),), merge=True
+            )
+        except Exception:
+            return []
+    if not isinstance(polys, dict) or not polys:
+        return []
+
+    cut_line = LineString([(x_cut, -1e6), (x_cut, 1e6)])
+
+    intervals: list[tuple[float, float]] = []
+    for polygons in polys.values():
+        for poly in polygons if isinstance(polygons, list) else [polygons]:
+            try:
+                spoly = _poly_to_shapely(poly)
+                if spoly is None:
+                    continue
+            except Exception:
+                continue
+            if spoly.is_empty:
+                continue
+            intersection = spoly.intersection(cut_line)
+            if intersection.is_empty:
+                continue
+            lines: list = []
+            if isinstance(intersection, LineString):
+                lines = [intersection]
+            elif isinstance(intersection, MultiLineString):
+                lines = list(intersection.geoms)
+            else:
+                for g in getattr(intersection, "geoms", []):
+                    if isinstance(g, LineString):
+                        lines.append(g)
+            for line in lines:
+                coords = list(line.coords)
+                if len(coords) < 2:
+                    continue
+                ys = [c[1] for c in coords]
+                intervals.append((min(ys), max(ys)))
+
+    intervals.sort()
+    return _merge_intervals(intervals)
 
 
 # ------------------------------------------------------------------
@@ -343,8 +546,20 @@ def _compute_eigenmode(
     band_num: int = 1,
     parity: str = "NO_PARITY",
     kpoint: Any | None = None,
+    eigensolver_tol: float = 1e-6,
+    field_x_grid: np.ndarray | None = None,
+    field_y_grid: np.ndarray | None = None,
+    field_z_grid: np.ndarray | None = None,
 ) -> ModeResult:
     """Run ``sim.get_eigenmode()`` and pack the result into a :class:`ModeResult`.
+
+    Field profiles are only extracted when both a horizontal grid
+    (``field_x_grid`` or ``field_y_grid``) and ``field_z_grid`` are
+    provided.  Otherwise ``result.fields`` is empty.
+
+    For XZ cells, use ``field_x_grid`` + ``field_z_grid`` (samples at
+    ``(x, 0, z)``).  For YZ cells, use ``field_y_grid`` +
+    ``field_z_grid`` (samples at ``(0, y, z)``).
 
     Args:
         sim: Initialized MEEP :class:`Simulation` object.
@@ -354,9 +569,17 @@ def _compute_eigenmode(
         parity: Parity string (``"NO_PARITY"``, ``"EVEN_Y"``, etc.).
         kpoint: Optional ``mp.Vector3`` wavevector for the eigenmode.
             When set, MEEP can compute group velocity.
+        eigensolver_tol: MPB convergence tolerance (default 1e-6).
+        field_x_grid: 1D array of *x* coordinates for field sampling
+            (µm, origin at cell centre).  For XZ cells.
+        field_y_grid: 1D array of *y* coordinates for field sampling
+            (µm, origin at cell centre).  For YZ cells.
+        field_z_grid: 1D array of *z* coordinates for field sampling
+            (µm, origin at cell centre).  ``None`` skips extraction.
 
     Returns:
-        :class:`ModeResult` with effective index, fields, wavevectors.
+        :class:`ModeResult` with effective index, fields (if grids
+        provided), wavevectors, and group index.
     """
     mp = _import_meep()
     import numpy as np
@@ -381,7 +604,7 @@ def _compute_eigenmode(
         kpoint=kpoint,
         parity=parity_int,
         resolution=0,
-        eigensolver_tol=1e-12,
+        eigensolver_tol=eigensolver_tol,
     )
 
     if mode is None:
@@ -390,27 +613,30 @@ def _compute_eigenmode(
             f"at wavelength {wavelength} µm"
         )
 
-    # Extract full 2D (X, Z) mode profile at y=0 by sampling
-    # ``mode.amplitude()`` on a grid spanning the cell.
+    # --- optional field profile sampling ---
     fields: dict[str, np.ndarray] = {}
-    nx = max(round(cell_size.x * sim.resolution), 1)
-    nz = max(round(cell_size.z * sim.resolution), 1)
-    dx = cell_size.x / nx
-    dz = cell_size.z / nz
-    x_vals = np.linspace(-cell_size.x / 2 + dx / 2, cell_size.x / 2 - dx / 2, nx)
-    z_vals = np.linspace(-cell_size.z / 2 + dz / 2, cell_size.z / 2 - dz / 2, nz)
-    for comp_name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
-        try:
-            comp = getattr(mp, comp_name)
-            arr = np.zeros((nz, nx), dtype=np.complex128)
-            for iz, z in enumerate(z_vals):
-                for ix, x in enumerate(x_vals):
-                    pt = mp.Vector3(float(x), 0.0, float(z))
-                    arr[iz, ix] = mode.amplitude(pt, comp)
-            if np.any(arr != 0):
-                fields[comp_name] = arr
-        except Exception:
-            pass
+    if field_z_grid is not None:
+        _horizontal_grid = field_y_grid if field_y_grid is not None else field_x_grid
+        if _horizontal_grid is not None:
+            _use_yz = field_y_grid is not None
+            for comp_name in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
+                try:
+                    comp = getattr(mp, comp_name)
+                    arr = np.zeros(
+                        (len(field_z_grid), len(_horizontal_grid)),
+                        dtype=np.complex128,
+                    )
+                    for iz, z in enumerate(field_z_grid):
+                        for ih, h in enumerate(_horizontal_grid):
+                            if _use_yz:
+                                pt = mp.Vector3(0.0, float(h), float(z))
+                            else:
+                                pt = mp.Vector3(float(h), 0.0, float(z))
+                            arr[iz, ih] = mode.amplitude(pt, comp)
+                    if np.any(arr != 0):
+                        fields[comp_name] = arr
+                except Exception:
+                    pass
 
     # Compute n_eff from dominant wavevector
     kdom_vec = mode.kdom
@@ -529,7 +755,11 @@ def _validate_mode(
 # ------------------------------------------------------------------
 
 
-def mode_z_grid(stack: LayerStack, n_points: int) -> np.ndarray:
+def mode_z_grid(
+    stack: LayerStack,
+    n_points: int,
+    z_margin: float | tuple[float, float] = 0.0,
+) -> np.ndarray:
     """Compute Z-axis coordinates centred on the layer stack midpoint.
 
     The returned grid has the same length as the Z (first) axis of
@@ -539,6 +769,11 @@ def mode_z_grid(stack: LayerStack, n_points: int) -> np.ndarray:
     Args:
         stack: :class:`LayerStack` defining the vertical material profile.
         n_points: Number of grid points (typically ``resolution * z_span``).
+        z_margin: Extra distance (µm) added below and above the stack.  A
+            single float adds the same margin on both sides; a ``(bottom,
+            top)`` tuple adds asymmetric margins.  Must match the
+            ``z_margin`` passed to the solver.  Default 0 — grid covers
+            exactly the stack extent.
 
     Returns:
         ``np.ndarray`` of *z* coordinates in µm, origin at stack midpoint.
@@ -547,9 +782,14 @@ def mode_z_grid(stack: LayerStack, n_points: int) -> np.ndarray:
 
     z_min = min(layer.zmin for layer in stack.layers.values())
     z_max = max(layer.zmax for layer in stack.layers.values())
-    span = z_max - z_min
+    if isinstance(z_margin, (tuple, list)):
+        z_margin_bottom, z_margin_top = z_margin
+    else:
+        z_margin_bottom = z_margin_top = z_margin
+    span = z_max - z_min + z_margin_bottom + z_margin_top
     dz = span / n_points
-    return np.linspace(-span / 2 + dz / 2, span / 2 - dz / 2, n_points)
+    center = (z_margin_top - z_margin_bottom) / 2
+    return np.linspace(center - span / 2 + dz / 2, center + span / 2 - dz / 2, n_points)
 
 
 def mode_x_grid(n_points: int, x_span: float) -> np.ndarray:
@@ -572,25 +812,88 @@ def mode_x_grid(n_points: int, x_span: float) -> np.ndarray:
     return np.linspace(-x_span / 2 + dx / 2, x_span / 2 - dx / 2, n_points)
 
 
+def mode_y_grid(n_points: int, y_span: float) -> np.ndarray:
+    """Compute Y-axis coordinates centred on the cell midpoint.
+
+    The returned grid has the same length as the Y (second) axis of
+    ``ModeResult.fields`` arrays produced when using a YZ cross-section
+    in :func:`solve_cross_section_mode`.
+
+    Args:
+        n_points: Number of grid points (typically ``resolution * y_span``).
+        y_span: Total Y-extent of the MEEP cell in µm.
+
+    Returns:
+        ``np.ndarray`` of *y* coordinates in µm, origin at cell midpoint.
+    """
+    import numpy as np
+
+    dy = y_span / n_points
+    return np.linspace(-y_span / 2 + dy / 2, y_span / 2 - dy / 2, n_points)
+
+
 def refractive_index_profile(
     stack: LayerStack,
-    z_grid: np.ndarray,
     wavelength: float,
+    *,
+    z_grid: np.ndarray,
+    y_grid: np.ndarray | None = None,
+    x_grid: np.ndarray | None = None,
+    component: Component | None = None,
+    port: str | None = None,
 ) -> np.ndarray:
-    """Compute piecewise-constant refractive index along *z* at a wavelength.
+    """Compute piecewise-constant refractive index at a wavelength.
 
-    Uses :func:`resolve_materials` to evaluate dispersive materials at
-    the target wavelength, then maps each *z*-coordinate to its enclosing
-    layer and computes ``n = sqrt(epsilon_diag)``.
+    **1D** (default) — profile along *z* only, returns ``(nz,)``::
+
+        n_prof = refractive_index_profile(stack, wavelength, z_grid=z_grid)
+
+    **2D YZ cross-section** — returns ``(nz, ny)``::
+
+        n_yz = refractive_index_profile(
+            stack,
+            wavelength,
+            z_grid=z_grid,
+            y_grid=y_grid,
+            component=component,
+            port="o1",
+        )
+
+    **2D XZ cross-section** — returns ``(nz, nx)``::
+
+        n_xz = refractive_index_profile(
+            stack,
+            wavelength,
+            z_grid=z_grid,
+            x_grid=x_grid,
+            component=component,
+            port="o1",
+        )
+
+    The cross-section plane is auto-detected from the port orientation
+    (same logic as :func:`solve_cross_section_mode`):
+    - Port at 0° / 180°: YZ plane, ``x_cut`` from port centre *x*.
+    - Port at 90° / 270°: XZ plane, ``y_cut`` from port centre *y*.
+
+    Layers with no GDS polygons are treated as full-span background layers
+    (same fallback as ``_build_component_yz_cell``).
 
     Args:
         stack: :class:`LayerStack` defining the vertical material profile.
-        z_grid: 1D array of *z* coordinates (MEEP frame, origin at stack
-            midpoint).  Typically obtained via :func:`mode_z_grid`.
         wavelength: Free-space wavelength in µm for material evaluation.
+        z_grid: 1D array of *z* coordinates (MEEP frame, origin at stack
+            midpoint).
+        y_grid: 1D array of *y* coordinates (MEEP frame).  Use with YZ
+            cross-sections.  Mutually exclusive with ``x_grid``.
+        x_grid: 1D array of *x* coordinates (MEEP frame).  Use with XZ
+            cross-sections.  Mutually exclusive with ``y_grid``.
+        component: GDSFactory component (required for 2D mode together
+            with ``port``).
+        port: Port name in *component*.  Auto-derives the slice coordinate
+            and cross-section plane.
 
     Returns:
-        ``np.ndarray`` of refractive index values, same length as ``z_grid``.
+        ``np.ndarray`` — 1D ``(nz,)`` or 2D ``(nz, ny)`` / ``(nz, nx)``.
     """
     import numpy as np
 
@@ -608,7 +911,99 @@ def refractive_index_profile(
         wavelength_um=wavelength,
     )
 
-    n_profile = np.ones_like(z_grid)
+    if component is None or port is None:
+        if y_grid is not None and x_grid is None and component is not None:
+            raise ValueError(
+                "port is required for 2D refractive_index_profile "
+                "when component is given"
+            )
+        if x_grid is not None:
+            raise ValueError(
+                "port is required for 2D refractive_index_profile when x_grid is given"
+            )
+        n_profile = np.ones_like(z_grid)
+        for layer in stack.layers.values():
+            if layer.material == "air":
+                continue
+            mat = material_data.get(layer.material)
+            if mat is None or mat.epsilon_diag is None:
+                continue
+            eps = mat.epsilon_diag
+            if isinstance(eps, list):
+                eps = eps[0]
+            if eps <= 0:
+                continue
+            z_lo = layer.zmin - z_center
+            z_hi = layer.zmax - z_center
+            mask = (z_grid >= z_lo) & (z_grid < z_hi)
+            n_profile[mask] = np.sqrt(eps)
+        return n_profile
+
+    # --- 2D path ---
+    port_info = None
+    for p in component.ports:
+        if p.name == port:
+            port_info = p
+            break
+    if port_info is None:
+        available = [p.name for p in component.ports]
+        raise ValueError(
+            f"Port '{port}' not found in component. Available: {available}"
+        )
+
+    port_ori = float(getattr(port_info, "orientation", 0))
+    use_yz = port_ori % 180 == 0
+
+    if use_yz:
+        if y_grid is None:
+            raise ValueError(
+                "y_grid is required for YZ cross-section (port orientation "
+                f"{port_ori}°). Pass y_grid as returned by mode_y_grid()."
+            )
+        if x_grid is not None:
+            raise ValueError(
+                "x_grid is not valid for YZ cross-section (port orientation "
+                f"{port_ori}°). Use y_grid instead."
+            )
+        x_cut = float(port_info.center[0])
+        horizontal_grid = y_grid
+        interval_func = _layer_y_intervals_at_x
+        cut_coord = x_cut
+    else:
+        if x_grid is None:
+            raise ValueError(
+                "x_grid is required for XZ cross-section (port orientation "
+                f"{port_ori}°). Pass x_grid as returned by mode_x_grid()."
+            )
+        if y_grid is not None:
+            raise ValueError(
+                "y_grid is not valid for XZ cross-section (port orientation "
+                f"{port_ori}°). Use x_grid instead."
+            )
+        y_cut = float(port_info.center[1])
+        horizontal_grid = x_grid
+        interval_func = _layer_x_intervals_at_y
+        cut_coord = y_cut
+
+    nh = len(horizontal_grid)
+    nz = len(z_grid)
+    n_profile = np.ones((nz, nh))
+
+    layer_h_masks: dict[tuple, np.ndarray] = {}
+    for layer in stack.layers.values():
+        if layer.material == "air":
+            continue
+        gds_layer = getattr(layer, "gds_layer", None)
+        if gds_layer is None:
+            continue
+        intervals = interval_func(component, layer, cut_coord)
+        if not intervals and not _layer_has_any_polygon(component, layer):
+            intervals = [(-np.inf, np.inf)]
+        mask = np.zeros(nh, dtype=bool)
+        for lo, hi in intervals:
+            mask |= (horizontal_grid >= lo) & (horizontal_grid <= hi)
+        layer_h_masks[gds_layer] = mask
+
     for layer in stack.layers.values():
         if layer.material == "air":
             continue
@@ -620,10 +1015,15 @@ def refractive_index_profile(
             eps = eps[0]
         if eps <= 0:
             continue
+        gds_layer = getattr(layer, "gds_layer", None)
+        h_mask = layer_h_masks.get(gds_layer)
+        if h_mask is None:
+            continue
         z_lo = layer.zmin - z_center
         z_hi = layer.zmax - z_center
-        mask = (z_grid >= z_lo) & (z_grid < z_hi)
-        n_profile[mask] = np.sqrt(eps)
+        z_mask = (z_grid >= z_lo) & (z_grid < z_hi)
+        n_profile[np.ix_(z_mask, h_mask)] = np.sqrt(eps)
+
     return n_profile
 
 
@@ -639,6 +1039,10 @@ def solve_slab_mode(
     band_num: int = 1,
     parity: str = "NO_PARITY",
     resolution: float = 32,
+    z_margin: float | tuple[float, float] = 0.0,
+    pml_thickness: float = 0.0,
+    eigensolver_tol: float = 1e-6,
+    field_z_grid: np.ndarray | None = None,
 ) -> ModeResult:
     """Solve for the 1D slab mode of a uniform layer stack.
 
@@ -646,18 +1050,35 @@ def solve_slab_mode(
     *x* with field variation only along *z*.  Uses a 2D XZ MEEP simulation
     cell.
 
+    By default no field profiles are extracted.  Pass a ``field_z_grid``
+    to sample the eigenmode fields along *z* at ``x=0`` (a single column).
+
     Args:
         stack: Layer stack defining the vertical material profile.
         wavelength: Free-space wavelength in µm.
         band_num: Mode band index (1 = fundamental TE/TM slab mode).
         parity: Parity of the mode (``"NO_PARITY"``, ``"EVEN_Y"``, etc.).
         resolution: Pixels per µm (default 32).
+        z_margin: Extra distance (µm) added below and above the stack.  A
+            single float adds the same margin on both sides; a ``(bottom,
+            top)`` tuple adds asymmetric margins.  The MEEP cell uses the
+            larger value to ensure the sampling grid fits.  Default 0 —
+            cell exactly spans the stack extent.
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+            Set to e.g. 1.0 to enable PML absorbing boundaries.
+        eigensolver_tol: MPB convergence tolerance (default 1e-6).
+            Relax to 1e-5 for faster but less accurate solves.
+        field_z_grid: 1D array of *z* coordinates (µm, origin at stack
+            midpoint) at which to sample ``mode.amplitude()``.  The
+            *x*-coordinate is fixed at 0.  When ``None`` (default) no
+            field extraction is performed and ``result.fields`` is empty.
 
     Returns:
-        :class:`ModeResult` with effective index, field profiles, and
-        group index (from ``mode.group_velocity``).
+        :class:`ModeResult` with effective index, field profiles (if
+        ``field_z_grid`` provided), and group index.
     """
     _import_meep()
+    import numpy as np
 
     from gsim.meep.materials import resolve_materials
 
@@ -676,8 +1097,19 @@ def solve_slab_mode(
         wavelength_um=wavelength,
     )
 
-    sim, cell_size = _build_slab_xz_cell(stack, material_data, resolution)
+    _z_margin_cell = max(z_margin) if isinstance(z_margin, (tuple, list)) else z_margin
+    sim, cell_size = _build_slab_xz_cell(
+        stack,
+        material_data,
+        resolution,
+        z_margin=_z_margin_cell,
+        pml_thickness=pml_thickness,
+    )
     sim.init_sim()
+
+    field_x_grid: np.ndarray | None = None
+    if field_z_grid is not None:
+        field_x_grid = np.array([0.0])
 
     try:
         result = _compute_eigenmode(
@@ -686,6 +1118,9 @@ def solve_slab_mode(
             wavelength,
             band_num=band_num,
             parity=parity,
+            eigensolver_tol=eigensolver_tol,
+            field_x_grid=field_x_grid,
+            field_z_grid=field_z_grid,
         )
     finally:
         sim.reset_meep()
@@ -701,40 +1136,75 @@ def solve_cross_section_mode(
     port: str | None = None,
     position: tuple[float, float] | None = None,
     x_span: float | None = None,
+    y_span: float | None = None,
+    cross_section_plane: str = "auto",
+    z_margin: float | tuple[float, float] = 0.0,
+    pml_thickness: float = 0.0,
+    eigensolver_tol: float = 1e-6,
     wavelength: float,
     band_num: int = 1,
     parity: str = "NO_PARITY",
     resolution: float = 32,
+    field_x_grid: np.ndarray | None = None,
+    field_y_grid: np.ndarray | None = None,
+    field_z_grid: np.ndarray | None = None,
 ) -> ModeResult:
     """Solve for the eigenmode of a 2D waveguide cross-section.
 
-    Takes a *y*-slice through the component at a specified port or
-    position, builds a 2D XZ MEEP cell with the layer stack, and computes
-    the guided mode propagating along *x*.
+    Takes a slice through the component at a specified port or position
+    and builds a 2D MEEP cell.  The cross-section plane is determined by
+    the port orientation (auto-detected by default):
+
+    - **YZ plane**: port orientation 0° or 180° (waveguide along X).
+      Slice at *x = port_center[0]*, build YZ cell.
+    - **XZ plane**: port orientation 90° or 270° (waveguide along Y).
+      Slice at *y = port_center[1]*, build XZ cell.
+
+    By default no field profiles are extracted.  Pass horizontal and
+    vertical grids to sample the eigenmode fields on a 2D grid.
 
     One of ``port`` or ``position`` must be given:
-    - ``port="o1"`` — auto-extracts the cross-section at the port centre,
-      with *x*-span = ``port_width + 2 µm``.
-    - ``position=(x, y)`` — uses ``y`` as the cut plane; ``x_span`` must
-      be given explicitly.
+    - ``port="o1"`` — auto-extracts the cross-section at the port
+      centre, with span = ``port_width + 2 µm``.
+    - ``position=(x, y)`` — requires ``x_span`` for XZ or ``y_span`` for
+      YZ, and ``cross_section_plane`` must be set explicitly.
 
     Args:
         component: GDSFactory component with ports and polygons.
         stack: Layer stack (already resolved by caller or via
             :meth:`Simulation._resolve_stack_and_materials`).
-        port: Port name to auto-extract slice location and *x*-span.
-        position: Arbitrary ``(x, y)`` point — only ``y`` is used for
-            the cut plane.
-        x_span: Total *x*-extent of the cell in µm. Required when
-            ``position`` is used; auto-derived when ``port`` is used.
+        port: Port name to auto-extract slice location and span.
+        position: Arbitrary ``(x, y)`` point — only one coordinate is
+            used depending on the cross-section plane.
+        x_span: Total *x*-extent of the cell in µm. Required for XZ
+            cross-sections when using ``position``.
+        y_span: Total *y*-extent of the cell in µm. Used for YZ
+            cross-sections; auto-derived from port width.
+        cross_section_plane: ``"auto"`` (default), ``"xz"``, or ``"yz"``.
+            ``"auto"`` detects from port orientation.
+        z_margin: Extra distance (µm) added below and above the stack.  A
+            single float adds the same margin on both sides; a ``(bottom,
+            top)`` tuple adds asymmetric margins.  The MEEP cell uses the
+            larger value to ensure the sampling grid fits.  Default 0 —
+            cell exactly spans the stack extent.
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+            Set to e.g. 1.0 to enable PML absorbing boundaries.
+        eigensolver_tol: MPB convergence tolerance (default 1e-6).
+            Relax to 1e-5 for faster but less accurate solves.
         wavelength: Free-space wavelength in µm.
         band_num: Mode band index (1 = fundamental).
         parity: Parity of the mode.
         resolution: Pixels per µm (default 32).
+        field_x_grid: 1D array of *x* coordinates for field sampling
+            (µm, origin at cell centre).  For XZ cells.  ``None`` skips.
+        field_y_grid: 1D array of *y* coordinates for field sampling
+            (µm, origin at cell centre).  For YZ cells.  ``None`` skips.
+        field_z_grid: 1D array of *z* coordinates for field sampling
+            (µm, origin at cell centre).  ``None`` skips extraction.
 
     Returns:
-        :class:`ModeResult` with effective index, field profiles, and
-        group index (from ``mode.group_velocity``).
+        :class:`ModeResult` with effective index, field profiles (if
+        grids provided), and group index.
     """
     _import_meep()
 
@@ -744,6 +1214,9 @@ def solve_cross_section_mode(
         raise ValueError("stack must be a LayerStack, got None")
     if component is None:
         raise ValueError("component must be a Component, got None")
+
+    _use_yz: bool
+    _span: float
 
     if port is not None:
         port_info = None
@@ -756,13 +1229,46 @@ def solve_cross_section_mode(
             raise ValueError(
                 f"Port '{port}' not found in component. Available: {available}"
             )
-        y_cut = float(port_info.center[1])
+        port_ori = float(getattr(port_info, "orientation", 0))
         port_width = float(port_info.width)
-        x_span = x_span or (port_width + 2.0)
+
+        if cross_section_plane == "auto":
+            _use_yz = port_ori % 180 == 0
+        elif cross_section_plane == "yz":
+            _use_yz = True
+        elif cross_section_plane == "xz":
+            _use_yz = False
+        else:
+            raise ValueError(
+                f"cross_section_plane must be 'auto', 'xz', or 'yz', "
+                f"got {cross_section_plane!r}"
+            )
+
+        if _use_yz:
+            x_cut = float(port_info.center[0])
+            _span = y_span or (port_width + 2.0)
+        else:
+            y_cut = float(port_info.center[1])
+            _span = x_span or (port_width + 2.0)
     elif position is not None:
-        if x_span is None:
-            raise ValueError("x_span is required when using position instead of port")
-        y_cut = float(position[1])
+        if cross_section_plane == "auto":
+            _use_yz = False  # default to XZ for position mode backward compat
+        else:
+            _use_yz = cross_section_plane == "yz"
+        if _use_yz:
+            if y_span is None:
+                raise ValueError(
+                    "y_span is required for YZ cross-section with position"
+                )
+            x_cut = float(position[0])
+            _span = y_span
+        else:
+            if x_span is None:
+                raise ValueError(
+                    "x_span is required for XZ cross-section with position"
+                )
+            y_cut = float(position[1])
+            _span = x_span
     else:
         raise ValueError("Either port or position must be specified")
 
@@ -778,9 +1284,34 @@ def solve_cross_section_mode(
         wavelength_um=wavelength,
     )
 
-    sim, cell_size = _build_component_xz_cell(
-        component, stack, y_cut, x_span, material_data, resolution
-    )
+    if _use_yz:
+        _z_margin_cell = (
+            max(z_margin) if isinstance(z_margin, (tuple, list)) else z_margin
+        )
+        sim, cell_size = _build_component_yz_cell(
+            component,
+            stack,
+            x_cut,
+            _span,
+            material_data,
+            resolution,
+            z_margin=_z_margin_cell,
+            pml_thickness=pml_thickness,
+        )
+    else:
+        _z_margin_cell = (
+            max(z_margin) if isinstance(z_margin, (tuple, list)) else z_margin
+        )
+        sim, cell_size = _build_component_xz_cell(
+            component,
+            stack,
+            y_cut,
+            _span,
+            material_data,
+            resolution,
+            z_margin=_z_margin_cell,
+            pml_thickness=pml_thickness,
+        )
     sim.init_sim()
 
     try:
@@ -790,6 +1321,10 @@ def solve_cross_section_mode(
             wavelength,
             band_num=band_num,
             parity=parity,
+            eigensolver_tol=eigensolver_tol,
+            field_x_grid=field_x_grid,
+            field_y_grid=field_y_grid,
+            field_z_grid=field_z_grid,
         )
     finally:
         sim.reset_meep()

@@ -16,7 +16,7 @@
 # # MEEP Mode Solver - Rib Waveguide
 #
 # Compute the fundamental TE mode of a **silicon rib waveguide** at a
-# single wavelength, returning `n_eff` and the full 2D (X, Z) mode
+# single wavelength, returning `n_eff` and the full 2D (Y, Z) mode
 # profile.
 #
 # **Rib cross-section:**
@@ -37,7 +37,7 @@ import numpy as np
 
 from gsim.common.stack.extractor import Layer, LayerStack
 from gsim.meep import (
-    mode_x_grid,
+    mode_y_grid,
     mode_z_grid,
     refractive_index_profile,
     solve_cross_section_mode,
@@ -53,6 +53,10 @@ except ImportError as err:
         "    conda install -c conda-forge pymeep"
     ) from err
 
+plt.close()
+
+gf.gpdk.PDK.activate()
+
 # %% [markdown]
 # ### Build the GDS component
 #
@@ -61,22 +65,11 @@ except ImportError as err:
 # at the port Y-position to reconstruct the 2D (X,Z) geometry.
 
 # %%
-SLAB_WIDTH = 2.0  # um
+SLAB_WIDTH = 3.0  # um
 RIB_WIDTH = 0.5  # um
 LENGTH = 10.0  # um
 
-c = gf.Component(name="rib_waveguide")
-
-# Si slab layer (layer 1) - wide, partially etched
-c.add_polygon(
-    [
-        (-LENGTH / 2, -SLAB_WIDTH / 2),
-        (LENGTH / 2, -SLAB_WIDTH / 2),
-        (LENGTH / 2, SLAB_WIDTH / 2),
-        (-LENGTH / 2, SLAB_WIDTH / 2),
-    ],
-    layer=(1, 0),
-)
+c = gf.Component()
 
 # Si rib layer (layer 2) - narrow ridge on top
 c.add_polygon(
@@ -91,10 +84,10 @@ c.add_polygon(
 
 # Ports at both ends
 c.add_port(
-    name="o1", center=(-LENGTH / 2, 0), width=SLAB_WIDTH, orientation=180, layer=(1, 0)
+    name="o1", center=(-LENGTH / 2, 0), width=RIB_WIDTH, orientation=180, layer=(1, 0)
 )
 c.add_port(
-    name="o2", center=(LENGTH / 2, 0), width=SLAB_WIDTH, orientation=0, layer=(1, 0)
+    name="o2", center=(LENGTH / 2, 0), width=RIB_WIDTH, orientation=0, layer=(1, 0)
 )
 
 print(f"Component: {c.name}")
@@ -112,7 +105,7 @@ layers = {
     "ox": Layer(
         name="box",
         gds_layer=(0, 0),
-        zmin=-2.0,
+        zmin=-1.0,
         zmax=0.0,
         thickness=2.0,
         material="sio2",
@@ -150,8 +143,15 @@ for name, l in stack.layers.items():
 
 # %%
 WAVELENGTH = 1.55  # um
-RESOLUTION = 32
+RESOLUTION = 64
 
+y_span = SLAB_WIDTH  # port width + margin
+z_span = 2.22
+z_margin = (0, 1)
+y_grid = mode_y_grid(n_points=max(round(y_span * RESOLUTION), 1), y_span=y_span)
+z_grid = mode_z_grid(
+    stack, n_points=max(round(z_span * RESOLUTION), 1), z_margin=z_margin
+)
 result = solve_cross_section_mode(
     component=c,
     stack=stack,
@@ -160,6 +160,9 @@ result = solve_cross_section_mode(
     band_num=1,
     parity="NO_PARITY",
     resolution=RESOLUTION,
+    field_y_grid=y_grid,
+    field_z_grid=z_grid,
+    z_margin=z_margin,
 )
 
 print(f"n_eff    = {result.n_eff:.6f}")
@@ -176,39 +179,40 @@ for comp, arr in result.fields.items():
 # The fundamental TE-like rib mode has its primary electric field in Ey.
 
 # %%
+y_um = y_grid
+z_um = z_grid
+
 dom_comp = max(result.fields, key=lambda k: np.abs(result.fields[k]).max())
 field_2d = np.abs(result.fields[dom_comp])
+n_yz = refractive_index_profile(
+    stack,
+    WAVELENGTH,
+    z_grid=z_um,
+    y_grid=y_um,
+    component=c,
+    port="o1",
+)
 
-nz, nx = field_2d.shape
-x_span = SLAB_WIDTH + 2.0  # port width + margin
-z_span = 2.22  # total stack height
-
-x_um = mode_x_grid(n_points=nx, x_span=x_span)
-z_um = mode_z_grid(stack, n_points=nz)
+nz, ny = field_2d.shape
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
 # Left: field amplitude
-im = ax1.pcolormesh(x_um, z_um, field_2d, shading="auto", cmap="inferno")
+im = ax1.pcolormesh(y_um, z_um, field_2d, shading="auto", cmap="inferno")
+im2 = ax1.pcolormesh(y_um, z_um, n_yz, shading="auto", cmap="Greys", alpha=0.1)
 plt.colorbar(im, ax=ax1, label=f"|{dom_comp}| (arb. units)")
-ax1.set_xlabel("x (um)")
+ax1.set_xlabel("y (um)")
 ax1.set_ylabel("z (um)")
 ax1.set_title(f"|{dom_comp}|  n_eff={result.n_eff:.4f}")
 ax1.set_aspect("equal")
 
-# Right: field with index contours
-n_prof = refractive_index_profile(stack, z_um, wavelength=WAVELENGTH)
-n_xz = np.tile(n_prof[:, np.newaxis], (1, nx))
+# Right: refractive index distribution
 
-im2 = ax2.pcolormesh(x_um, z_um, field_2d, shading="auto", cmap="inferno", alpha=0.85)
-plt.colorbar(im2, ax=ax2, label=f"|{dom_comp}| (arb. units)")
-ct = ax2.contour(
-    x_um, z_um, n_xz, levels=[1.4, 2.0, 3.0], colors="cyan", linewidths=0.8
-)
-ax2.clabel(ct, fmt="n=%.1f", fontsize=7)
-ax2.set_xlabel("x (um)")
+im2 = ax2.pcolormesh(y_um, z_um, n_yz, shading="auto", cmap="rainbow", alpha=0.85)
+plt.colorbar(im2, ax=ax2, label="n")
+ax2.set_xlabel("y (um)")
 ax2.set_ylabel("z (um)")
-ax2.set_title("With refractive-index contours")
+ax2.set_title("Refractive index")
 ax2.set_aspect("equal")
 
 fig.suptitle(
@@ -217,3 +221,4 @@ fig.suptitle(
     fontweight="bold",
 )
 fig.tight_layout()
+plt.show()

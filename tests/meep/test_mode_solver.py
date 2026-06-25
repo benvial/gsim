@@ -338,7 +338,7 @@ class TestRefractiveIndexProfile:
         }
         stack = LayerStack(layers=layers)
         z_grid = mode_z_grid(stack, n_points=50)
-        n_profile = refractive_index_profile(stack, z_grid, wavelength=1.55)
+        n_profile = refractive_index_profile(stack, 1.55, z_grid=z_grid)
 
         assert len(n_profile) == 50
         assert isinstance(n_profile, np.ndarray)
@@ -375,7 +375,7 @@ class TestRefractiveIndexProfile:
         }
         stack = LayerStack(layers=layers)
         z_grid = mode_z_grid(stack, n_points=200)
-        n_profile = refractive_index_profile(stack, z_grid, wavelength=1.55)
+        n_profile = refractive_index_profile(stack, 1.55, z_grid=z_grid)
 
         # Core is at z=0 to z=0.22, shifted by z_center
         z_min = -2.0
@@ -509,19 +509,25 @@ class TestModeSolverIntegration:
 
     @pytest.mark.meep_local
     def test_solve_slab_mode_returns_fields(self):
-        """solve_slab_mode returns field profile arrays."""
+        """solve_slab_mode returns field profile arrays when field_z_grid is given."""
+
         from gsim.common.stack import get_stack
-        from gsim.meep.mode_solver import solve_slab_mode
+        from gsim.meep.mode_solver import mode_z_grid, solve_slab_mode
 
         stack = get_stack()
+        z_grid = mode_z_grid(stack, n_points=135)
         result = solve_slab_mode(
             stack=stack,
             wavelength=1.55,
+            field_z_grid=z_grid,
         )
         assert len(result.fields) > 0
+        assert len(result.fields) >= 1
         for arr in result.fields.values():
             assert arr is not None
-            assert arr.ndim >= 1
+            assert arr.ndim == 2
+            assert arr.shape[0] == len(z_grid)
+            assert arr.shape[1] == 1
 
     @pytest.mark.meep_local
     def test_solve_cross_section_mode_straight_wg(self):
@@ -529,11 +535,18 @@ class TestModeSolverIntegration:
         import gdsfactory as gf
 
         from gsim.common.stack import get_stack
-        from gsim.meep.mode_solver import solve_cross_section_mode
+        from gsim.meep.mode_solver import (
+            mode_x_grid,
+            mode_z_grid,
+            solve_cross_section_mode,
+        )
 
         c = gf.components.straight(length=10, width=0.5)
         stack = get_stack()
 
+        x_span = 2.5
+        z_grid = mode_z_grid(stack, n_points=135)
+        x_grid = mode_x_grid(n_points=80, x_span=x_span)
         result = solve_cross_section_mode(
             component=c,
             stack=stack,
@@ -541,6 +554,8 @@ class TestModeSolverIntegration:
             wavelength=1.55,
             band_num=1,
             parity="NO_PARITY",
+            field_x_grid=x_grid,
+            field_z_grid=z_grid,
         )
         assert result.n_eff > 1.0
         assert result.wavelength == 1.55

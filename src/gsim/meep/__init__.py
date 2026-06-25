@@ -25,6 +25,7 @@ Example::
 from gsim.gcloud import RunResult, register_result_parser
 from gsim.meep.mode_solver import (
     mode_x_grid,
+    mode_y_grid,
     mode_z_grid,
     refractive_index_profile,
     solve_cross_section_mode,
@@ -75,6 +76,7 @@ __all__ = [
     "Symmetry",
     "WavelengthConfig",
     "mode_x_grid",
+    "mode_y_grid",
     "mode_z_grid",
     "refractive_index_profile",
     "solve_cross_section_mode",

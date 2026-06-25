@@ -102,7 +102,16 @@ print(f"band    = {result.band_num}, parity = {result.parity}")
 # | `parity` | `str` | Parity constraint used |
 
 # %%
-for comp, arr in result.fields.items():
+z_quick = mode_z_grid(stack, n_points=max(round(4.22 * 32), 1))
+result_fields = solve_slab_mode(
+    stack=stack,
+    wavelength=1.55,
+    band_num=1,
+    parity="NO_PARITY",
+    resolution=32,
+    field_z_grid=z_quick,
+)
+for comp, arr in result_fields.fields.items():
     print(f"{comp}: shape={arr.shape}, |max|={np.abs(arr).max():.6f}")
 
 # %% [markdown]
@@ -116,7 +125,7 @@ for comp, arr in result.fields.items():
 # %%
 nz = max(round(2.22 * 32), 1)  # span x resolution for default SOI stack
 z_um = mode_z_grid(stack, n_points=nz)
-n_profile = refractive_index_profile(stack, z_um, wavelength=1.55)
+n_profile = refractive_index_profile(stack, 1.55, z_grid=z_um)
 
 print(f"Z grid: {z_um[0]:.4f} ... {z_um[-1]:.4f} um  ({len(z_um)} points)")
 print(f"Index range: {n_profile.min():.4f} - {n_profile.max():.4f}")
@@ -129,10 +138,11 @@ print(f"Index range: {n_profile.min():.4f} - {n_profile.max():.4f}")
 # field in `Ey`.
 
 # %%
-result_slab = solve_slab_mode(stack=stack, wavelength=1.55, resolution=32)
-nz = len(next(iter(result_slab.fields.values())))
-z_slab = mode_z_grid(stack, n_points=nz)
-n_prof = refractive_index_profile(stack, z_slab, wavelength=1.55)
+z_slab = mode_z_grid(stack, n_points=max(round(4.22 * 32), 1))
+result_slab = solve_slab_mode(
+    stack=stack, wavelength=1.55, resolution=32, field_z_grid=z_slab
+)
+n_prof = refractive_index_profile(stack, 1.55, z_grid=z_slab)
 
 dom_comp = max(result_slab.fields, key=lambda k: np.abs(result_slab.fields[k]).max())
 
@@ -140,9 +150,7 @@ fig, ax = plt.subplots(figsize=(7, 4))
 color_primary = "C0"
 
 field = result_slab.fields[dom_comp]
-ax.plot(
-    z_slab, np.abs(field), color=color_primary, linewidth=1.5, label=f"|{dom_comp}|"
-)
+ax.plot(z_slab, abs(field), color=color_primary, linewidth=1.5, label=f"|{dom_comp}|")
 ax.plot(
     z_slab,
     field.real,
@@ -273,7 +281,7 @@ fig.tight_layout()
 # sweep shows the dispersion and group index together.
 
 # %%
-wl_fine = [1.45 + i * 0.005 for i in range(61)]  # 1.45-1.75 um
+wl_fine = np.linspace(1.45, 1.75, 21)  # 1.45-1.75 um
 n_eff_fine: list[float] = []
 n_group_meep: list[float | None] = []
 
@@ -298,9 +306,7 @@ meep_valid = [(wl, ng) for wl, ng in zip(wl_fine, n_group_meep) if ng is not Non
 if meep_valid:
     wl_v, ng_v = zip(*meep_valid)
     ax2 = ax1.twinx()
-    (line2,) = ax2.plot(
-        wl_v, ng_v, "s-", color="C1", label="n_group (MEEP vg)", markersize=3
-    )
+    (line2,) = ax2.plot(wl_v, ng_v, "s-", color="C1", label="n_group", markersize=3)
     ax2.set_ylabel("n_group")
     lines = [line1, line2]
     ax1.legend(lines, [l.get_label() for l in lines], loc="upper right")
@@ -395,20 +401,21 @@ for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
     fig, ax = plt.subplots(figsize=(7, 4))
     for band in range(1, 5):
         try:
+            nz_r = max(round(4.0 * 64), 1)
+            zz = mode_z_grid(soi, n_points=nz_r)
             r = solve_slab_mode(
                 stack=soi,
                 wavelength=1.55,
                 band_num=band,
                 parity="NO_PARITY",
                 resolution=64,
+                field_z_grid=zz,
             )
-            nz_r = len(next(iter(r.fields.values())))
-            zz = mode_z_grid(soi, n_points=nz_r)
             if comp in r.fields:
                 tag = "guided" if r.n_eff > n_sio2 else "leaky"
                 ax.plot(
                     zz,
-                    np.abs(r.fields[comp]),
+                    abs(r.fields[comp]),
                     linewidth=1.3,
                     label=f"band {band} ({tag}) n={r.n_eff:.4f}",
                 )

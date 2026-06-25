@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
@@ -21,6 +21,9 @@ from gsim.meep.models.api import (
     Material,
     ModeSource,
 )
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -609,12 +612,19 @@ class Simulation(BaseModel):
         band_num: int = 1,
         parity: str = "NO_PARITY",
         resolution: float = 32,
+        field_x_grid: np.ndarray | None = None,
+        field_z_grid: np.ndarray | None = None,
     ) -> Any:
         """Compute a waveguide eigenmode via MEEP.
 
         Resolves the layer stack and materials via the three-tier pipeline,
         then delegates to :func:`solve_cross_section_mode` or
         :func:`solve_slab_mode` depending on whether a component is set.
+
+        By default no field profiles are extracted.  Pass ``field_z_grid``
+        (for slab modes) or both ``field_x_grid`` and ``field_z_grid``
+        (for cross-section modes) to sample ``mode.amplitude()`` on the
+        given coordinate arrays.
 
         Args:
             port: Port name to auto-extract cross-section location and
@@ -627,10 +637,14 @@ class Simulation(BaseModel):
             band_num: Mode band index (1 = fundamental).
             parity: Parity string.
             resolution: Pixels per µm (default 32).
+            field_x_grid: 1D array of *x* coordinates for field sampling
+                (µm, origin at cell centre).  ``None`` skips extraction.
+            field_z_grid: 1D array of *z* coordinates for field sampling
+                (µm, origin at cell centre).  ``None`` skips extraction.
 
         Returns:
-            :class:`ModeResult` with effective index, field profiles,
-            group index, etc.
+            :class:`ModeResult` with effective index, field profiles
+            (if grids provided), group index, etc.
         """
         from gsim.meep.mode_solver import (
             solve_cross_section_mode,
@@ -655,6 +669,8 @@ class Simulation(BaseModel):
                 band_num=band_num,
                 parity=parity,
                 resolution=resolution,
+                field_x_grid=field_x_grid,
+                field_z_grid=field_z_grid,
             )
 
         return solve_slab_mode(
@@ -663,6 +679,7 @@ class Simulation(BaseModel):
             band_num=band_num,
             parity=parity,
             resolution=resolution,
+            field_z_grid=field_z_grid,
         )
 
     # -------------------------------------------------------------------------
