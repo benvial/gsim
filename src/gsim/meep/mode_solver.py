@@ -1331,3 +1331,102 @@ def solve_cross_section_mode(
 
     _validate_mode(result, material_data, stack, is_slab=False)
     return result
+
+
+# ------------------------------------------------------------------
+# Batch slab mode solver — reuses simulation across bands
+# ------------------------------------------------------------------
+
+
+def solve_slab_modes(
+    stack: LayerStack,
+    wavelength: float,
+    *,
+    band_nums: list[int] | None = None,
+    parity: str = "NO_PARITY",
+    resolution: float = 32,
+    z_margin: float | tuple[float, float] = 0.0,
+    pml_thickness: float = 0.0,
+    eigensolver_tol: float = 1e-6,
+    field_z_grid: np.ndarray | None = None,
+) -> dict[int, ModeResult]:
+    """Solve multiple slab mode bands with a single simulation setup.
+
+    Builds the MEEP cell once, then loops over *band_nums* reusing the
+    same grid. Material resolution, geometry, and PML are computed once.
+
+    Args:
+        stack: Layer stack defining the vertical material profile.
+        wavelength: Free-space wavelength in µm.
+        band_nums: Mode band indices (default ``[1]`` — fundamental only).
+        parity: Parity of the modes.
+        resolution: Pixels per µm (default 32).
+        z_margin: Extra distance (µm) added below and above the stack.
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+        eigensolver_tol: MPB convergence tolerance (default 1e-6).
+        field_z_grid: 1D array of *z* coordinates for field sampling.
+            ``None`` skips extraction for all bands.
+
+    Returns:
+        Dict mapping ``band_num`` to :class:`ModeResult`. Bands that fail
+        to converge are omitted from the dict.
+    """
+    _import_meep()
+    import numpy as np
+
+    from gsim.meep.materials import resolve_materials
+
+    if band_nums is None:
+        band_nums = [1]
+
+    if stack is None:
+        raise ValueError("stack must be a LayerStack, got None")
+
+    used_materials: set[str] = set()
+    for layer in stack.layers.values():
+        used_materials.add(layer.material)
+    for diel in stack.dielectrics:
+        used_materials.add(diel["material"])
+
+    material_data = resolve_materials(
+        used_materials,
+        overrides={},
+        wavelength_um=wavelength,
+    )
+
+    _z_margin_cell = max(z_margin) if isinstance(z_margin, (tuple, list)) else z_margin
+    sim, cell_size = _build_slab_xz_cell(
+        stack,
+        material_data,
+        resolution,
+        z_margin=_z_margin_cell,
+        pml_thickness=pml_thickness,
+    )
+    sim.init_sim()
+
+    field_x_grid: np.ndarray | None = None
+    if field_z_grid is not None:
+        field_x_grid = np.array([0.0])
+
+    results: dict[int, ModeResult] = {}
+    try:
+        for band_num in band_nums:
+            try:
+                result = _compute_eigenmode(
+                    sim,
+                    cell_size,
+                    wavelength,
+                    band_num=band_num,
+                    parity=parity,
+                    eigensolver_tol=eigensolver_tol,
+                    field_x_grid=field_x_grid,
+                    field_z_grid=field_z_grid,
+                )
+                _validate_mode(result, material_data, stack, is_slab=True)
+                results[band_num] = result
+            except RuntimeError:
+                pass
+    finally:
+        sim.reset_meep()
+
+    return results

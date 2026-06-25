@@ -30,6 +30,7 @@ from gsim.meep.mode_solver import (
     refractive_index_profile,
     solve_cross_section_mode,
     solve_slab_mode,
+    solve_slab_modes,
 )
 from gsim.meep.models import (
     FDTD,
@@ -81,4 +82,5 @@ __all__ = [
     "refractive_index_profile",
     "solve_cross_section_mode",
     "solve_slab_mode",
+    "solve_slab_modes",
 ]

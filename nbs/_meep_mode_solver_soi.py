@@ -46,6 +46,7 @@ from gsim.meep import (
     mode_z_grid,
     refractive_index_profile,
     solve_slab_mode,
+    solve_slab_modes,
 )
 
 HAS_MEEP = False
@@ -372,23 +373,20 @@ print(
     f"V-parameter = {V_param:.3f}  ->  {max(1, int(2 * V_param / np.pi) + 1)} guided TE mode(s)"
 )
 
-for band in range(1, 5):
-    try:
-        r = solve_slab_mode(
-            stack=soi,
-            wavelength=1.55,
-            band_num=band,
-            parity="NO_PARITY",
-            resolution=64,
-        )
-        tag = "GUIDED" if r.n_eff > n_sio2 else "LEAKY"
-        print(
-            f"  band {band}: n_eff={r.n_eff:.6f}  ({tag})"
-            f"  n_group={r.n_group}"
-            f"  kdom={[f'{k:.4f}' for k in r.kdom[:2]]}..."
-        )
-    except RuntimeError as exc:
-        print(f"  band {band}:  not found ({exc})")
+band_results = solve_slab_modes(
+    stack=soi,
+    wavelength=1.55,
+    band_nums=list(range(1, 5)),
+    parity="NO_PARITY",
+    resolution=32,
+)
+for band, r in sorted(band_results.items()):
+    tag = "GUIDED" if r.n_eff > n_sio2 else "LEAKY"
+    print(
+        f"  band {band}: n_eff={r.n_eff:.6f}  ({tag})"
+        f"  n_group={r.n_group}"
+        f"  kdom={[f'{k:.4f}' for k in r.kdom[:2]]}..."
+    )
 
 # %% [markdown]
 # ### Multi-band field profiles
@@ -397,34 +395,27 @@ for band in range(1, 5):
 # (band 1) is physically guided; higher bands may be MPB artefacts.
 
 # %%
-nz_r = max(round(4.0 * 64), 1)
+nz_r = max(round(4.0 * 32), 1)
 zz = mode_z_grid(soi, n_points=nz_r)
-band_results: dict[int, tuple[np.ndarray, float, dict[str, np.ndarray]]] = {}
-
-for band in range(1, 5):
-    try:
-        r = solve_slab_mode(
-            stack=soi,
-            wavelength=1.55,
-            band_num=band,
-            parity="NO_PARITY",
-            resolution=64,
-            field_z_grid=zz,
-        )
-        band_results[band] = (zz, r.n_eff, r.fields)
-    except RuntimeError:
-        pass
+band_fields = solve_slab_modes(
+    stack=soi,
+    wavelength=1.55,
+    band_nums=list(range(1, 5)),
+    parity="NO_PARITY",
+    resolution=32,
+    field_z_grid=zz,
+)
 
 for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
     fig, ax = plt.subplots(figsize=(7, 4))
-    for band, (zz_b, n_eff_b, fields_b) in band_results.items():
-        if comp in fields_b:
-            tag = "guided" if n_eff_b > n_sio2 else "leaky"
+    for band, r in sorted(band_fields.items()):
+        if comp in r.fields:
+            tag = "guided" if r.n_eff > n_sio2 else "leaky"
             ax.plot(
-                zz_b,
-                abs(fields_b[comp]),
+                zz,
+                abs(r.fields[comp]),
                 linewidth=1.3,
-                label=f"band {band} ({tag}) n={n_eff_b:.4f}",
+                label=f"band {band} ({tag}) n={r.n_eff:.4f}",
             )
     ax.set_xlabel("z (um)")
     ax.set_ylabel(f"|{comp}| (arb. units)")
@@ -451,7 +442,7 @@ for parity in parities:
             wavelength=1.55,
             band_num=1,
             parity=parity,
-            resolution=64,
+            resolution=32,
         )
         tag = "guided" if r.n_eff > n_sio2 else "leaky"
         print(f"  {parity:10s}: n_eff={r.n_eff:.6f}  ({tag})")
@@ -652,7 +643,7 @@ r_meep = solve_slab_mode(
     wavelength=lambda_bench,
     band_num=1,
     parity="EVEN_Y",
-    resolution=64,
+    resolution=32,
 )
 
 if 0 in analytical:
@@ -672,7 +663,7 @@ for band in range(2, 5):
             wavelength=lambda_bench,
             band_num=band,
             parity="NO_PARITY",
-            resolution=64,
+            resolution=32,
         )
         print(f"\nMEEP  band {band}: n_eff = {r_meep_b.n_eff:.6f}")
     except RuntimeError:
