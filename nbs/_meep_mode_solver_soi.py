@@ -397,31 +397,35 @@ for band in range(1, 5):
 # (band 1) is physically guided; higher bands may be MPB artefacts.
 
 # %%
+nz_r = max(round(4.0 * 64), 1)
+zz = mode_z_grid(soi, n_points=nz_r)
+band_results: dict[int, tuple[np.ndarray, float, dict[str, np.ndarray]]] = {}
+
+for band in range(1, 5):
+    try:
+        r = solve_slab_mode(
+            stack=soi,
+            wavelength=1.55,
+            band_num=band,
+            parity="NO_PARITY",
+            resolution=64,
+            field_z_grid=zz,
+        )
+        band_results[band] = (zz, r.n_eff, r.fields)
+    except RuntimeError:
+        pass
+
 for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
     fig, ax = plt.subplots(figsize=(7, 4))
-    for band in range(1, 5):
-        try:
-            nz_r = max(round(4.0 * 64), 1)
-            zz = mode_z_grid(soi, n_points=nz_r)
-            r = solve_slab_mode(
-                stack=soi,
-                wavelength=1.55,
-                band_num=band,
-                parity="NO_PARITY",
-                resolution=64,
-                field_z_grid=zz,
+    for band, (zz_b, n_eff_b, fields_b) in band_results.items():
+        if comp in fields_b:
+            tag = "guided" if n_eff_b > n_sio2 else "leaky"
+            ax.plot(
+                zz_b,
+                abs(fields_b[comp]),
+                linewidth=1.3,
+                label=f"band {band} ({tag}) n={n_eff_b:.4f}",
             )
-            if comp in r.fields:
-                tag = "guided" if r.n_eff > n_sio2 else "leaky"
-                ax.plot(
-                    zz,
-                    abs(r.fields[comp]),
-                    linewidth=1.3,
-                    label=f"band {band} ({tag}) n={r.n_eff:.4f}",
-                )
-        except RuntimeError:
-            pass
-
     ax.set_xlabel("z (um)")
     ax.set_ylabel(f"|{comp}| (arb. units)")
     ax.set_title("Multi-band slab modes - SOI 220 nm")
