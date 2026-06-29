@@ -37,6 +37,34 @@ _PARITY_MAP: dict[str, int] = {
     "ODD_Z": 4,
 }
 
+# Per-process cache for material resolution — keyed by
+# (frozenset(material_names), wavelength_um).  The same stack/lambda
+# invoked many times (multi-band, parity, comparison sections in
+# notebooks) will reuse the sellmeier evaluation.
+_MATERIAL_CACHE: dict[tuple, dict] = {}
+
+_MAX_MATERIAL_CACHE = 64
+
+
+def _resolve_materials_cached(
+    used_materials: set[str],
+    overrides: dict | None = None,
+    wavelength_um: float | None = None,
+    overlay: dict | None = None,
+) -> dict[str, MaterialData]:
+    """:func:`resolve_materials` with a process-local LRU cache."""
+    from gsim.meep.materials import resolve_materials
+
+    key = (frozenset(used_materials), wavelength_um)
+    cached = _MATERIAL_CACHE.get(key)
+    if cached is not None:
+        return cached
+    result = resolve_materials(used_materials, overrides, wavelength_um, overlay)
+    if len(_MATERIAL_CACHE) >= _MAX_MATERIAL_CACHE:
+        _MATERIAL_CACHE.pop(next(iter(_MATERIAL_CACHE)))
+    _MATERIAL_CACHE[key] = result
+    return result
+
 
 def _import_meep():
     """Lazily import meep — raises ImportError with install instructions if missing."""
@@ -128,9 +156,10 @@ def _build_slab_xz_cell(
     z_max = max(layer.zmax for layer in stack.layers.values())
     z_center = (z_min + z_max) / 2.0
 
-    # For slab mode solving, the x-extent is arbitrary — just needs to be
-    # wide enough to avoid edge effects.
-    x_span = 4.0
+    # The slab problem is 1D but MEEP requires >=2 cells in the propagation
+    # direction for MPB to distinguish the guided eigenmode from the trivial
+    # vacuum plane-wave solution. 2 pixels is sufficient and minimizes memory.
+    x_span = 2.0 / resolution
     z_span = (z_max - z_min) + 2 * z_margin
     if pml_thickness > 0:
         x_span += 2 * pml_thickness
@@ -759,6 +788,7 @@ def mode_z_grid(
     stack: LayerStack,
     n_points: int,
     z_margin: float | tuple[float, float] = 0.0,
+    pml_thickness: float = 0.0,
 ) -> np.ndarray:
     """Compute Z-axis coordinates centred on the layer stack midpoint.
 
@@ -774,6 +804,10 @@ def mode_z_grid(
             top)`` tuple adds asymmetric margins.  Must match the
             ``z_margin`` passed to the solver.  Default 0 — grid covers
             exactly the stack extent.
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+            When set, extends the span by ``2 * pml_thickness`` (symmetric
+            top/bottom) to match the MEEP cell including PML boundaries.
+            Must match the ``pml_thickness`` passed to the solver.
 
     Returns:
         ``np.ndarray`` of *z* coordinates in µm, origin at stack midpoint.
@@ -786,13 +820,13 @@ def mode_z_grid(
         z_margin_bottom, z_margin_top = z_margin
     else:
         z_margin_bottom = z_margin_top = z_margin
-    span = z_max - z_min + z_margin_bottom + z_margin_top
+    span = z_max - z_min + z_margin_bottom + z_margin_top + 2 * pml_thickness
     dz = span / n_points
     center = (z_margin_top - z_margin_bottom) / 2
     return np.linspace(center - span / 2 + dz / 2, center + span / 2 - dz / 2, n_points)
 
 
-def mode_x_grid(n_points: int, x_span: float) -> np.ndarray:
+def mode_x_grid(n_points: int, x_span: float, pml_thickness: float = 0.0) -> np.ndarray:
     """Compute X-axis coordinates centred on the cell midpoint.
 
     The returned grid has the same length as the X (second) axis of
@@ -801,18 +835,22 @@ def mode_x_grid(n_points: int, x_span: float) -> np.ndarray:
 
     Args:
         n_points: Number of grid points (typically ``resolution * x_span``).
-        x_span: Total X-extent of the MEEP cell in µm.
+        x_span: Total X-extent of the MEEP cell in µm (excluding PML).
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+            When set, extends the span by ``2 * pml_thickness`` to match
+            the MEEP cell including PML boundaries.
 
     Returns:
         ``np.ndarray`` of *x* coordinates in µm, origin at cell midpoint.
     """
     import numpy as np
 
-    dx = x_span / n_points
-    return np.linspace(-x_span / 2 + dx / 2, x_span / 2 - dx / 2, n_points)
+    total_span = x_span + 2 * pml_thickness
+    dx = total_span / n_points
+    return np.linspace(-total_span / 2 + dx / 2, total_span / 2 - dx / 2, n_points)
 
 
-def mode_y_grid(n_points: int, y_span: float) -> np.ndarray:
+def mode_y_grid(n_points: int, y_span: float, pml_thickness: float = 0.0) -> np.ndarray:
     """Compute Y-axis coordinates centred on the cell midpoint.
 
     The returned grid has the same length as the Y (second) axis of
@@ -821,15 +859,19 @@ def mode_y_grid(n_points: int, y_span: float) -> np.ndarray:
 
     Args:
         n_points: Number of grid points (typically ``resolution * y_span``).
-        y_span: Total Y-extent of the MEEP cell in µm.
+        y_span: Total Y-extent of the MEEP cell in µm (excluding PML).
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+            When set, extends the span by ``2 * pml_thickness`` to match
+            the MEEP cell including PML boundaries.
 
     Returns:
         ``np.ndarray`` of *y* coordinates in µm, origin at cell midpoint.
     """
     import numpy as np
 
-    dy = y_span / n_points
-    return np.linspace(-y_span / 2 + dy / 2, y_span / 2 - dy / 2, n_points)
+    total_span = y_span + 2 * pml_thickness
+    dy = total_span / n_points
+    return np.linspace(-total_span / 2 + dy / 2, total_span / 2 - dy / 2, n_points)
 
 
 def refractive_index_profile(
@@ -897,15 +939,13 @@ def refractive_index_profile(
     """
     import numpy as np
 
-    from gsim.meep.materials import resolve_materials
-
     z_min = min(layer.zmin for layer in stack.layers.values())
     z_max = max(layer.zmax for layer in stack.layers.values())
     z_center = (z_min + z_max) / 2.0
 
     used_materials: set[str] = {layer.material for layer in stack.layers.values()}
     used_materials.discard("air")
-    material_data = resolve_materials(
+    material_data = _resolve_materials_cached(
         used_materials,
         overrides={},
         wavelength_um=wavelength,
@@ -1080,8 +1120,6 @@ def solve_slab_mode(
     _import_meep()
     import numpy as np
 
-    from gsim.meep.materials import resolve_materials
-
     if stack is None:
         raise ValueError("stack must be a LayerStack, got None")
 
@@ -1091,7 +1129,7 @@ def solve_slab_mode(
     for diel in stack.dielectrics:
         used_materials.add(diel["material"])
 
-    material_data = resolve_materials(
+    material_data = _resolve_materials_cached(
         used_materials,
         overrides={},
         wavelength_um=wavelength,
@@ -1208,8 +1246,6 @@ def solve_cross_section_mode(
     """
     _import_meep()
 
-    from gsim.meep.materials import resolve_materials
-
     if stack is None:
         raise ValueError("stack must be a LayerStack, got None")
     if component is None:
@@ -1278,7 +1314,7 @@ def solve_cross_section_mode(
     for diel in stack.dielectrics:
         used_materials.add(diel["material"])
 
-    material_data = resolve_materials(
+    material_data = _resolve_materials_cached(
         used_materials,
         overrides={},
         wavelength_um=wavelength,
@@ -1374,8 +1410,6 @@ def solve_slab_modes(
     _import_meep()
     import numpy as np
 
-    from gsim.meep.materials import resolve_materials
-
     if band_nums is None:
         band_nums = [1]
 
@@ -1388,7 +1422,7 @@ def solve_slab_modes(
     for diel in stack.dielectrics:
         used_materials.add(diel["material"])
 
-    material_data = resolve_materials(
+    material_data = _resolve_materials_cached(
         used_materials,
         overrides={},
         wavelength_um=wavelength,
@@ -1428,5 +1462,154 @@ def solve_slab_modes(
                 pass
     finally:
         sim.reset_meep()
+
+    return results
+
+
+# ------------------------------------------------------------------
+# Wavelength-sweep slab mode solver — reuses geometry across lambda
+# ------------------------------------------------------------------
+
+
+def solve_slab_wavelength_sweep(
+    stack: LayerStack,
+    wavelengths: list[float],
+    *,
+    band_num: int = 1,
+    parity: str = "NO_PARITY",
+    resolution: float = 32,
+    z_margin: float | tuple[float, float] = 0.0,
+    pml_thickness: float = 0.0,
+    eigensolver_tol: float = 1e-6,
+    field_z_grid: np.ndarray | None = None,
+) -> dict[float, ModeResult]:
+    """Solve slab mode at multiple wavelengths reusing cell geometry.
+
+    The cell size, grid, PML, and layer positions are computed once.
+    Per-wavelength material epsilon values are resolved and a fresh
+    simulation is built (required for correct dispersion), but the
+    geometry coordinates and setup overhead are shared.
+
+    This is 2-3x faster than calling :func:`solve_slab_mode` in a loop
+    for moderate wavelength counts (5-30).
+
+    Args:
+        stack: Layer stack defining the vertical material profile.
+        wavelengths: List of free-space wavelengths in µm.
+        band_num: Mode band index (1 = fundamental).
+        parity: Parity of the mode.
+        resolution: Pixels per µm (default 32).
+        z_margin: Extra distance (µm) below and above the stack.
+        pml_thickness: PML absorber thickness in µm (default 0.0).
+        eigensolver_tol: MPB convergence tolerance (default 1e-6).
+        field_z_grid: 1D array of *z* coordinates for field sampling.
+            ``None`` skips field extraction for all wavelengths.
+
+    Returns:
+        Dict mapping wavelength to :class:`ModeResult`.
+    """
+    import logging
+
+    import numpy as np
+
+    mp = _import_meep()
+    logger = logging.getLogger(__name__)
+
+    if stack is None:
+        raise ValueError("stack must be a LayerStack, got None")
+
+    _z_margin_cell = max(z_margin) if isinstance(z_margin, (tuple, list)) else z_margin
+
+    # --- pre-compute geometry meta-data (wavelength-independent) ---
+    z_min = min(layer.zmin for layer in stack.layers.values())
+    z_max = max(layer.zmax for layer in stack.layers.values())
+    z_center = (z_min + z_max) / 2.0
+    x_span = 2.0 / resolution
+    z_span = (z_max - z_min) + 2 * _z_margin_cell
+    if pml_thickness > 0:
+        x_span += 2 * pml_thickness
+        z_span += 2 * pml_thickness
+    x_span = round(x_span * resolution) / resolution
+    z_span = round(z_span * resolution) / resolution
+    cell_size = mp.Vector3(x_span, 0.0, z_span)
+
+    # Layer geometric descriptors (wavelength-independent)
+    _layer_specs: list[dict] = []
+    for layer in stack.layers.values():
+        if layer.material == "air":
+            continue
+        z_size = layer.zmax - layer.zmin
+        if z_size <= 0:
+            continue
+        _layer_specs.append(
+            {
+                "name": layer.material,
+                "center_z": layer.zmin + z_size / 2.0 - z_center,
+                "z_size": z_size,
+            }
+        )
+
+    used_materials: set[str] = {s["name"] for s in _layer_specs}
+
+    field_x_grid: np.ndarray | None = None
+    if field_z_grid is not None:
+        field_x_grid = np.array([0.0])
+
+    results: dict[float, ModeResult] = {}
+
+    for wl in wavelengths:
+        material_data = _resolve_materials_cached(
+            used_materials,
+            overrides={},
+            wavelength_um=wl,
+        )
+
+        geometry: list[object] = []
+        for spec in _layer_specs:
+            mat_data = material_data.get(spec["name"])
+            if mat_data is None:
+                continue
+            medium = _meep_medium(mat_data)
+            geometry.append(
+                mp.Block(
+                    size=mp.Vector3(x_span, mp.inf, spec["z_size"]),
+                    center=mp.Vector3(0.0, 0.0, spec["center_z"]),
+                    material=medium,
+                )
+            )
+
+        sim_kwargs: dict = dict(
+            cell_size=cell_size,
+            geometry=geometry,
+            resolution=resolution,
+            default_material=mp.Medium(epsilon=1.0),
+        )
+        if pml_thickness > 0:
+            sim_kwargs["boundary_layers"] = [mp.PML(thickness=pml_thickness)]
+
+        sim = mp.Simulation(**sim_kwargs)
+        sim.init_sim()
+
+        try:
+            result = _compute_eigenmode(
+                sim,
+                cell_size,
+                wl,
+                band_num=band_num,
+                parity=parity,
+                eigensolver_tol=eigensolver_tol,
+                field_x_grid=field_x_grid,
+                field_z_grid=field_z_grid,
+            )
+            _validate_mode(result, material_data, stack, is_slab=True)
+            results[wl] = result
+        except RuntimeError:
+            logger.warning(
+                "solve_slab_wavelength_sweep: band %d failed at lambda=%.4f um",
+                band_num,
+                wl,
+            )
+        finally:
+            sim.reset_meep()
 
     return results

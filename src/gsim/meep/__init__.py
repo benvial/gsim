@@ -31,6 +31,7 @@ from gsim.meep.mode_solver import (
     solve_cross_section_mode,
     solve_slab_mode,
     solve_slab_modes,
+    solve_slab_wavelength_sweep,
 )
 from gsim.meep.models import (
     FDTD,
@@ -83,4 +84,5 @@ __all__ = [
     "solve_cross_section_mode",
     "solve_slab_mode",
     "solve_slab_modes",
+    "solve_slab_wavelength_sweep",
 ]

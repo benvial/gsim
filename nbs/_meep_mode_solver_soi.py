@@ -47,6 +47,7 @@ from gsim.meep import (
     refractive_index_profile,
     solve_slab_mode,
     solve_slab_modes,
+    solve_slab_wavelength_sweep,
 )
 
 HAS_MEEP = False
@@ -61,6 +62,9 @@ except ImportError as err:
         "    conda install -c conda-forge pymeep"
     ) from err
 
+resolution = 64
+pml_thickness = 2
+
 gf.gpdk.PDK.activate()
 stack = get_stack()
 
@@ -73,7 +77,8 @@ result = solve_slab_mode(
     wavelength=1.55,
     band_num=1,
     parity="NO_PARITY",
-    resolution=32,
+    resolution=resolution,
+    pml_thickness=pml_thickness,
 )
 
 print(f"n_eff   = {result.n_eff:.6f}")
@@ -103,14 +108,17 @@ print(f"band    = {result.band_num}, parity = {result.parity}")
 # | `parity` | `str` | Parity constraint used |
 
 # %%
-z_quick = mode_z_grid(stack, n_points=max(round(4.22 * 32), 1))
+z_quick = mode_z_grid(
+    stack, n_points=max(round(4.22 * resolution), 1), pml_thickness=pml_thickness
+)
 result_fields = solve_slab_mode(
     stack=stack,
     wavelength=1.55,
     band_num=1,
     parity="NO_PARITY",
-    resolution=32,
+    resolution=resolution,
     field_z_grid=z_quick,
+    pml_thickness=pml_thickness,
 )
 for comp, arr in result_fields.fields.items():
     print(f"{comp}: shape={arr.shape}, |max|={np.abs(arr).max():.6f}")
@@ -124,8 +132,8 @@ for comp, arr in result_fields.fields.items():
 # `eps_map`.
 
 # %%
-nz = max(round(2.22 * 32), 1)  # span x resolution for default SOI stack
-z_um = mode_z_grid(stack, n_points=nz)
+nz = max(round(2.22 * resolution), 1)  # span x resolution for default SOI stack
+z_um = mode_z_grid(stack, n_points=nz, pml_thickness=pml_thickness)
 n_profile = refractive_index_profile(stack, 1.55, z_grid=z_um)
 
 print(f"Z grid: {z_um[0]:.4f} ... {z_um[-1]:.4f} um  ({len(z_um)} points)")
@@ -139,9 +147,15 @@ print(f"Index range: {n_profile.min():.4f} - {n_profile.max():.4f}")
 # field in `Ey`.
 
 # %%
-z_slab = mode_z_grid(stack, n_points=max(round(4.22 * 32), 1))
+z_slab = mode_z_grid(
+    stack, n_points=max(round(4.22 * resolution), 1), pml_thickness=pml_thickness
+)
 result_slab = solve_slab_mode(
-    stack=stack, wavelength=1.55, resolution=32, field_z_grid=z_slab
+    stack=stack,
+    wavelength=1.55,
+    resolution=resolution,
+    field_z_grid=z_slab,
+    pml_thickness=pml_thickness,
 )
 n_prof = refractive_index_profile(stack, 1.55, z_grid=z_slab)
 
@@ -245,14 +259,19 @@ print(f"n_eff = {result.n_eff:.6f}")
 
 # %%
 wavelengths = [1.50, 1.52, 1.54, 1.55, 1.56, 1.58, 1.60]
-n_effs: list[float] = []
-n_groups: list[float | None] = []
-
+results_sweep = solve_slab_wavelength_sweep(
+    stack=stack,
+    wavelengths=wavelengths,
+    band_num=1,
+    parity="NO_PARITY",
+    resolution=resolution,
+)
+n_effs = [results_sweep[wl].n_eff for wl in wavelengths]
+n_groups = [results_sweep[wl].n_group for wl in wavelengths]
 for wl in wavelengths:
-    r = sim.solve_mode(wavelength=wl, band_num=1)
-    n_effs.append(r.n_eff)
-    n_groups.append(r.n_group)
-    print(f"  lambda = {wl:.2f} um -> n_eff = {r.n_eff:.6f}, n_group = {r.n_group}")
+    print(
+        f"  lambda = {wl:.2f} um -> n_eff = {results_sweep[wl].n_eff:.6f}, n_group = {results_sweep[wl].n_group}"
+    )
 
 fig, ax1 = plt.subplots()
 (line1,) = ax1.plot(wavelengths, n_effs, "o-", label="n_eff")
@@ -273,49 +292,6 @@ else:
 ax1.set_title("Dispersion - fundamental TE mode")
 fig.tight_layout()
 
-
-# %% [markdown]
-# ### Group velocity validation
-#
-# MEEP's ``get_eigenmode`` returns ``mode.group_velocity`` directly,
-# giving the group index as ``n_group = 1/v_g``.  A fine wavelength
-# sweep shows the dispersion and group index together.
-
-# %%
-wl_fine = np.linspace(1.45, 1.75, 21)  # 1.45-1.75 um
-n_eff_fine: list[float] = []
-n_group_meep: list[float | None] = []
-
-for wl in wl_fine:
-    r = sim.solve_mode(
-        wavelength=wl,
-        band_num=1,
-    )
-    n_eff_fine.append(r.n_eff)
-    n_group_meep.append(r.n_group)
-
-wl_arr = np.array(wl_fine)
-n_arr = np.array(n_eff_fine)
-
-fig, ax1 = plt.subplots()
-(line1,) = ax1.plot(wl_arr, n_arr, ".-", label="n_eff", linewidth=1)
-ax1.set_xlabel("Wavelength (um)")
-ax1.set_ylabel("n_eff")
-ax1.grid(True, alpha=0.3)
-
-meep_valid = [(wl, ng) for wl, ng in zip(wl_fine, n_group_meep) if ng is not None]
-if meep_valid:
-    wl_v, ng_v = zip(*meep_valid)
-    ax2 = ax1.twinx()
-    (line2,) = ax2.plot(wl_v, ng_v, "s-", color="C1", label="n_group", markersize=3)
-    ax2.set_ylabel("n_group")
-    lines = [line1, line2]
-    ax1.legend(lines, [l.get_label() for l in lines], loc="upper right")
-else:
-    ax1.legend(loc="upper right")
-
-ax1.set_title("Dispersion - fundamental TE mode (fine sweep)")
-fig.tight_layout()
 
 # %% [markdown]
 # ### Multi-band modes
@@ -378,7 +354,8 @@ band_results = solve_slab_modes(
     wavelength=1.55,
     band_nums=list(range(1, 5)),
     parity="NO_PARITY",
-    resolution=32,
+    resolution=resolution,
+    pml_thickness=pml_thickness,
 )
 for band, r in sorted(band_results.items()):
     tag = "GUIDED" if r.n_eff > n_sio2 else "LEAKY"
@@ -395,15 +372,16 @@ for band, r in sorted(band_results.items()):
 # (band 1) is physically guided; higher bands may be MPB artefacts.
 
 # %%
-nz_r = max(round(4.0 * 32), 1)
-zz = mode_z_grid(soi, n_points=nz_r)
+nz_r = max(round(4.0 * resolution), 1)
+zz = mode_z_grid(soi, n_points=nz_r, pml_thickness=pml_thickness)
 band_fields = solve_slab_modes(
     stack=soi,
     wavelength=1.55,
     band_nums=list(range(1, 5)),
     parity="NO_PARITY",
-    resolution=32,
+    resolution=resolution,
     field_z_grid=zz,
+    pml_thickness=pml_thickness,
 )
 
 for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
@@ -424,6 +402,7 @@ for comp in ("Ex", "Ey", "Ez", "Hx", "Hy", "Hz"):
     ax.grid(True, alpha=0.2)
     fig.tight_layout()
 
+
 # %% [markdown]
 # ### Parity modes
 #
@@ -442,7 +421,8 @@ for parity in parities:
             wavelength=1.55,
             band_num=1,
             parity=parity,
-            resolution=32,
+            resolution=resolution,
+            pml_thickness=pml_thickness,
         )
         tag = "guided" if r.n_eff > n_sio2 else "leaky"
         print(f"  {parity:10s}: n_eff={r.n_eff:.6f}  ({tag})")
@@ -643,7 +623,8 @@ r_meep = solve_slab_mode(
     wavelength=lambda_bench,
     band_num=1,
     parity="EVEN_Y",
-    resolution=32,
+    resolution=resolution,
+    pml_thickness=pml_thickness,
 )
 
 if 0 in analytical:
@@ -655,19 +636,17 @@ if 0 in analytical:
 else:
     print("No analytical TE0 mode found.")
 
-# Compare higher-order modes if available
-for band in range(2, 5):
-    try:
-        r_meep_b = solve_slab_mode(
-            stack=soi_stack,
-            wavelength=lambda_bench,
-            band_num=band,
-            parity="NO_PARITY",
-            resolution=32,
-        )
-        print(f"\nMEEP  band {band}: n_eff = {r_meep_b.n_eff:.6f}")
-    except RuntimeError:
-        pass
+# Compare higher-order modes if available (single sim, reused across bands)
+higher_modes = solve_slab_modes(
+    stack=soi_stack,
+    wavelength=lambda_bench,
+    band_nums=[2, 3, 4],
+    parity="NO_PARITY",
+    resolution=resolution,
+    pml_thickness=pml_thickness,
+)
+for band, r_meep_b in sorted(higher_modes.items()):
+    print(f"\nMEEP  band {band}: n_eff = {r_meep_b.n_eff:.6f}")
 
 
 # %% [markdown]
@@ -690,7 +669,8 @@ for t_si in thicknesses:
         wavelength=1.55,
         band_num=1,
         parity="NO_PARITY",
-        resolution=32,
+        resolution=resolution,
+        pml_thickness=pml_thickness,
     )
     n_eff_thick.append(r.n_eff)
     print(f"  t_Si = {t_si:.2f} um -> n_eff = {r.n_eff:.6f}")
