@@ -38,10 +38,10 @@ cov:
   uv run pytest --cov=gsim --cov-report=term-missing:skip-covered --cov-report=xml
 
 docs:
-  uv run mkdocs build
+  uv run zensical build -f docs/zensical.toml
 
 serve:
-  uv run mkdocs serve -a localhost:8080
+  uv run zensical serve -f docs/zensical.toml -a localhost:8080
 
 # Run a notebook normally (interactive plots): just nbrun nbs/foo.ipynb
 nbrun +notebooks: ipykernel
@@ -81,7 +81,7 @@ tree:
   @tree -a -I .git --gitignore
 
 clean: nbclean-all
-  rm -rf site
+  rm -rf site docs/site
   rm -rf .venv
   rm -f uv.lock
   rm -rf docs/nbs/*
