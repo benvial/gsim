@@ -300,51 +300,30 @@ print(f"d_topmetal1 = {d_topmetal1_um:.3f} um, d_vmim = {d_vmim_um:.3f} um")
 # ### Visualize |E| field cross-section
 #
 # We slice through the capacitor center (XZ plane, normal to Y at origin)
-# to visualize the electric field magnitude. This reveals:
-# - Dense uniform |E| in the MIM dielectric gap -> the "ideal" parallel-plate region
-# - Fringing at plate edges -> contributes extra capacitance beyond analytical
-# - Non-zero |E| above TopMetal1 in passivation/air -> parasitic coupling to ground
-#
-# Electrostatic fields are real-valued (DC), so we read the ``E_real`` array
-# from Palace's ParaView output. The plot function computes
-# ``|E| = sqrt(|E_x|^2 + |E_y|^2 + |E_z|^2)`` in the slice plane.
-#
-# .. note::
-#    Requires the simulation to be re-run with ``save_fields=1``
-#    (set above in ``set_electrostatic``). If you ran without it,
-#    re-execute the ``sim.set_electrostatic(save_fields=1)`` cell
-#    and then ``sim.run()`` to regenerate the ParaView output.
+# to visualize the electric field magnitude.
 
 # %%
 from pathlib import Path
 
 from gsim.palace.field_viz import plot_fields_2d
 
-if list(
-    Path(results["terminal-C.csv"]).parent.rglob("paraview/electrostatic/**/*.pvtu")
-):
-    plot_fields_2d(
-        results,
-        field="E_real",
-        normal="y",
-        origin=0.0,
-        grid_resolution=(360, 240),
-        cmap="hot",
-        title="|E| magnitude — XZ cross-section at y=0 (capacitor center)",
-        figsize=(10, 5),
-        streamplot_linewidth=0.6,
-        streamplot_color="white",
-        streamplot_density=1.0,
-        streamplot_minlength=0.4,
-        streamplot_maxlength=3.0,
-        use_targeted_gap_seeds=True,
-        targeted_seed_offset=3.0,
-    )
-else:
-    print(
-        "No ParaView field output found. "
-        "Re-run the simulation with save_fields=1 (set above in set_electrostatic) "
-        "to generate the |E| cross-section plot."
-    )
+plot_fields_2d(
+    results,
+    field="E",
+    normal="y",
+    origin=0,
+    grid_resolution=(300, 300),
+    cmap="hot",
+    title="|E| magnitude — XZ cross-section at y=0 (capacitor center)",
+    figsize=(7, 5),
+    streamplot_linewidth=0.6,
+    streamplot_color="white",
+    streamplot_density=4.0,
+    streamplot_minlength=0.1,
+    streamplot_maxlength=13.0,
+    use_targeted_gap_seeds=True,
+    targeted_seed_offset=0.9,
+)
+
 
 # %%

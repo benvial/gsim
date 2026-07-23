@@ -411,23 +411,23 @@ def extract_streamplot_inputs_2d(
             u_grid = np.where(weak, np.nan, u_grid)
             v_grid = np.where(weak, np.nan, v_grid)
 
+    mag_pre_norm = np.sqrt(u_grid**2 + v_grid**2)
+
     if streamplot_normalize:
-        mag = np.sqrt(u_grid**2 + v_grid**2)
-        u_grid = u_grid / (mag + 1e-14)
-        v_grid = v_grid / (mag + 1e-14)
+        u_grid = u_grid / (mag_pre_norm + 1e-14)
+        v_grid = v_grid / (mag_pre_norm + 1e-14)
 
     if streamplot_seed_from_field:
-        mag = np.sqrt(u_grid**2 + v_grid**2)
-        finite_counts = np.sum(np.isfinite(mag), axis=1)
+        finite_counts = np.sum(np.isfinite(mag_pre_norm), axis=1)
         y_profile = np.divide(
-            np.nansum(mag, axis=1),
+            np.nansum(mag_pre_norm, axis=1),
             finite_counts,
-            out=np.full(mag.shape[0], np.nan, dtype=float),
+            out=np.full(mag_pre_norm.shape[0], np.nan, dtype=float),
             where=finite_counts > 0,
         )
         if np.any(np.isfinite(y_profile)):
             iy = int(np.nanargmax(y_profile))
-            mline = mag[iy, :]
+            mline = mag_pre_norm[iy, :]
             mmax = float(np.nanmax(mline)) if np.any(np.isfinite(mline)) else 0.0
             if np.isfinite(mmax) and mmax > 0:
                 mask = mline >= (streamplot_seed_frac * mmax)
