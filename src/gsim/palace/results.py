@@ -764,6 +764,20 @@ def _parse_sparam_col(col: str) -> tuple[int, int, str] | None:
     return None
 
 
+def _common_parent(paths: list[Path]) -> Path:
+    """Return the deepest common parent directory of *paths*."""
+    if len(paths) == 1:
+        return paths[0].parent
+    chains = [list(p.resolve().parents) for p in paths]
+    common: Path | None = None
+    for anchors in zip(*[reversed(c) for c in chains], strict=False):
+        if len(set(anchors)) == 1:
+            common = anchors[0]
+        else:
+            break
+    return common if common is not None else Path.cwd()
+
+
 def _resolve_source(
     source: str | Path | dict,
     *,
@@ -775,10 +789,9 @@ def _resolve_source(
         if csv_val is not None:
             csv_path = Path(csv_val)
             return csv_path, csv_path.parent
-        for val in source.values():
-            p = Path(val)
-            if p.exists():
-                return None, p.parent
+        existing = [Path(v) for v in source.values() if Path(v).exists()]
+        if existing:
+            return None, _common_parent(existing)
         if require_csv:
             msg = "Results dict has no 'port-S.csv' entry"
             raise FileNotFoundError(msg)
@@ -882,7 +895,8 @@ def load_fields(
 ):
     """Load the ParaView volume or boundary dataset for a Palace simulation.
 
-    Requires the simulation to have been run with ``save_step >= 1``
+    Supports ``driven``, ``boundarymode``, and ``electrostatic`` simulation
+    types. Requires the simulation to have been run with ``save_step >= 1``
     so that field data was written to disk.
 
     Args:
@@ -931,9 +945,9 @@ def _find_paraview_dir(
     Both are searched, with the explicit ``excitation_N`` folder taking priority.
     """
     subdirs = (
-        ["driven_boundary", "boundarymode_boundary"]
+        ["driven_boundary", "boundarymode_boundary", "electrostatic_boundary"]
         if boundary
-        else ["driven", "boundarymode"]
+        else ["driven", "boundarymode", "electrostatic"]
     )
     search_roots = [
         base_dir,
