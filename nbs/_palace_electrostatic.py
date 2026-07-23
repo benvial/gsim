@@ -320,7 +320,9 @@ from pathlib import Path
 
 from gsim.palace.field_viz import plot_fields_2d
 
-if list(Path(results["terminal-C.csv"]).parent.rglob("paraview/electrostatic/*.pvtu")):
+if list(
+    Path(results["terminal-C.csv"]).parent.rglob("paraview/electrostatic/**/*.pvtu")
+):
     plot_fields_2d(
         results,
         field="E_real",
