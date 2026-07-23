@@ -789,6 +789,17 @@ def _resolve_source(
         if csv_val is not None:
             csv_path = Path(csv_val)
             return csv_path, csv_path.parent
+        _OUTPUT_KEYS = ("terminal-C.csv", "domain-E.csv", "terminal-Cm.csv")
+        output_val = next(
+            (
+                Path(source[k])
+                for k in _OUTPUT_KEYS
+                if k in source and Path(source[k]).exists()
+            ),
+            None,
+        )
+        if output_val is not None:
+            return None, output_val.parent
         existing = [Path(v) for v in source.values() if Path(v).exists()]
         if existing:
             return None, _common_parent(existing)
@@ -951,6 +962,7 @@ def _find_paraview_dir(
     )
     search_roots = [
         base_dir,
+        base_dir / "output",
         base_dir / "output" / "palace",
     ]
     exc_dir: Path | None = None
