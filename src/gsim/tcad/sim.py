@@ -243,10 +243,7 @@ class ChargeTransportSim(BaseModel):
             result.mesh_path, Path(output_dir) / "devsim.msh", scale=UM_TO_CM
         )
         # A new mesh invalidates any existing DEVSIM device.
-        self._device = None
-        self._dd_initialized = False
-        self._contact_regions = {}
-        self._current_bias = {}
+        self.reset_device()
         return result
 
     # ------------------------------------------------------------------

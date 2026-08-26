@@ -50,33 +50,26 @@ __all__ = [
 ]
 
 
-def _as_scalar(value: float | list[float] | None, default: float = 0.0) -> float:
-    """Reduce an isotropic-or-tensor material property to one scalar."""
-    if value is None:
-        return default
-    if isinstance(value, list):
-        return float(value[0]) if value else default
-    return float(value)
-
-
 def _complex_permittivity(
     resolved: ResolvedMaterial, *, frequency_hz: float
 ) -> complex:
     """Complex relative permittivity in the exp(+i omega t) convention."""
-    eps_re = _as_scalar(resolved.permittivity, default=1.0)
-    loss_tangent = _as_scalar(resolved.loss_tangent)
-    sigma = _as_scalar(resolved.conductivity)
+    eps_re = resolved.permittivity_scalar
+    if eps_re is None:
+        eps_re = 1.0
+    loss_tangent = resolved.loss_tangent_scalar or 0.0
+    sigma = resolved.conductivity_scalar or 0.0
     omega = 2.0 * np.pi * frequency_hz
     return complex(eps_re * (1.0 - 1j * loss_tangent) - 1j * sigma / (omega * EPS0))
 
 
-def _mesh_2d_groups(mesh: meshio.Mesh) -> list[str]:
-    """Names of the dim-2 physical groups in a meshio mesh."""
-    return [
-        str(name)
+def _group_tags_2d(mesh: meshio.Mesh) -> dict[str, int]:
+    """Map dim-2 physical-group names to their gmsh tags."""
+    return {
+        str(name): int(np.asarray(data)[0])
         for name, data in mesh.field_data.items()
         if int(np.asarray(data)[1]) == 2
-    ]
+    }
 
 
 def region_material_map(stack: LayerStack, regions: list[str]) -> dict[str, str]:
@@ -133,12 +126,13 @@ def epsilon_by_region(
         frequency = C0 / (wavelength_um * 1e-6)
         wavelength = wavelength_um
     else:
-        frequency = float(cast_not_none(frequency_hz))
+        assert frequency_hz is not None  # noqa: S101 - guarded above
+        frequency = float(frequency_hz)
         wavelength = C0 / frequency * 1e6
 
     if not isinstance(mesh, meshio.Mesh):
         mesh = meshio.read(str(mesh))
-    regions = _mesh_2d_groups(mesh)
+    regions = list(_group_tags_2d(mesh))
     if not regions:
         raise ValueError("Mesh has no 2D physical groups.")
 
@@ -166,13 +160,6 @@ def epsilon_by_region(
             )
         result[region] = _complex_permittivity(resolved, frequency_hz=frequency)
     return result
-
-
-def cast_not_none(value: float | None) -> float:
-    """Narrow an optional float that logic already guarantees is set."""
-    if value is None:  # pragma: no cover - guarded by callers
-        raise ValueError("Expected a value.")
-    return value
 
 
 def elementwise_epsilon(
@@ -292,13 +279,10 @@ def solve_modes(
     basis0 = skfem.Basis(mesh, skfem.ElementTriP0())
 
     if isinstance(epsilon, dict):
-        group_tags = {
-            str(name): int(np.asarray(data)[0])
-            for name, data in mio.field_data.items()
-            if int(np.asarray(data)[1]) == 2
-        }
+        group_tags = _group_tags_2d(mio)
         eps = basis0.zeros(dtype=complex)
-        eps_map = cast("dict[str, complex]", epsilon)
+        # cast: ty cannot narrow the dict half of the union on its own.
+        eps_map = cast("dict[str, complex]", epsilon)  # type: ignore[redundant-cast]
         for region, value in eps_map.items():
             if region not in group_tags:
                 raise ValueError(
