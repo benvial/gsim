@@ -1,0 +1,299 @@
+"""femwell adapter on the shared native-2D cross-section mesh.
+
+Loads the exact msh v2.2 mesh the BoundaryMode pipeline generates into
+skfem/femwell, with two epsilon paths:
+
+- **piecewise-constant**: every named 2D physical group gets the complex
+  relative permittivity of its stack material at the target wavelength or
+  frequency (:func:`epsilon_by_region`) — the configuration Palace can
+  also express, used for cross-solver validation.
+- **continuous**: carrier-derived eps(x, y) node values (e.g. from a
+  :class:`gsim.tcad.results.CarrierMap` through
+  :func:`gsim.common.carriers.permittivity_perturbation`) projected onto a
+  piecewise-element basis (:func:`elementwise_epsilon`) — the configuration
+  Palace cannot express.
+
+Both epsilon paths are pure meshio/scipy functions testable without the
+femwell runtime; only :func:`solve_modes` needs femwell/skfem installed
+(``pip install 'gsim[femwell]'``).
+
+The sign convention is ``exp(+i omega t)``: lossy media have
+``Im(eps) < 0``.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import meshio
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+from scipy.constants import epsilon_0 as EPS0  # noqa: N812
+from scipy.constants import speed_of_light as C0  # noqa: N812
+
+from gsim.common.stack.materials import (
+    MaterialProperties,
+    ResolvedMaterial,
+    resolve_material_at_wavelength,
+)
+from gsim.femwell.runtime import require_femwell, require_skfem
+
+if TYPE_CHECKING:
+    from gsim.common.stack.extractor import LayerStack
+
+__all__ = [
+    "elementwise_epsilon",
+    "epsilon_by_region",
+    "region_material_map",
+    "solve_modes",
+]
+
+
+def _as_scalar(value: float | list[float] | None, default: float = 0.0) -> float:
+    """Reduce an isotropic-or-tensor material property to one scalar."""
+    if value is None:
+        return default
+    if isinstance(value, list):
+        return float(value[0]) if value else default
+    return float(value)
+
+
+def _complex_permittivity(
+    resolved: ResolvedMaterial, *, frequency_hz: float
+) -> complex:
+    """Complex relative permittivity in the exp(+i omega t) convention."""
+    eps_re = _as_scalar(resolved.permittivity, default=1.0)
+    loss_tangent = _as_scalar(resolved.loss_tangent)
+    sigma = _as_scalar(resolved.conductivity)
+    omega = 2.0 * np.pi * frequency_hz
+    return complex(eps_re * (1.0 - 1j * loss_tangent) - 1j * sigma / (omega * EPS0))
+
+
+def _mesh_2d_groups(mesh: meshio.Mesh) -> list[str]:
+    """Names of the dim-2 physical groups in a meshio mesh."""
+    return [
+        str(name)
+        for name, data in mesh.field_data.items()
+        if int(np.asarray(data)[1]) == 2
+    ]
+
+
+def region_material_map(stack: LayerStack, regions: list[str]) -> dict[str, str]:
+    """Map mesh region (physical-group) names to stack material names.
+
+    Regions matching a stack layer use that layer's material; other
+    regions (background media like ``sio2`` / ``air``, or generated strip
+    regions whose material shares the region name) map to their own name.
+
+    Args:
+        stack: The layer stack the mesh was generated from.
+        regions: 2D physical-group names on the mesh.
+
+    Returns:
+        ``{region_name: material_name}``.
+    """
+    mapping: dict[str, str] = {}
+    for region in regions:
+        layer = stack.layers.get(region)
+        mapping[region] = layer.material if layer is not None else region
+    return mapping
+
+
+def epsilon_by_region(
+    mesh: meshio.Mesh | str | Path,
+    stack: LayerStack,
+    *,
+    wavelength_um: float | None = None,
+    frequency_hz: float | None = None,
+    overrides: dict[str, MaterialProperties] | None = None,
+) -> dict[str, complex]:
+    """Resolve the complex permittivity of every 2D mesh region.
+
+    Materials come from the stack's materials (the same database the
+    Palace config generator uses), evaluated at the target wavelength or
+    frequency, so both solvers see identical piecewise-constant epsilon.
+
+    Args:
+        mesh: The shared msh v2.2 mesh (path or loaded meshio mesh).
+        stack: Layer stack the mesh was generated from (region-to-material
+            mapping and material property source).
+        wavelength_um: Target vacuum wavelength in um (optical).
+        frequency_hz: Target frequency in Hz (RF). Exactly one of
+            ``wavelength_um`` / ``frequency_hz`` must be given.
+        overrides: Optional material-property overrides by material name.
+
+    Returns:
+        ``{region_name: complex_relative_permittivity}`` for every dim-2
+        physical group (``exp(+i omega t)``: lossy means ``Im < 0``).
+    """
+    if (wavelength_um is None) == (frequency_hz is None):
+        raise ValueError("Give exactly one of wavelength_um or frequency_hz.")
+    if wavelength_um is not None:
+        frequency = C0 / (wavelength_um * 1e-6)
+        wavelength = wavelength_um
+    else:
+        frequency = float(cast_not_none(frequency_hz))
+        wavelength = C0 / frequency * 1e6
+
+    if not isinstance(mesh, meshio.Mesh):
+        mesh = meshio.read(str(mesh))
+    regions = _mesh_2d_groups(mesh)
+    if not regions:
+        raise ValueError("Mesh has no 2D physical groups.")
+
+    materials = region_material_map(stack, regions)
+    merged_overrides: dict[str, MaterialProperties] = {}
+    for name, props in (stack.materials or {}).items():
+        merged_overrides[name] = (
+            props
+            if isinstance(props, MaterialProperties)
+            else MaterialProperties.model_validate(props)
+        )
+    merged_overrides.update(overrides or {})
+
+    result: dict[str, complex] = {}
+    for region in regions:
+        material = materials[region]
+        resolved = resolve_material_at_wavelength(
+            material, wavelength, overrides=merged_overrides
+        )
+        if resolved is None:
+            raise ValueError(
+                f"Region '{region}' maps to material '{material}' which is "
+                "not resolvable from the stack materials or the built-in "
+                "database."
+            )
+        result[region] = _complex_permittivity(resolved, frequency_hz=frequency)
+    return result
+
+
+def cast_not_none(value: float | None) -> float:
+    """Narrow an optional float that logic already guarantees is set."""
+    if value is None:  # pragma: no cover - guarded by callers
+        raise ValueError("Expected a value.")
+    return value
+
+
+def elementwise_epsilon(
+    mesh: meshio.Mesh | str | Path,
+    x_um: ArrayLike,
+    y_um: ArrayLike,
+    eps_values: ArrayLike,
+    *,
+    fill: complex | None = None,
+) -> NDArray[np.complex128]:
+    """Project scattered eps(x, y) samples onto per-element (P0) values.
+
+    Each triangle of the mesh gets the value of the linear interpolant of
+    the samples at its centroid — the continuous-epsilon path Palace
+    cannot express. Centroids outside the convex hull of the samples fall
+    back to nearest-neighbour (or ``fill`` when given).
+
+    Args:
+        mesh: The shared msh v2.2 mesh (path or loaded meshio mesh).
+        x_um: Sample x coordinates in um (e.g. charge-solve nodes).
+        y_um: Sample y coordinates in um.
+        eps_values: Complex permittivity samples at those points.
+        fill: Value for centroids outside the sample hull; defaults to
+            nearest-neighbour extrapolation.
+
+    Returns:
+        Complex epsilon per triangle, in the mesh's triangle order.
+    """
+    from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+
+    if not isinstance(mesh, meshio.Mesh):
+        mesh = meshio.read(str(mesh))
+    triangles = [block.data for block in mesh.cells if block.type == "triangle"]
+    if not triangles:
+        raise ValueError("Mesh has no triangle elements.")
+    tris = np.vstack(triangles)
+    centroids = mesh.points[tris][:, :, :2].mean(axis=1)
+
+    points = np.column_stack(
+        [
+            np.asarray(x_um, dtype=np.float64).ravel(),
+            np.asarray(y_um, dtype=np.float64).ravel(),
+        ]
+    )
+    values = np.asarray(eps_values, dtype=np.complex128).ravel()
+    if points.shape[0] != values.size:
+        raise ValueError("x_um, y_um and eps_values must have the same length.")
+    if points.shape[0] < 3:
+        raise ValueError("At least three sample points are required.")
+
+    linear = LinearNDInterpolator(points, values)
+    result = np.asarray(linear(centroids), dtype=np.complex128)
+    missing = np.isnan(result.real)
+    if np.any(missing):
+        if fill is not None:
+            result[missing] = fill
+        else:
+            nearest = NearestNDInterpolator(points, values)
+            result[missing] = np.asarray(
+                nearest(centroids[missing]), dtype=np.complex128
+            )
+    return result
+
+
+def solve_modes(
+    msh_path: str | Path,
+    *,
+    epsilon: dict[str, complex] | ArrayLike,
+    wavelength_um: float,
+    num_modes: int = 1,
+    order: int = 1,
+    metallic_boundaries: bool = False,
+) -> Any:
+    """Solve waveguide modes with femwell on the shared mesh.
+
+    Requires the femwell runtime (``pip install 'gsim[femwell]'``).
+
+    Args:
+        msh_path: Path of the shared msh v2.2 mesh (um coordinates).
+        epsilon: Either ``{region_name: eps}`` (piecewise-constant, from
+            :func:`epsilon_by_region`) or per-triangle values (continuous,
+            from :func:`elementwise_epsilon`).
+        wavelength_um: Vacuum wavelength in um. For RF, pass the free-space
+            wavelength of the target frequency (``c0 / f`` in um).
+        num_modes: Number of modes to compute.
+        order: Finite element order of the mode solve.
+        metallic_boundaries: Enforce PEC on the outer boundary.
+
+    Returns:
+        The femwell ``Modes`` result (each mode carries ``n_eff``).
+    """
+    require_femwell()
+    skfem = require_skfem()
+    from femwell.maxwell.waveguide import compute_modes
+
+    mesh = skfem.Mesh.load(str(msh_path))
+    basis0 = skfem.Basis(mesh, skfem.ElementTriP0())
+
+    if isinstance(epsilon, dict):
+        eps = basis0.zeros(dtype=complex)
+        available = set(mesh.subdomains or {})
+        for region, value in epsilon.items():
+            if region not in available:
+                raise ValueError(
+                    f"Region '{region}' not found on the mesh. "
+                    f"Available subdomains: {sorted(available)}"
+                )
+            eps[basis0.get_dofs(elements=region)] = value
+    else:
+        eps = np.asarray(epsilon, dtype=np.complex128)
+        if eps.size != basis0.N:
+            raise ValueError(
+                f"Per-element epsilon has {eps.size} values but the mesh "
+                f"has {basis0.N} elements."
+            )
+
+    return compute_modes(
+        basis0,
+        eps,
+        wavelength=wavelength_um,
+        num_modes=num_modes,
+        order=order,
+        metallic_boundaries=metallic_boundaries,
+    )

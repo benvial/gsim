@@ -27,6 +27,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# femwell/skfem mode-solving adapter (gsim.femwell).
+femwell = [
+  "femwell>=0.1.11",
+  "scikit-fem>=8.0.0",
+]
 # DEVSIM charge-transport backend (gsim.tcad).
 tcad = [
   "devsim>=2.6.0",
@@ -154,6 +159,14 @@ module = "tests.*"
 [[tool.mypy.overrides]]
 ignore_missing_imports = true
 module = "meshio"
+
+[[tool.mypy.overrides]]
+ignore_missing_imports = true
+module = "scipy.*"
+
+[[tool.mypy.overrides]]
+ignore_missing_imports = true
+module = "femwell.*"
 
 [[tool.mypy.overrides]]
 ignore_missing_imports = true
