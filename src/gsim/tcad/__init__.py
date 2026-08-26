@@ -38,11 +38,18 @@ from gsim.tcad.mesh import UM_TO_CM, write_scaled_msh
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
 from gsim.tcad.runtime import import_simple_physics, require_devsim
 from gsim.tcad.sim import ChargeTransportSim
+from gsim.tcad.validation import (
+    CapacitanceComparison,
+    analytic_capacitance_f_per_cm,
+    compare_capacitance,
+    estimate_depletion_width_um,
+)
 
 __all__ = [
     "UM_TO_CM",
     "BiasPoint",
     "BiasSweepResult",
+    "CapacitanceComparison",
     "CarrierMap",
     "ChargeTransportSim",
     "DopingProfile",
@@ -50,6 +57,9 @@ __all__ = [
     "ImplantDoping",
     "StepDoping",
     "acceptor_donor_concentrations",
+    "analytic_capacitance_f_per_cm",
+    "compare_capacitance",
+    "estimate_depletion_width_um",
     "import_simple_physics",
     "net_doping_cm3",
     "require_devsim",
