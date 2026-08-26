@@ -106,17 +106,35 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             solver_type=solver_type,
         )
 
-    def set_cross_section(self, plane: str | CrossSectionPlaneConfig) -> None:
+    def set_cross_section(
+        self,
+        plane: str | CrossSectionPlaneConfig,
+        *,
+        window: tuple[float, float] | None = None,
+        window_z: tuple[float, float] | None = None,
+    ) -> None:
         """Set the explicit cross-section plane for 2D mode extraction.
 
         Args:
             plane: Plane spec as ``"x=<value>"`` or ``"y=<value>"``, or
                 a prebuilt CrossSectionPlaneConfig.
+            window: Optional in-plane ``(min, max)`` interval in um clipping
+                the meshed domain (y for an x-plane, x for a y-plane).
+            window_z: Optional vertical ``(min, max)`` interval in um
+                clipping the meshed domain.
         """
         if isinstance(plane, CrossSectionPlaneConfig):
-            self.cross_section = plane
+            config = plane
         else:
-            self.cross_section = CrossSectionPlaneConfig.from_spec(plane)
+            config = CrossSectionPlaneConfig.from_spec(plane)
+        if window is not None or window_z is not None:
+            config = CrossSectionPlaneConfig(
+                axis=config.axis,
+                value=config.value,
+                window=window if window is not None else config.window,
+                window_z=window_z if window_z is not None else config.window_z,
+            )
+        self.cross_section = config
 
     def validate_config(self) -> ValidationResult:
         """Validate boundary mode simulation configuration."""

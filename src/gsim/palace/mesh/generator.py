@@ -319,6 +319,14 @@ def _generate_native_boundarymode_groups(
         hmin, hmax = bounds[0], bounds[3]
     vmin, vmax = bounds[2], bounds[5]
 
+    # An explicit window clips the meshed domain to a sub-region of the
+    # section (in-plane and/or vertical), replacing the bbox-plus-margins
+    # extent; the background box is sized to the window as well.
+    if cross_section.window is not None:
+        hmin, hmax = cross_section.window
+    if cross_section.window_z is not None:
+        vmin, vmax = cross_section.window_z
+
     if hmax <= hmin or vmax <= vmin:
         raise ValueError("Native BoundaryMode 2D domain has invalid bounds.")
 
@@ -326,10 +334,10 @@ def _generate_native_boundarymode_groups(
     layer_inputs: list[tuple[str, int]] = []
 
     for rect in section_rects:
-        h0 = float(rect["h0"])
-        h1 = float(rect["h1"])
-        v0 = float(rect["v0"])
-        v1 = float(rect["v1"])
+        h0 = max(float(rect["h0"]), hmin)
+        h1 = min(float(rect["h1"]), hmax)
+        v0 = max(float(rect["v0"]), vmin)
+        v1 = min(float(rect["v1"]), vmax)
         if h1 <= h0 or v1 <= v0:
             continue
         stag = kernel.addRectangle(h0, v0, 0.0, h1 - h0, v1 - v0)
