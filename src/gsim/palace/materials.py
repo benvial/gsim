@@ -11,9 +11,11 @@ to the Palace config JSON.
 
 from __future__ import annotations
 
+from pydantic import ValidationError
 from scipy.constants import c as C0  # noqa: N812
 
 from gsim.common.stack.materials import (
+    MaterialProperties,
     get_material_properties,
     resolve_material_at_wavelength,
 )
@@ -44,18 +46,25 @@ def resolve_palace_materials_at_frequency(
     resolved: dict[str, dict] = {}
 
     for name, props in materials.items():
-        db_props = get_material_properties(name)
-        if db_props is None:
-            resolved[name] = dict(props)
-            continue
+        # The stack entry is authoritative: it either carries the full
+        # database record (dispersion models included) or the plain scalars
+        # a user supplied through set_material(). Evaluating the entry
+        # itself — the same rule the femwell adapter applies — keeps user
+        # overrides intact; the database is only a fallback for entries
+        # that do not form a valid MaterialProperties record.
+        overrides: dict[str, MaterialProperties] | None
+        try:
+            overrides = {name: MaterialProperties.model_validate(props)}
+        except ValidationError:
+            overrides = None
+            if get_material_properties(name) is None:
+                resolved[name] = dict(props)
+                continue
 
-        evaluated = resolve_material_at_wavelength(name, wavelength_um)
-        if evaluated is not None and evaluated.behavior == "conductive":
-            resolved[name] = dict(props)
-            continue
-
-        evaluated = resolve_material_at_wavelength(name, wavelength_um)
-        if evaluated is None:
+        evaluated = resolve_material_at_wavelength(
+            name, wavelength_um, overrides=overrides
+        )
+        if evaluated is None or evaluated.behavior == "conductive":
             resolved[name] = dict(props)
             continue
 
