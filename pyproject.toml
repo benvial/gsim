@@ -32,6 +32,12 @@ femwell = [
   "femwell>=0.1.11",
   "scikit-fem>=8.0.0",
 ]
+# Full TW-MZM modulator workflow (charge transport + femwell modes).
+modulator = [
+  "devsim>=2.6.0",
+  "femwell>=0.1.11",
+  "scikit-fem>=8.0.0",
+]
 # DEVSIM charge-transport backend (gsim.tcad).
 tcad = [
   "devsim>=2.6.0",

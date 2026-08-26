@@ -33,6 +33,7 @@ EXPECTED_NOTEBOOKS = [
     "nbs/palace_inductor.ipynb",
     "nbs/palace_cpw_via.ipynb",
     "nbs/palace_cpw_fields.ipynb",
+    "nbs/tcad_twmzm.ipynb",
 ]
 
 
