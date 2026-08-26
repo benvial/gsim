@@ -13,6 +13,34 @@ _PLANE_SPEC_RE = re.compile(
 )
 
 
+class ContactSpec(BaseModel):
+    """Named contact between two layers on the native-2D cross-section mesh.
+
+    The shared interface curves between the two layers' meshed regions are
+    tagged as a dim-1 physical group named ``name``, so charge-transport
+    solvers (DEVSIM ``add_gmsh_contact``) can bind boundary conditions to it
+    by name.
+
+    Attributes:
+        name: Physical-group name of the contact (e.g. ``"anode"``).
+        layer_a: First layer of the interface (e.g. the electrode layer).
+        layer_b: Second layer of the interface (e.g. the doped semiconductor).
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    name: str = Field(min_length=1, description="Contact physical-group name")
+    layer_a: str = Field(min_length=1, description="First layer of the interface")
+    layer_b: str = Field(min_length=1, description="Second layer of the interface")
+
+    @model_validator(mode="after")
+    def validate_layers_differ(self) -> Self:
+        """A contact needs two distinct layers."""
+        if self.layer_a == self.layer_b:
+            raise ValueError("layer_a and layer_b must differ")
+        return self
+
+
 class CrossSectionPlaneConfig(BaseModel):
     """Axis-aligned cross-section plane for 2D mode extraction.
 
@@ -75,4 +103,4 @@ class CrossSectionPlaneConfig(BaseModel):
         return f"{self.axis}={self.value}"
 
 
-__all__ = ["CrossSectionPlaneConfig"]
+__all__ = ["ContactSpec", "CrossSectionPlaneConfig"]

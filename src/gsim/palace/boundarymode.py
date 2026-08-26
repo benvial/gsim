@@ -11,6 +11,7 @@ from gsim.common import Geometry, LayerStack
 from gsim.palace.base import PalaceSimMixin
 from gsim.palace.models import (
     BoundaryModeConfig,
+    ContactSpec,
     CPWPortConfig,
     CrossSectionPlaneConfig,
     MaterialConfig,
@@ -44,6 +45,7 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     # Boundary mode config
     boundary_mode: BoundaryModeConfig = Field(default_factory=BoundaryModeConfig)
     cross_section: CrossSectionPlaneConfig | None = None
+    contact_specs: list[ContactSpec] = Field(default_factory=list)
 
     # Unused in boundary mode (kept for mixin compatibility)
     driven: None = None
@@ -135,6 +137,24 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
                 window_z=window_z if window_z is not None else config.window_z,
             )
         self.cross_section = config
+
+    def add_contact(self, *, name: str, layer_a: str, layer_b: str) -> None:
+        """Declare a named contact at the interface between two layers.
+
+        The shared curves between the two layers' meshed 2D regions are
+        tagged as a dim-1 physical group named *name* during ``mesh()``, so
+        charge-transport solvers (DEVSIM ``add_gmsh_contact``) can bind to
+        the contact by name.
+
+        Args:
+            name: Contact / physical-group name (e.g. ``"anode"``).
+            layer_a: First layer of the interface (e.g. the electrode).
+            layer_b: Second layer (e.g. the doped semiconductor region).
+        """
+        self.contact_specs = [
+            *self.contact_specs,
+            ContactSpec(name=name, layer_a=layer_a, layer_b=layer_b),
+        ]
 
     def validate_config(self) -> ValidationResult:
         """Validate boundary mode simulation configuration."""
