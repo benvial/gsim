@@ -57,6 +57,10 @@ from gsim.common.stack.overlays import (
     load_overlay,
     merge_overlay,
 )
+from gsim.common.stack.staircase import (
+    make_staircase_profile,
+    strip_averages_from_nodes,
+)
 from gsim.common.stack.visualization import (
     StackLayer,
     parse_layer_stack,
@@ -198,6 +202,7 @@ __all__ = [
     "make_doped_materials",
     "make_doping_profile",
     "make_pn_junction_profile",
+    "make_staircase_profile",
     "merge_overlay",
     "parse_layer_stack",
     "plot_stack",
@@ -206,4 +211,5 @@ __all__ = [
     "resolve_material_at_wavelength",
     "select_junction_mode",
     "should_enable_dispersion",
+    "strip_averages_from_nodes",
 ]
