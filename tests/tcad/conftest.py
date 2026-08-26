@@ -38,6 +38,8 @@ class FakeDevsim(types.ModuleType):
         }
         self.node_values: dict[tuple[str, str], list[float]] = {}
         self.parameters: dict[str, float] = {}
+        self.circuit: dict[str, float] = {}
+        self.last_ac_frequency = 0.0
         self.charge_per_volt = 2.5e-12
 
     def _record(self, _call_name, **kwargs):
@@ -55,6 +57,15 @@ class FakeDevsim(types.ModuleType):
 
     def add_gmsh_contact(self, **kwargs):
         self._record("add_gmsh_contact", **kwargs)
+
+    def add_gmsh_interface(self, **kwargs):
+        self._record("add_gmsh_interface", **kwargs)
+
+    def interface_model(self, **kwargs):
+        self._record("interface_model", **kwargs)
+
+    def interface_equation(self, **kwargs):
+        self._record("interface_equation", **kwargs)
 
     def finalize_mesh(self, **kwargs):
         self._record("finalize_mesh", **kwargs)
@@ -81,6 +92,28 @@ class FakeDevsim(types.ModuleType):
 
     def solve(self, **kwargs):
         self._record("solve", **kwargs)
+        if kwargs.get("type") == "ac":
+            self.last_ac_frequency = float(kwargs["frequency"])
+
+    # -- circuit -------------------------------------------------------
+    def circuit_element(self, **kwargs):
+        self._record("circuit_element", **kwargs)
+        self.circuit[kwargs["name"]] = float(kwargs.get("value", 0.0))
+
+    def circuit_alter(self, **kwargs):
+        self._record("circuit_alter", **kwargs)
+        if kwargs.get("param") in (None, "value"):
+            self.circuit[kwargs["name"]] = float(kwargs["value"])
+
+    def get_circuit_node_value(self, **kwargs):
+        self._record("get_circuit_node_value", **kwargs)
+        if kwargs.get("solution") == "dcop":
+            return 0.0
+        # Unit-amplitude AC source on a linear capacitor charge_per_volt:
+        # Im(I) = 2 pi f C.
+        import numpy as np
+
+        return 2.0 * np.pi * self.last_ac_frequency * self.charge_per_volt
 
     # -- readback ------------------------------------------------------
     def get_node_model_values(self, **kwargs):
@@ -118,6 +151,13 @@ class FakeSimplePhysics(types.ModuleType):
             raise AttributeError(name)
         if name == "GetContactBiasName":
             return lambda contact: f"{contact}_bias"
+        if name == "CreateContinuousInterfaceModel":
+
+            def _record_model(device, interface, variable):
+                self.calls.append((name, (device, interface, variable)))
+                return f"continuous{variable}"
+
+            return _record_model
 
         def _record(*args):
             self.calls.append((name, args))
@@ -135,6 +175,71 @@ def fake_devsim(monkeypatch):
     monkeypatch.setitem(sys.modules, "devsim.python_packages", packages)
     monkeypatch.setitem(sys.modules, "devsim.python_packages.simple_physics", sp)
     return devsim, sp
+
+
+def build_padded_diode(
+    *,
+    center_y: float = -20.0,
+    half_width: float = 0.2,
+    pad_width: float = 0.2,
+    zmax: float = 0.22,
+):
+    """Four-region PN diode: n_pad | n_rib | p_rib | p_pad along y.
+
+    The ohmic contacts sit on the outer pads, well away from the
+    metallurgical junction, so the junction electrostatics are not
+    distorted by the equilibrium clamp of the contact boundary condition.
+
+    Returns:
+        ``(comp, stack, names)`` with ``names`` mapping roles to region
+        names.
+    """
+    import gdsfactory as gf
+
+    from gsim.common.cross_section import build_doped_cross_section
+    from gsim.common.stack.extractor import Layer
+    from gsim.common.stack.materials import make_doped_materials
+
+    gf.gpdk.PDK.activate()
+    comp = gf.Component()
+    wg = comp << gf.c.rectangle((10.0, 0.4), centered=True, layer=(1, 0))
+    wg.y = center_y
+    slab = comp << gf.c.rectangle((10.0, 100.0), centered=True, layer=(3, 0))
+    slab.y = -5.0
+
+    spans = {
+        "n_pad": (center_y - half_width - pad_width, center_y - half_width),
+        "n_rib": (center_y - half_width, center_y),
+        "p_rib": (center_y, center_y + half_width),
+        "p_pad": (center_y + half_width, center_y + half_width + pad_width),
+    }
+    layer_specs = {}
+    for i, (name, (y0, y1)) in enumerate(spans.items()):
+        gds_layer = (30, i)
+        rect = comp << gf.c.rectangle((10.0, y1 - y0), layer=gds_layer)
+        rect.y = (y0 + y1) / 2
+        layer_specs[name] = Layer(
+            name=name,
+            gds_layer=gds_layer,
+            zmin=0.0,
+            zmax=zmax,
+            thickness=zmax,
+            material=name,
+            layer_type="dielectric",
+            mesh_resolution="fine",
+        )
+    materials = make_doped_materials(
+        [(name, 1.6e3) for name in spans], permittivity=11.9
+    )
+    stack, _section = build_doped_cross_section(
+        comp,
+        axis="x",
+        value=0.0,
+        substrate_thickness=2.0,
+        doping={"layer_specs": layer_specs, "materials": materials},
+        verbose=False,
+    )
+    return comp, stack, list(spans)
 
 
 def build_pn_device():

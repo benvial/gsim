@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -73,20 +73,27 @@ class ChargeTransportSim(BaseModel):
     doping: list[DopingProfile] = Field(default_factory=list)
     #: Voltage step used when ramping the swept contact between biases (V).
     bias_step_v: float = Field(default=0.1, gt=0.0)
-    #: Small-signal voltage difference used for C = |dQ/dV| (V).
-    small_signal_dv: float = Field(default=1e-3, gt=0.0)
+    #: Frequency (Hz) of the small-signal AC solve extracting C(V); low
+    #: enough to be quasi-static.
+    small_signal_freq_hz: float = Field(default=1.0, gt=0.0)
     #: Newton absolute error target passed to ``devsim.solve``.
     absolute_error: float = Field(default=1e10, gt=0.0)
-    #: Newton relative error target passed to ``devsim.solve``.
-    relative_error: float = Field(default=1e-10, gt=0.0)
+    #: Newton relative error target passed to ``devsim.solve``. The 2D
+    #: drift-diffusion Newton typically floors around 1e-8 on coarse
+    #: meshes; tighten per solve when the mesh supports it.
+    relative_error: float = Field(default=1e-6, gt=0.0)
     #: Newton iteration cap passed to ``devsim.solve``.
     max_iterations: int = Field(default=100, gt=0)
+    #: Use DEVSIM's 128-bit extended-precision assembly (recommended).
+    extended_precision: bool = True
 
     # Meshing is delegated to the shared native-2D BoundaryMode pipeline.
     _bsim: Any = PrivateAttr(default=None)
     _devsim_mesh_path: Path | None = PrivateAttr(default=None)
     _device: str | None = PrivateAttr(default=None)
     _contact_regions: dict[str, str] = PrivateAttr(default_factory=dict)
+    _interface_names: list[str] = PrivateAttr(default_factory=list)
+    _interface_regions: dict[str, tuple[str, str]] = PrivateAttr(default_factory=dict)
     _dd_initialized: bool = PrivateAttr(default=False)
     _current_bias: dict[str, float] = PrivateAttr(default_factory=dict)
 
@@ -139,6 +146,25 @@ class ChargeTransportSim(BaseModel):
     def add_contact(self, *, name: str, layer_a: str, layer_b: str) -> None:
         """Declare a named contact at the interface between two layers."""
         self._boundary_sim().add_contact(name=name, layer_a=layer_a, layer_b=layer_b)
+
+    def add_interface(self, *, name: str, layer_a: str, layer_b: str) -> None:
+        """Declare a semiconductor-semiconductor interface between regions.
+
+        Adjacent doped mesh regions (e.g. the P and N halves of a rib) load
+        into DEVSIM as separate regions; without an interface they are
+        electrically disconnected and no junction forms. The shared curves
+        between the two layers are tagged as a dim-1 physical group (the
+        same mechanism as contacts) and bound with
+        ``devsim.add_gmsh_interface`` plus potential/carrier continuity, so
+        the drift-diffusion solution is continuous across the junction.
+
+        Args:
+            name: Interface / physical-group name (e.g. ``"junction"``).
+            layer_a: First doped region layer name.
+            layer_b: Second doped region layer name.
+        """
+        self._boundary_sim().add_contact(name=name, layer_a=layer_a, layer_b=layer_b)
+        self._interface_names = [*self._interface_names, name]
 
     def add_doping(self, profile: DopingProfile) -> None:
         """Add an analytic doping profile (see :mod:`gsim.tcad.doping`)."""
@@ -232,6 +258,7 @@ class ChargeTransportSim(BaseModel):
         self._device = None
         self._dd_initialized = False
         self._contact_regions = {}
+        self._interface_regions = {}
         self._current_bias = {}
 
     def _device_regions(self) -> list[str]:
@@ -241,6 +268,16 @@ class ChargeTransportSim(BaseModel):
             if profile.region not in regions:
                 regions.append(profile.region)
         return regions
+
+    @property
+    def _electrical_contacts(self) -> list[Any]:
+        """Contact specs bound as DEVSIM contacts (interfaces excluded)."""
+        return [s for s in self.contact_specs if s.name not in self._interface_names]
+
+    @property
+    def _interfaces(self) -> list[Any]:
+        """Contact specs declared as region-region interfaces."""
+        return [s for s in self.contact_specs if s.name in self._interface_names]
 
     def _validate_setup(self) -> list[str]:
         """Check mesh/doping/contact consistency; return the device regions."""
@@ -265,7 +302,7 @@ class ChargeTransportSim(BaseModel):
             )
 
         self._contact_regions = {}
-        for spec in self.contact_specs:
+        for spec in self._electrical_contacts:
             if spec.name not in contact_lines:
                 raise ValueError(
                     f"Contact '{spec.name}' has no line group on the mesh. "
@@ -285,6 +322,21 @@ class ChargeTransportSim(BaseModel):
                 "Charge transport requires at least one contact. "
                 "Call add_contact() before mesh()."
             )
+
+        self._interface_regions = {}
+        for spec in self._interfaces:
+            if spec.name not in contact_lines:
+                raise ValueError(
+                    f"Interface '{spec.name}' has no line group on the mesh. "
+                    "Re-run mesh() after add_interface()."
+                )
+            if spec.layer_a not in regions or spec.layer_b not in regions:
+                raise ValueError(
+                    f"Interface '{spec.name}' must join two doped device "
+                    f"regions; got '{spec.layer_a}' and '{spec.layer_b}' "
+                    f"with device regions {regions}."
+                )
+            self._interface_regions[spec.name] = (spec.layer_a, spec.layer_b)
         return regions
 
     def _apply_doping(self, devsim: Any, device: str, region: str) -> None:
@@ -330,6 +382,14 @@ class ChargeTransportSim(BaseModel):
         devsim = require_devsim()
         sp = import_simple_physics()
 
+        if self.extended_precision:
+            # 128-bit float assembly: the 2D drift-diffusion Newton floors
+            # around 1e-5 relative error in double precision on these
+            # meshes; extended precision restores full convergence.
+            devsim.set_parameter(name="extended_solver", value=True)
+            devsim.set_parameter(name="extended_model", value=True)
+            devsim.set_parameter(name="extended_equation", value=True)
+
         devsim.create_gmsh_mesh(
             mesh=_DEVSIM_MESH_NAME, file=str(self._devsim_mesh_path)
         )
@@ -340,13 +400,21 @@ class ChargeTransportSim(BaseModel):
                 region=region,
                 material=self.material,
             )
-        for spec in self.contact_specs:
+        for spec in self._electrical_contacts:
             devsim.add_gmsh_contact(
                 mesh=_DEVSIM_MESH_NAME,
                 gmsh_name=spec.name,
                 region=self._contact_regions[spec.name],
                 material="metal",
                 name=spec.name,
+            )
+        for name, (region_a, region_b) in self._interface_regions.items():
+            devsim.add_gmsh_interface(
+                mesh=_DEVSIM_MESH_NAME,
+                gmsh_name=name,
+                region0=region_a,
+                region1=region_b,
+                name=name,
             )
         devsim.finalize_mesh(mesh=_DEVSIM_MESH_NAME)
         devsim.create_device(mesh=_DEVSIM_MESH_NAME, device=device)
@@ -355,16 +423,24 @@ class ChargeTransportSim(BaseModel):
             self._apply_doping(devsim, device, region)
             sp.SetSiliconParameters(device, region, self.temperature)
             sp.CreateSiliconPotentialOnly(device, region)
-        for spec in self.contact_specs:
-            sp.CreateSiliconPotentialOnlyContact(
-                device, self._contact_regions[spec.name], spec.name
-            )
-            devsim.set_parameter(
-                device=device,
-                name=sp.GetContactBiasName(spec.name),
+        for spec in self._electrical_contacts:
+            # Each contact is driven through a circuit voltage source so the
+            # small-signal AC solve can read the terminal admittance (the
+            # C(V) extraction) and the DC current from the circuit node.
+            devsim.circuit_element(
+                name=self._source_name(spec.name),
+                n1=sp.GetContactBiasName(spec.name),
+                n2=0,
                 value=0.0,
+                acreal=0.0,
+                acimag=0.0,
+            )
+            sp.CreateSiliconPotentialOnlyContact(
+                device, self._contact_regions[spec.name], spec.name, True
             )
             self._current_bias[spec.name] = 0.0
+        for name in self._interface_regions:
+            self._interface_continuity(devsim, sp, device, name, "Potential")
 
         self._device = device
         self._dd_initialized = False
@@ -394,6 +470,36 @@ class ChargeTransportSim(BaseModel):
             ).CreateSolution
         create(device, region, name)
 
+    _CONTINUITY_EQUATIONS: ClassVar[dict[str, str]] = {
+        "Potential": "PotentialEquation",
+        "Electrons": "ElectronContinuityEquation",
+        "Holes": "HoleContinuityEquation",
+    }
+
+    def _interface_continuity(
+        self, devsim: Any, sp: Any, device: str, interface: str, variable: str
+    ) -> None:
+        """Enforce continuity of *variable* across a region-region interface."""
+        equation = self._CONTINUITY_EQUATIONS[variable]
+        create = getattr(sp, "CreateContinuousInterfaceModel", None)
+        if create is not None:
+            model_name = create(device, interface, variable)
+        else:  # pragma: no cover - version-dependent fallback
+            model_name = f"continuous{variable}"
+            devsim.interface_model(
+                device=device,
+                interface=interface,
+                name=model_name,
+                equation=f"{variable}@r0 - {variable}@r1",
+            )
+        devsim.interface_equation(
+            device=device,
+            interface=interface,
+            name=equation,
+            interface_model=model_name,
+            type="continuous",
+        )
+
     def _initialize_drift_diffusion(self) -> None:
         """Initial potential-only solve, then switch on drift-diffusion."""
         if self._dd_initialized:
@@ -422,40 +528,40 @@ class ChargeTransportSim(BaseModel):
                     init_from=intrinsic,
                 )
             sp.CreateSiliconDriftDiffusion(device, region)
-        for spec in self.contact_specs:
+        for spec in self._electrical_contacts:
             sp.CreateSiliconDriftDiffusionAtContact(
-                device, self._contact_regions[spec.name], spec.name
+                device, self._contact_regions[spec.name], spec.name, True
             )
+        for name in self._interface_regions:
+            self._interface_continuity(devsim, sp, device, name, "Electrons")
+            self._interface_continuity(devsim, sp, device, name, "Holes")
         self._solve_dc(devsim)
         self._dd_initialized = True
+
+    @staticmethod
+    def _source_name(contact: str) -> str:
+        """Circuit voltage-source name attached to a contact."""
+        return f"V_{contact}"
 
     def _set_bias(self, contact: str, bias: float) -> None:
         """Ramp the contact bias to the target in ``bias_step_v`` steps."""
         devsim = require_devsim()
-        sp = import_simple_physics()
         start = self._current_bias.get(contact, 0.0)
         delta = bias - start
         n_steps = max(1, math.ceil(abs(delta) / self.bias_step_v))
         for i in range(1, n_steps + 1):
             value = start + delta * i / n_steps
-            devsim.set_parameter(
-                device=self._device,
-                name=sp.GetContactBiasName(contact),
-                value=value,
-            )
+            devsim.circuit_alter(name=self._source_name(contact), value=value)
             self._solve_dc(devsim)
         self._current_bias[contact] = bias
 
     def _contact_current(self, devsim: Any, contact: str) -> float:
-        """Total (electron + hole) terminal current in A per cm of depth."""
-        total = 0.0
-        for equation in ("ElectronContinuityEquation", "HoleContinuityEquation"):
-            total += float(
-                devsim.get_contact_current(
-                    device=self._device, contact=contact, equation=equation
-                )
+        """DC terminal current from the contact's circuit source (A/cm)."""
+        return float(
+            devsim.get_circuit_node_value(
+                node=f"{self._source_name(contact)}.I", solution="dcop"
             )
-        return total
+        )
 
     def _contact_charge(self, devsim: Any, contact: str) -> float:
         """Contact charge from the potential equation in C per cm of depth."""
@@ -501,7 +607,7 @@ class ChargeTransportSim(BaseModel):
 
     def _resolve_sweep_contact(self, contact: str | None) -> str:
         """Default to the first declared contact; reject unknown names."""
-        specs = self.contact_specs
+        specs = self._electrical_contacts
         if not specs:
             raise ValueError("No contacts declared. Call add_contact() first.")
         if contact is None:
@@ -521,7 +627,8 @@ class ChargeTransportSim(BaseModel):
 
         Returns:
             The solved :class:`BiasPoint` including carrier maps, terminal
-            currents, and the small-signal capacitance |dQ/dV|.
+            currents, and the small-signal capacitance ``Im(I)/omega`` from
+            the quasi-static AC solve.
         """
         contact = self._resolve_sweep_contact(contact)
         self._initialize_drift_diffusion()
@@ -531,17 +638,28 @@ class ChargeTransportSim(BaseModel):
         carriers = self._collect_carriers(devsim)
         currents = {
             spec.name: self._contact_current(devsim, spec.name)
-            for spec in self.contact_specs
+            for spec in self._electrical_contacts
         }
         charge = self._contact_charge(devsim, contact)
 
-        # Small-signal charge difference: C = |dQ/dV| at this bias.
-        dv = self.small_signal_dv
-        self._set_bias(contact, bias + dv)
-        charge_ss = self._contact_charge(devsim, contact)
-        capacitance = abs(charge_ss - charge) / dv
-        # Return the device to the requested bias point.
-        self._set_bias(contact, bias)
+        # Small-signal AC solve at a quasi-static frequency: the terminal
+        # admittance of the swept contact's unit-amplitude source gives
+        # C = |Im(I)| / omega (the small-signal charge per volt). Only the
+        # swept source carries AC amplitude; the others stay AC-grounded.
+        for spec in self._electrical_contacts:
+            devsim.circuit_alter(
+                name=self._source_name(spec.name),
+                param="acreal",
+                value=1.0 if spec.name == contact else 0.0,
+            )
+        freq = self.small_signal_freq_hz
+        devsim.solve(type="ac", frequency=freq)
+        current_imag = float(
+            devsim.get_circuit_node_value(
+                node=f"{self._source_name(contact)}.I", solution="ssac_imag"
+            )
+        )
+        capacitance = abs(current_imag) / (2.0 * math.pi * freq)
 
         return BiasPoint(
             bias_v=bias,

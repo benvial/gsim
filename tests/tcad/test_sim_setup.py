@@ -26,6 +26,7 @@ def _make_meshed_sim(tmp_path):
     sim.set_cross_section("x=0")
     sim.add_contact(name="anode", layer_a="p_rib", layer_b="sio2")
     sim.add_contact(name="cathode", layer_a="n_rib", layer_b="sio2")
+    sim.add_interface(name="junction", layer_a="p_rib", layer_b="n_rib")
     sim.add_doping(
         StepDoping(region="p_rib", dopant_type="acceptor", concentration_cm3=1e18)
     )
@@ -105,8 +106,25 @@ class TestDeviceSetup:
             "anode",
             "cathode",
         }
-        assert devsim.parameters["anode_bias"] == 0.0
-        assert devsim.parameters["cathode_bias"] == 0.0
+        # Each electrical contact is driven through a circuit source at 0 V.
+        assert devsim.circuit["V_anode"] == 0.0
+        assert devsim.circuit["V_cathode"] == 0.0
+        sources = {c["name"]: c for c in devsim.called("circuit_element")}
+        assert set(sources) == {"V_anode", "V_cathode"}
+        assert sources["V_cathode"]["n1"] == "cathode_bias"
+
+        # The P/N junction is a region-region interface, not a contact,
+        # with potential continuity from the potential-only stage.
+        [iface] = devsim.called("add_gmsh_interface")
+        assert iface["name"] == "junction"
+        assert {iface["region0"], iface["region1"]} == {"p_rib", "n_rib"}
+        potential_continuity = [
+            c
+            for c in devsim.called("interface_equation")
+            if c["name"] == "PotentialEquation"
+        ]
+        assert len(potential_continuity) == 1
+        assert potential_continuity[0]["type"] == "continuous"
 
     def test_doping_node_models(self, meshed_sim, fake_devsim):
         devsim, _sp = fake_devsim
@@ -181,8 +199,8 @@ class TestSolveWiring:
             devsim.charge_per_volt * 1e2, rel=1e-6
         )
         assert set(point.currents_a_per_cm) == {"anode", "cathode"}
-        # The device is returned to the requested bias after the ss step.
-        assert devsim.parameters["cathode_bias"] == pytest.approx(-1.0)
+        # The swept contact's circuit source carries the requested bias.
+        assert devsim.circuit["V_cathode"] == pytest.approx(-1.0)
 
         # Carrier maps concatenate both regions; coords are back in um.
         n_nodes = len(devsim.node_coords["x"])
@@ -219,3 +237,13 @@ class TestSolveWiring:
             "p_rib",
             "n_rib",
         }
+
+    def test_carrier_continuity_across_interface(self, meshed_sim, fake_devsim):
+        devsim, _sp = fake_devsim
+        meshed_sim.solve(0.0, contact="cathode")
+        equations = {c["name"] for c in devsim.called("interface_equation")}
+        assert {
+            "PotentialEquation",
+            "ElectronContinuityEquation",
+            "HoleContinuityEquation",
+        } <= equations
