@@ -606,6 +606,7 @@ class TestResolvePalaceBinary:
         with pytest.MonkeyPatch().context() as mp:
             mp.delenv("PALACE_BIN", raising=False)
             mp.delenv("PALACE_EXECUTABLE", raising=False)
+            mp.setattr("gsim.palace.runtime.shutil.which", lambda _: None)
             result = resolve_palace_binary()
             assert result is None
 
@@ -695,6 +696,7 @@ class TestResolvePalaceBinary:
             mp.setattr("gsim.palace.runtime._palace_cpu_available", lambda: False)
             mp.setattr("gsim.palace.runtime._palace_toolkit_available", lambda: False)
             mp.setattr("gsim.palace.runtime._cached_binary", lambda: None)
+            mp.setattr("gsim.palace.runtime.shutil.which", lambda _: None)
             mp.setattr("gsim.palace.runtime._is_linux_x86_64", lambda: True)
             mp.setattr("gsim.palace.runtime._auto_download_enabled", lambda: True)
             mp.setattr(
