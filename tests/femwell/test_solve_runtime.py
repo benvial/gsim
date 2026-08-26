@@ -27,14 +27,12 @@ def strip_mesh(tmp_path_factory):
         occ.fragment([(2, clad)], [(2, core)])
         occ.synchronize()
         surfaces = gmsh.model.getEntities(2)
-        core_tags = []
-        clad_tags = []
-        for _dim, tag in surfaces:
-            x, y, _z = gmsh.model.occ.getCenterOfMass(2, tag)
-            if abs(x) < 0.25 and 0.0 < y < 0.22:
-                core_tags.append(tag)
-            else:
-                clad_tags.append(tag)
+        # The core rectangle is by far the smallest fragment.
+        by_area = sorted(
+            (gmsh.model.occ.getMass(2, tag), tag) for _dim, tag in surfaces
+        )
+        core_tags = [by_area[0][1]]
+        clad_tags = [tag for _area, tag in by_area[1:]]
         pg_core = gmsh.model.addPhysicalGroup(2, core_tags)
         gmsh.model.setPhysicalName(2, pg_core, "core")
         pg_clad = gmsh.model.addPhysicalGroup(2, clad_tags)

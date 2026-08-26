@@ -24,7 +24,7 @@ The sign convention is ``exp(+i omega t)``: lossy media have
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import meshio
 import numpy as np
@@ -268,19 +268,45 @@ def solve_modes(
     skfem = require_skfem()
     from femwell.maxwell.waveguide import compute_modes
 
-    mesh = skfem.Mesh.load(str(msh_path))
+    # Build the skfem mesh and the region-to-element mapping directly from
+    # meshio: skfem's own msh subdomain parsing is version-fragile, and the
+    # explicit construction keeps the meshio triangle order == skfem element
+    # order (which the per-element epsilon path relies on).
+    mio = meshio.read(str(msh_path))
+    tri_blocks = [
+        (block.data, np.asarray(phys))
+        for block, phys in zip(
+            mio.cells, mio.cell_data.get("gmsh:physical", []), strict=False
+        )
+        if block.type == "triangle"
+    ]
+    if not tri_blocks:
+        raise ValueError("Mesh has no triangle elements.")
+    tris = np.vstack([data for data, _phys in tri_blocks])
+    phys_tags = np.concatenate([phys for _data, phys in tri_blocks])
+
+    mesh = skfem.MeshTri(
+        np.ascontiguousarray(mio.points[:, :2].T, dtype=np.float64),
+        np.ascontiguousarray(tris.T, dtype=np.int64),
+    )
     basis0 = skfem.Basis(mesh, skfem.ElementTriP0())
 
     if isinstance(epsilon, dict):
+        group_tags = {
+            str(name): int(np.asarray(data)[0])
+            for name, data in mio.field_data.items()
+            if int(np.asarray(data)[1]) == 2
+        }
         eps = basis0.zeros(dtype=complex)
-        available = set(mesh.subdomains or {})
-        for region, value in epsilon.items():
-            if region not in available:
+        eps_map = cast("dict[str, complex]", epsilon)
+        for region, value in eps_map.items():
+            if region not in group_tags:
                 raise ValueError(
                     f"Region '{region}' not found on the mesh. "
-                    f"Available subdomains: {sorted(available)}"
+                    f"Available subdomains: {sorted(group_tags)}"
                 )
-            eps[basis0.get_dofs(elements=region)] = value
+            # ElementTriP0: one dof per element, in element order.
+            eps[phys_tags == group_tags[region]] = value
     else:
         eps = np.asarray(epsilon, dtype=np.complex128)
         if eps.size != basis0.N:
