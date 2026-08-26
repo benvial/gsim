@@ -47,6 +47,7 @@ __all__ = [
     "epsilon_by_region",
     "region_material_map",
     "solve_modes",
+    "z0_power_current",
 ]
 
 
@@ -232,6 +233,7 @@ def solve_modes(
     num_modes: int = 1,
     order: int = 1,
     metallic_boundaries: bool = False,
+    n_guess: float | None = None,
 ) -> Any:
     """Solve waveguide modes with femwell on the shared mesh.
 
@@ -247,6 +249,11 @@ def solve_modes(
         num_modes: Number of modes to compute.
         order: Finite element order of the mode solve.
         metallic_boundaries: Enforce PEC on the outer boundary.
+        n_guess: Effective-index guess centering the eigenvalue search.
+            femwell's default guess tracks the largest permittivity, which
+            for RF materials with big conductive ``|Im(eps)|`` can put the
+            shift far from the physical quasi-TEM mode; pass an explicit
+            guess (e.g. the expected slow-wave index) there.
 
     Returns:
         The femwell ``Modes`` result (each mode carries ``n_eff``).
@@ -272,8 +279,19 @@ def solve_modes(
     tris = np.vstack([data for data, _phys in tri_blocks])
     phys_tags = np.concatenate([phys for _data, phys in tri_blocks])
 
+    # Drop points no triangle references (e.g. nodes only line/contact
+    # groups use): they would become zero rows in the eigenproblem and make
+    # the shift-invert factorization exactly singular.
+    points = mio.points
+    used = np.unique(tris)
+    if used.size != points.shape[0]:
+        remap = np.full(points.shape[0], -1, dtype=np.int64)
+        remap[used] = np.arange(used.size)
+        tris = remap[tris]
+        points = points[used]
+
     mesh = skfem.MeshTri(
-        np.ascontiguousarray(mio.points[:, :2].T, dtype=np.float64),
+        np.ascontiguousarray(points[:, :2].T, dtype=np.float64),
         np.ascontiguousarray(tris.T, dtype=np.int64),
     )
     basis0 = skfem.Basis(mesh, skfem.ElementTriP0())
@@ -306,4 +324,95 @@ def solve_modes(
         num_modes=num_modes,
         order=order,
         metallic_boundaries=metallic_boundaries,
+        n_guess=n_guess,
     )
+
+
+def z0_power_current(
+    mode: Any,
+    *,
+    frequency_hz: float,
+    sigma_s_per_m: ArrayLike | None = None,
+    current_elements: ArrayLike | None = None,
+) -> complex:
+    """Marks-Williams power-current characteristic impedance of an RF mode.
+
+    ``Z_0 = 2 P / |I|^2`` with the complex Poynting flux
+    ``P = (1/2) integral (E_t x H_t*) . z dA`` over the whole cross-section
+    and the longitudinal conduction current ``I = integral sigma E_z dA``
+    over the signal conductor. The ratio is invariant to the mode's field
+    normalization; the mesh coordinates are in um and ``sigma`` in S/m, the
+    unit conversion is internal.
+
+    Args:
+        mode: A femwell ``Mode`` from :func:`solve_modes` (fields solved
+            with the complex permittivity that encodes the conductivity,
+            ``exp(+i omega t)``: ``Im(eps) < 0``).
+        frequency_hz: RF frequency of the solve in Hz.
+        sigma_s_per_m: Conductivity per mesh element in S/m. Defaults to
+            the conduction profile implied by the mode's own epsilon:
+            ``sigma = -Im(eps_r) omega eps_0`` where negative.
+        current_elements: Element indices (or boolean mask) carrying the
+            signal current. Defaults to every element with positive
+            conductivity — valid only when the mesh has a single signal
+            conductor; on a two-conductor line (e.g. CPS electrodes) the
+            signal and return currents nearly cancel in that sum, so pass
+            the elements of one conductor explicitly.
+
+    Returns:
+        Complex characteristic impedance in ohms.
+    """
+    skfem = require_skfem()
+    from skfem.helpers import cross
+
+    omega = 2.0 * np.pi * float(frequency_hz)
+    eps = np.asarray(mode.epsilon_r, dtype=np.complex128)
+    if sigma_s_per_m is None:
+        sigma = np.where(eps.imag < 0.0, -eps.imag, 0.0) * omega * EPS0
+    else:
+        sigma = np.asarray(sigma_s_per_m, dtype=np.float64)
+        if sigma.shape != eps.shape:
+            raise ValueError(
+                f"sigma_s_per_m has shape {sigma.shape} but the mesh has "
+                f"{eps.shape[0]} elements."
+            )
+
+    if current_elements is None:
+        elements = np.flatnonzero(sigma > 0.0)
+    else:
+        elements = np.atleast_1d(np.asarray(current_elements))
+        if elements.dtype == bool:
+            elements = np.flatnonzero(elements)
+    if elements.size == 0:
+        raise ValueError(
+            "No conductive elements to integrate the current over; the mode "
+            "was solved without conductive regions (all Im(eps) >= 0)."
+        )
+
+    basis = mode.basis
+
+    @skfem.Functional(dtype=np.complex128)  # type: ignore[untyped-decorator]
+    def _power_form(w: Any) -> Any:
+        return cross(w["E"][0], np.conj(w["H"][0]))
+
+    power = 0.5 * _power_form.assemble(
+        basis,
+        E=basis.interpolate(mode.E),
+        H=basis.interpolate(mode.H),
+    )
+
+    @skfem.Functional(dtype=np.complex128)  # type: ignore[untyped-decorator]
+    def _current_form(w: Any) -> Any:
+        return w["sigma"] * w["E"][1]
+
+    sub = basis.with_elements(elements)
+    sub_sigma = mode.basis_epsilon_r.with_elements(elements)
+    # Mesh coordinates are um: S/m -> S/um so the um^2 area integral is in A.
+    current = 1e-6 * _current_form.assemble(
+        sub,
+        E=sub.interpolate(mode.E),
+        sigma=sub_sigma.interpolate(np.asarray(sigma, dtype=np.float64)),
+    )
+    if current == 0:
+        raise ValueError("Zero longitudinal current over the selected elements.")
+    return complex(2.0 * power / (abs(current) ** 2))

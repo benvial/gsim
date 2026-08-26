@@ -176,6 +176,10 @@ module = "femwell.*"
 
 [[tool.mypy.overrides]]
 ignore_missing_imports = true
+module = "skfem.*"
+
+[[tool.mypy.overrides]]
+ignore_missing_imports = true
 module = "gmsh"
 
 [[tool.mypy.overrides]]
