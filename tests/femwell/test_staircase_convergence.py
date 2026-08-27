@@ -22,6 +22,7 @@ from gsim.femwell.adapter import solve_modes
 
 pytest.importorskip("femwell")
 pytest.importorskip("skfem")
+pytest.importorskip("gmsh")
 
 WL_UM = 1.55
 N_SI = 3.48

@@ -23,6 +23,7 @@ from gsim.femwell.adapter import solve_modes, z0_power_current
 
 pytest.importorskip("femwell")
 pytest.importorskip("skfem")
+pytest.importorskip("gmsh")
 
 SIGMA_S_PER_M = 2e4  # depleted-junction-scale silicon conductivity
 EPS_SI = 11.9

@@ -58,8 +58,16 @@ def _complex_permittivity(
     eps_re = resolved.permittivity_scalar
     if eps_re is None:
         eps_re = 1.0
-    loss_tangent = resolved.loss_tangent_scalar or 0.0
-    sigma = resolved.conductivity_scalar or 0.0
+    loss_tangent = (
+        resolved.loss_tangent_scalar
+        if resolved.loss_tangent_scalar is not None
+        else 0.0
+    )
+    sigma = (
+        resolved.conductivity_scalar
+        if resolved.conductivity_scalar is not None
+        else 0.0
+    )
     omega = 2.0 * np.pi * frequency_hz
     return complex(eps_re * (1.0 - 1j * loss_tangent) - 1j * sigma / (omega * EPS0))
 

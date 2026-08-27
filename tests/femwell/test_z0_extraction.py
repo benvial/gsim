@@ -20,6 +20,7 @@ from gsim.femwell.adapter import solve_modes, z0_power_current
 
 pytest.importorskip("femwell")
 pytest.importorskip("skfem")
+pytest.importorskip("gmsh")
 
 # Coax geometry (um) and analysis frequency.
 R_INNER = 1.0
@@ -93,7 +94,8 @@ class TestZ0PowerCurrent:
     def test_normalization_invariant(self, coax_mode):
         from dataclasses import replace
 
-        scaled = replace(coax_mode, E=coax_mode.E * 3.7, H=coax_mode.H * 3.7)
+        factor = 3.7 * np.exp(1j * 0.61)
+        scaled = replace(coax_mode, E=coax_mode.E * factor, H=coax_mode.H * factor)
         z0 = z0_power_current(coax_mode, frequency_hz=FREQ_HZ)
         z0_scaled = z0_power_current(scaled, frequency_hz=FREQ_HZ)
         assert z0_scaled == pytest.approx(z0, rel=1e-12)

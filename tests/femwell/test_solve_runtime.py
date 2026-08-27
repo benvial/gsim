@@ -10,6 +10,7 @@ from gsim.femwell.adapter import solve_modes
 
 pytest.importorskip("femwell")
 pytest.importorskip("skfem")
+pytest.importorskip("gmsh")
 
 
 @pytest.fixture(scope="module")
