@@ -108,6 +108,20 @@ class Stage(BaseModel):
         if name in type(self).model_fields:
             self.invalidate()
 
+    def _require_study(self) -> Any:
+        """The Study this Stage belongs to.
+
+        Raises:
+            RuntimeError: When the Stage was built outside a Study, so
+                nothing can be derived from a device description.
+        """
+        if self._study is None:
+            raise RuntimeError(
+                f"The {self.stage_name} stage is not attached to a Study; "
+                f"build it with gsim.modulator.Study(...)."
+            )
+        return self._study
+
     # ------------------------------------------------------------------
     # Results
     # ------------------------------------------------------------------

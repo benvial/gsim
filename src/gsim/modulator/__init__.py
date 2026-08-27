@@ -1,11 +1,11 @@
 """gsim.modulator — the electro-optic modulator workflow, end to end.
 
 One device description drives every Stage of a traveling-wave modulator
-Study: charge transport through the Phase shifter, and (as they land) the
-carrier coupling, the optical and RF Modes, and the line figures of merit.
-Each Stage is configured through its own callable section, derives its own
-Cross-section Window, and caches its result until something upstream of it
-changes.
+Study: charge transport through the Phase shifter, the carrier coupling
+those Bias points imply, and (as they land) the optical and RF Modes and
+the line figures of merit. Each Stage is configured through its own
+callable section, derives its own Cross-section Window where it meshes at
+all, and caches its result until something upstream of it changes.
 
 Backends are optional installs: importing this package never requires
 them. The full workflow installs with ``pip install 'gsim[modulator]'``.
@@ -24,8 +24,15 @@ Example::
     )
     study.charge(biases=[0.0, -1.0, -2.0])
     sweep = study.charge.run()
+    response = study.carriers.run()
 """
 
+from gsim.modulator.carriers import (
+    CarrierResponse,
+    CarrierResponseSweep,
+    CarriersStage,
+    MaterialResponse,
+)
 from gsim.modulator.charge import ChargeStage
 from gsim.modulator.device import Device
 from gsim.modulator.layout import (
@@ -39,11 +46,15 @@ from gsim.modulator.stage import Stage, StageNotRunError
 from gsim.modulator.study import Study
 
 __all__ = [
+    "CarrierResponse",
+    "CarrierResponseSweep",
+    "CarriersStage",
     "ChargeStage",
     "Contact",
     "Device",
     "DeviceLayout",
     "Interface",
+    "MaterialResponse",
     "Span",
     "Stage",
     "StageNotRunError",

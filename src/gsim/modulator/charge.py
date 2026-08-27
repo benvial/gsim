@@ -135,15 +135,6 @@ class ChargeStage(Stage):
             return self.contact
         return str(self._require_study().layout.contact_on("n").name)
 
-    def _require_study(self) -> Any:
-        """The Study this Stage belongs to."""
-        if self._study is None:
-            raise RuntimeError(
-                "The charge stage is not attached to a Study; build it with "
-                "gsim.modulator.Study(...)."
-            )
-        return self._study
-
     def _solve(self) -> BiasSweepResult:
         """Mesh the charge Window and sweep the bias."""
         require_devsim()

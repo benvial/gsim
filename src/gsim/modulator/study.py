@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from gsim.modulator.carriers import CarriersStage
 from gsim.modulator.charge import ChargeStage
 from gsim.modulator.device import Device
 from gsim.modulator.layout import DeviceLayout, derive_layout
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 __all__ = ["Study"]
 
 #: Stage order; a Stage's result is cleared by any change upstream of it.
-STAGE_ORDER: tuple[str, ...] = ("charge",)
+STAGE_ORDER: tuple[str, ...] = ("charge", "carriers")
 
 
 def _parse_plane(plane: str) -> tuple[Literal["x", "y", "z"], float]:
@@ -58,6 +59,7 @@ class Study:
         plane: Cross-section plane spec (e.g. ``"x=0"``).
         verbose: Print one line per Stage on entry and exit.
         charge: The charge Stage section.
+        carriers: The carrier-coupling Stage section.
     """
 
     def __init__(
@@ -92,6 +94,7 @@ class Study:
         self._layout: DeviceLayout | None = None
 
         self.charge = ChargeStage()
+        self.carriers = CarriersStage()
         self._wire_stages()
 
     # ------------------------------------------------------------------
