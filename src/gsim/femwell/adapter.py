@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from gsim.common.stack.extractor import LayerStack
 
 __all__ = [
+    "boundary_field_ratio",
     "elementwise_epsilon",
     "epsilon_by_region",
     "region_material_map",
@@ -357,6 +358,58 @@ def solve_modes(
         metallic_boundaries=metallic_boundaries,
         n_guess=n_guess,
     )
+
+
+def boundary_field_ratio(mode: Any) -> float:
+    """How much of a solved Mode's field is left at the Window boundary.
+
+    A mode solve is only as trustworthy as the box it was solved in: a
+    domain too small for the Mode truncates the evanescent tail and
+    returns a confident effective index for a field that was never
+    allowed to decay. The ratio is the peak electric-field magnitude over
+    the elements touching the outer boundary of the meshed domain,
+    divided by the peak over the whole cross-section — a well-contained
+    Mode gives a number orders of magnitude below one.
+
+    Only the outer boundary counts. Cut-outs inside the domain (a metal
+    electrode is meshed as a void) are boundaries too, and the field
+    peaks at their corners, but they are the structure rather than the
+    edge of the Window.
+
+    Args:
+        mode: A femwell ``Mode`` from :func:`solve_modes`.
+
+    Returns:
+        Peak boundary field over peak field, in ``[0, 1]``.
+
+    Raises:
+        ValueError: When the Mode carries no field, or when no facet of
+            the mesh lies on the domain's bounding box.
+    """
+    require_skfem()
+    mesh = mode.basis.mesh
+    facets = mesh.boundary_facets()
+    midpoints = mesh.p[:, mesh.facets[:, facets]].mean(axis=1)
+    lows = mesh.p.min(axis=1)
+    highs = mesh.p.max(axis=1)
+    tol = 1e-6 * float(np.max(highs - lows))
+    on_window = np.zeros(facets.size, dtype=bool)
+    for axis in range(mesh.p.shape[0]):
+        on_window |= np.abs(midpoints[axis] - lows[axis]) <= tol
+        on_window |= np.abs(midpoints[axis] - highs[axis]) <= tol
+    if not on_window.any():
+        raise ValueError(
+            "No mesh facet lies on the domain's bounding box, so its outer "
+            "boundary could not be identified."
+        )
+
+    (e_x, e_y), e_z = mode.basis.interpolate(mode.E)
+    magnitude = np.abs(e_x) ** 2 + np.abs(e_y) ** 2 + np.abs(e_z) ** 2
+    peak = float(magnitude.max())
+    if peak <= 0.0:
+        raise ValueError("The mode carries no field; nothing to compare.")
+    elements = np.unique(mesh.f2t[0, facets[on_window]])
+    return float(np.sqrt(float(magnitude[elements].max()) / peak))
 
 
 def z0_power_current(

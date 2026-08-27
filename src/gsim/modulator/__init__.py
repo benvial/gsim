@@ -25,6 +25,8 @@ Example::
     study.charge(biases=[0.0, -1.0, -2.0])
     sweep = study.charge.run()
     response = study.carriers.run()
+    study.optical(wavelength_um=1.55)
+    modes = study.optical.run()
 """
 
 from gsim.modulator.carriers import (
@@ -42,6 +44,7 @@ from gsim.modulator.layout import (
     Span,
     derive_layout,
 )
+from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
 from gsim.modulator.stage import Stage, StageNotRunError
 from gsim.modulator.study import Study
 
@@ -55,6 +58,9 @@ __all__ = [
     "DeviceLayout",
     "Interface",
     "MaterialResponse",
+    "OpticalMode",
+    "OpticalStage",
+    "OpticalSweep",
     "Span",
     "Stage",
     "StageNotRunError",

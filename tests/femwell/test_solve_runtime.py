@@ -13,17 +13,17 @@ pytest.importorskip("skfem")
 pytest.importorskip("gmsh")
 
 
-@pytest.fixture(scope="module")
-def strip_mesh(tmp_path_factory):
-    """Structured triangle mesh of a strip waveguide cross-section (um)."""
+def build_strip_mesh(path, *, clad_width=3.0, clad_height=2.22):
+    """Triangle mesh of a strip waveguide in a clad box of a given size (um)."""
     import gmsh
 
-    path = tmp_path_factory.mktemp("femwell-runtime") / "strip.msh"
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         occ = gmsh.model.occ
-        clad = occ.addRectangle(-1.5, -1.0, 0.0, 3.0, 2.22)
+        clad = occ.addRectangle(
+            -clad_width / 2, -(clad_height - 0.22) / 2, 0.0, clad_width, clad_height
+        )
         core = occ.addRectangle(-0.25, 0.0, 0.0, 0.5, 0.22)
         occ.fragment([(2, clad)], [(2, core)])
         occ.synchronize()
@@ -45,6 +45,12 @@ def strip_mesh(tmp_path_factory):
     finally:
         gmsh.finalize()
     return path
+
+
+@pytest.fixture(scope="module")
+def strip_mesh(tmp_path_factory):
+    """Structured triangle mesh of a strip waveguide cross-section (um)."""
+    return build_strip_mesh(tmp_path_factory.mktemp("femwell-runtime") / "strip.msh")
 
 
 class TestPiecewiseConstantSolve:
@@ -104,3 +110,30 @@ class TestContinuousSolve:
         assert np.real(modes_cont[0].n_eff) == pytest.approx(
             np.real(modes_pc[0].n_eff), rel=5e-3
         )
+
+
+class TestBoundaryFieldRatio:
+    def test_a_roomy_box_contains_the_mode(self, strip_mesh):
+        from gsim.femwell.adapter import boundary_field_ratio
+
+        modes = solve_modes(
+            strip_mesh,
+            epsilon={"core": 3.48**2 + 0j, "clad": 1.444**2 + 0j},
+            wavelength_um=1.55,
+        )
+
+        assert boundary_field_ratio(modes[0]) < 1e-2
+
+    def test_a_box_barely_wider_than_the_core_does_not(self, tmp_path):
+        from gsim.femwell.adapter import boundary_field_ratio
+
+        clipped = build_strip_mesh(
+            tmp_path / "narrow.msh", clad_width=0.7, clad_height=0.4
+        )
+        modes = solve_modes(
+            clipped,
+            epsilon={"core": 3.48**2 + 0j, "clad": 1.444**2 + 0j},
+            wavelength_um=1.55,
+        )
+
+        assert boundary_field_ratio(modes[0]) > 1e-2

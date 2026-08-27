@@ -22,6 +22,7 @@ from gsim.modulator.carriers import CarriersStage
 from gsim.modulator.charge import ChargeStage
 from gsim.modulator.device import Device
 from gsim.modulator.layout import DeviceLayout, derive_layout
+from gsim.modulator.optical import OpticalStage
 
 if TYPE_CHECKING:
     import gdsfactory as gf
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
 __all__ = ["Study"]
 
 #: Stage order; a Stage's result is cleared by any change upstream of it.
-STAGE_ORDER: tuple[str, ...] = ("charge", "carriers")
+STAGE_ORDER: tuple[str, ...] = ("charge", "carriers", "optical")
 
 
 def _parse_plane(plane: str) -> tuple[Literal["x", "y", "z"], float]:
@@ -60,6 +61,7 @@ class Study:
         verbose: Print one line per Stage on entry and exit.
         charge: The charge Stage section.
         carriers: The carrier-coupling Stage section.
+        optical: The optical-Mode Stage section.
     """
 
     def __init__(
@@ -95,6 +97,7 @@ class Study:
 
         self.charge = ChargeStage()
         self.carriers = CarriersStage()
+        self.optical = OpticalStage()
         self._wire_stages()
 
     # ------------------------------------------------------------------

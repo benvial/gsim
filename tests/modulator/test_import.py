@@ -27,3 +27,4 @@ def test_imports_without_devsim_or_femwell(monkeypatch):
     assert modulator.Device is not None
     assert modulator.ChargeStage is not None
     assert modulator.CarriersStage is not None
+    assert modulator.OpticalStage is not None

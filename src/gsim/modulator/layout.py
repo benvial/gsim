@@ -81,6 +81,7 @@ class DeviceLayout:
 
     Attributes:
         region_spans: Extent of every Region on the Cross-section.
+        doped_regions: The doped Region names, p side first.
         contacts: The derived Contacts.
         interfaces: The derived Interfaces, the Junction among them.
         junction: The Interface at the metallurgical PN boundary.
@@ -88,10 +89,59 @@ class DeviceLayout:
     """
 
     region_spans: dict[str, Span]
+    doped_regions: tuple[str, ...]
     contacts: tuple[Contact, ...]
     interfaces: tuple[Interface, ...]
     junction: Interface
     window: tuple[float, float]
+
+    @property
+    def junction_position(self) -> float:
+        """Where the metallurgical PN boundary sits on the Cross-section (um).
+
+        The two Regions the Junction separates touch, so the overlap of
+        their in-plane spans is the boundary itself.
+        """
+        left, right = (self.region_spans[name] for name in self.junction.regions)
+        return 0.5 * (max(left.h[0], right.h[0]) + min(left.h[1], right.h[1]))
+
+    @property
+    def guide_span_z(self) -> tuple[float, float]:
+        """Vertical extent of the doped Regions a Mode is guided in (um)."""
+        spans = [self.region_spans[name] for name in self.doped_regions]
+        return (min(s.z[0] for s in spans), max(s.z[1] for s in spans))
+
+    def window_around_junction(self, *, margin_um: float) -> tuple[float, float]:
+        """A Window centred on the Junction, sized for a Mode.
+
+        The Window a mode solve needs is a box around the rib, not the
+        doped slab the charge solve spans (ADR 0002), so it is measured
+        from the Junction outwards rather than from the Contacts inwards.
+
+        Args:
+            margin_um: Half-width of the Window either side of the
+                Junction (um).
+
+        Returns:
+            ``(min, max)`` along the junction axis.
+        """
+        centre = self.junction_position
+        return (centre - margin_um, centre + margin_um)
+
+    def window_z_around_guide(
+        self, *, above_um: float, below_um: float
+    ) -> tuple[float, float]:
+        """A vertical Window clearing the guiding layer by a margin.
+
+        Args:
+            above_um: Margin above the doped Regions (um).
+            below_um: Margin below them (um).
+
+        Returns:
+            ``(min, max)`` vertical interval.
+        """
+        low, high = self.guide_span_z
+        return (low - below_um, high + above_um)
 
     def contact_on(self, side: Literal["p", "n"]) -> Contact:
         """The Contact on one side of the Junction.
@@ -326,6 +376,7 @@ def derive_layout(
 
     return DeviceLayout(
         region_spans=spans,
+        doped_regions=tuple(device.doped_regions),
         contacts=contacts,
         interfaces=interfaces,
         junction=junction,
