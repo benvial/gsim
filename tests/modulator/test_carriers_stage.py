@@ -248,14 +248,25 @@ class TestInvalidation:
         study.carriers.run()
         assert solves == [1]
 
-    def test_every_stage_is_wired_downstream_of_the_ones_before_it(self, study):
-        """The rule that will clear both EM Stages once they exist."""
-        order = list(study.stages)
-        assert order.index("charge") < order.index("carriers")
+    def test_every_stage_is_wired_downstream_of_what_it_reads(self, study):
+        """A Stage is cleared by its own upstream, and by nothing else."""
+        cleared_by = {
+            name: {
+                other
+                for other in study.stages
+                if study.stages[name] in study.stages[other]._downstream
+            }
+            for name in study.stages
+        }
 
-        for index, name in enumerate(order):
-            later = [study.stages[other] for other in order[index + 1 :]]
-            assert study.stages[name]._downstream == later
+        assert cleared_by == {
+            "charge": set(),
+            "carriers": {"charge"},
+            # Both EM stages read the carriers stage, and neither reads
+            # the other, so re-configuring one leaves the other alone.
+            "optical": {"charge", "carriers"},
+            "rf": {"charge", "carriers"},
+        }
 
     def test_the_charge_stage_carries_carriers_as_downstream(self, study):
         assert study.carriers in study.charge._downstream

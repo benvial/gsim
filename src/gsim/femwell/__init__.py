@@ -15,6 +15,7 @@ from gsim.femwell.adapter import (
     boundary_field_ratio,
     elementwise_epsilon,
     epsilon_by_region,
+    region_elements,
     region_material_map,
     solve_modes,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "boundary_field_ratio",
     "elementwise_epsilon",
     "epsilon_by_region",
+    "region_elements",
     "region_material_map",
     "require_femwell",
     "require_skfem",

@@ -106,6 +106,20 @@ class DeviceLayout:
         return 0.5 * (max(left.h[0], right.h[0]) + min(left.h[1], right.h[1]))
 
     @property
+    def junction_span(self) -> Span:
+        """Extent of the two Regions the metallurgical Junction separates.
+
+        The rib the Junction sits in, in other words: the band a
+        Staircase tiles with Strips, measured from the device description
+        rather than declared alongside it.
+        """
+        left, right = (self.region_spans[name] for name in self.junction.regions)
+        return Span(
+            h=(min(left.h[0], right.h[0]), max(left.h[1], right.h[1])),
+            z=(min(left.z[0], right.z[0]), max(left.z[1], right.z[1])),
+        )
+
+    @property
     def guide_span_z(self) -> tuple[float, float]:
         """Vertical extent of the doped Regions a Mode is guided in (um)."""
         spans = [self.region_spans[name] for name in self.doped_regions]
@@ -142,6 +156,23 @@ class DeviceLayout:
         """
         low, high = self.guide_span_z
         return (low - below_um, high + above_um)
+
+    def is_below_junction(self, region: str) -> bool:
+        """Whether a Region sits on the low side of the Junction.
+
+        Which side of the metallurgical boundary a Region is on, read off
+        the Cross-section: the answer a Stage needs to tell one flanking
+        electrode from the other.
+
+        Args:
+            region: Region name.
+
+        Returns:
+            True when the Region's centre is below the Junction along the
+            junction axis.
+        """
+        span = self.region_spans[region].h
+        return 0.5 * (span[0] + span[1]) < self.junction_position
 
     def contact_on(self, side: Literal["p", "n"]) -> Contact:
         """The Contact on one side of the Junction.

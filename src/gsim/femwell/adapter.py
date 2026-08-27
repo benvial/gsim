@@ -46,6 +46,7 @@ __all__ = [
     "boundary_field_ratio",
     "elementwise_epsilon",
     "epsilon_by_region",
+    "region_elements",
     "region_material_map",
     "solve_modes",
     "z0_power_current",
@@ -101,6 +102,47 @@ def region_material_map(stack: LayerStack, regions: list[str]) -> dict[str, str]
         layer = stack.layers.get(region)
         mapping[region] = layer.material if layer is not None else region
     return mapping
+
+
+def region_elements(mesh: meshio.Mesh | str | Path, region: str) -> NDArray[np.int64]:
+    """Indices of the triangles belonging to one 2D region.
+
+    The indices are into the mesh's triangle order, which is the element
+    order :func:`solve_modes` builds its basis in — so they address the
+    same elements a solved Mode's per-element arrays do. That is what
+    :func:`z0_power_current` needs to integrate the current over one
+    conductor of a multi-conductor line.
+
+    Args:
+        mesh: The shared msh v2.2 mesh (path or loaded meshio mesh).
+        region: Name of the dim-2 physical group.
+
+    Returns:
+        The element indices, ascending.
+
+    Raises:
+        ValueError: When the mesh has no triangles, or no 2D group of
+            that name.
+    """
+    if not isinstance(mesh, meshio.Mesh):
+        mesh = meshio.read(str(mesh))
+    group_tags = _group_tags_2d(mesh)
+    if region not in group_tags:
+        raise ValueError(
+            f"Region '{region}' not found on the mesh. "
+            f"Available subdomains: {sorted(group_tags)}"
+        )
+    blocks = [
+        np.asarray(phys)
+        for block, phys in zip(
+            mesh.cells, mesh.cell_data.get("gmsh:physical", []), strict=False
+        )
+        if block.type == "triangle"
+    ]
+    if not blocks:
+        raise ValueError("Mesh has no triangle elements.")
+    tags = np.concatenate(blocks)
+    return np.asarray(np.flatnonzero(tags == group_tags[region]), dtype=np.int64)
 
 
 def epsilon_by_region(

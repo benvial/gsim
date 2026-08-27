@@ -2,8 +2,8 @@
 
 One device description drives every Stage of a traveling-wave modulator
 Study: charge transport through the Phase shifter, the carrier coupling
-those Bias points imply, and (as they land) the optical and RF Modes and
-the line figures of merit. Each Stage is configured through its own
+those Bias points imply, the optical and RF Modes, and (as they land) the
+line figures of merit. Each Stage is configured through its own
 callable section, derives its own Cross-section Window where it meshes at
 all, and caches its result until something upstream of it changes.
 
@@ -27,6 +27,8 @@ Example::
     response = study.carriers.run()
     study.optical(wavelength_um=1.55)
     modes = study.optical.run()
+    study.rf(frequencies_hz=[10e9, 40e9], n_strips=5)
+    line = study.rf.run()
 """
 
 from gsim.modulator.carriers import (
@@ -45,6 +47,7 @@ from gsim.modulator.layout import (
     derive_layout,
 )
 from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
+from gsim.modulator.rf import RFStage
 from gsim.modulator.stage import Stage, StageNotRunError
 from gsim.modulator.study import Study
 
@@ -61,6 +64,7 @@ __all__ = [
     "OpticalMode",
     "OpticalStage",
     "OpticalSweep",
+    "RFStage",
     "Span",
     "Stage",
     "StageNotRunError",

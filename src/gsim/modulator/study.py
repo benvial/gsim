@@ -23,6 +23,7 @@ from gsim.modulator.charge import ChargeStage
 from gsim.modulator.device import Device
 from gsim.modulator.layout import DeviceLayout, derive_layout
 from gsim.modulator.optical import OpticalStage
+from gsim.modulator.rf import RFStage
 
 if TYPE_CHECKING:
     import gdsfactory as gf
@@ -32,8 +33,43 @@ if TYPE_CHECKING:
 
 __all__ = ["Study"]
 
-#: Stage order; a Stage's result is cleared by any change upstream of it.
-STAGE_ORDER: tuple[str, ...] = ("charge", "carriers", "optical")
+#: Each Stage and the Stages whose results it consumes. A Stage's result
+#: is cleared by any change upstream of it, and only by those: the two EM
+#: Stages both read the carriers Stage, and neither reads the other.
+STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "charge": (),
+    "carriers": ("charge",),
+    "optical": ("carriers",),
+    "rf": ("carriers",),
+}
+
+#: Stage order, upstream first — the order a Study reports its Stages in.
+STAGE_ORDER: tuple[str, ...] = tuple(STAGE_DEPENDENCIES)
+
+
+def _dependents_of(name: str) -> list[str]:
+    """Every Stage that reads *name*'s result, directly or through another.
+
+    Args:
+        name: Stage name.
+
+    Returns:
+        The dependent Stage names, in Stage order.
+    """
+    dependents = {
+        stage for stage, upstream in STAGE_DEPENDENCIES.items() if name in upstream
+    }
+    # Grow to a fixed point rather than in one pass, so the answer does
+    # not depend on the order the dependencies happen to be declared in.
+    while True:
+        grown = dependents | {
+            stage
+            for stage, upstream in STAGE_DEPENDENCIES.items()
+            if dependents & set(upstream)
+        }
+        if grown == dependents:
+            return [stage for stage in STAGE_ORDER if stage in dependents]
+        dependents = grown
 
 
 def _parse_plane(plane: str) -> tuple[Literal["x", "y", "z"], float]:
@@ -62,6 +98,7 @@ class Study:
         charge: The charge Stage section.
         carriers: The carrier-coupling Stage section.
         optical: The optical-Mode Stage section.
+        rf: The RF line-parameter Stage section.
     """
 
     def __init__(
@@ -98,6 +135,7 @@ class Study:
         self.charge = ChargeStage()
         self.carriers = CarriersStage()
         self.optical = OpticalStage()
+        self.rf = RFStage()
         self._wire_stages()
 
     # ------------------------------------------------------------------
@@ -110,13 +148,12 @@ class Study:
         return {name: getattr(self, name) for name in STAGE_ORDER}
 
     def _wire_stages(self) -> None:
-        """Attach each Stage to this Study and to the Stages after it."""
+        """Attach each Stage to this Study and to the Stages it feeds."""
         stages = self.stages
-        ordered = list(stages.values())
-        for index, stage in enumerate(ordered):
+        for name, stage in stages.items():
             stage.wire(
                 study=self,
-                downstream=ordered[index + 1 :],
+                downstream=[stages[other] for other in _dependents_of(name)],
                 is_verbose=lambda: self.verbose,
             )
 

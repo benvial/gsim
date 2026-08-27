@@ -45,6 +45,20 @@ class TestInterfaces:
         assert len(names) == len(set(names))
 
 
+class TestJunctionSpan:
+    def test_the_span_covers_both_regions_the_junction_separates(self, study):
+        span = study.layout.junction_span
+
+        assert span.h == pytest.approx((CENTER_Y - HALF_WIDTH, CENTER_Y + HALF_WIDTH))
+        assert span.z == pytest.approx((0.0, RIB_HEIGHT))
+
+    def test_the_span_is_narrower_than_the_charge_window(self, study):
+        span = study.layout.junction_span
+
+        assert span.h[0] > study.layout.window[0]
+        assert span.h[1] < study.layout.window[1]
+
+
 class TestChargeWindow:
     def test_window_spans_the_doped_slab(self, study):
         low, high = study.layout.window

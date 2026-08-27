@@ -11,6 +11,7 @@ from gsim.common.stack.materials import MaterialProperties
 from gsim.femwell.adapter import (
     elementwise_epsilon,
     epsilon_by_region,
+    region_elements,
     region_material_map,
 )
 
@@ -151,3 +152,17 @@ class TestOverrides:
             overrides={"si": MaterialProperties(permittivity=9.0)},
         )
         assert eps["core"].real == pytest.approx(9.0)
+
+
+class TestRegionElements:
+    def test_the_elements_of_a_region_come_back_in_mesh_order(self, tmp_path):
+        path = _two_region_mesh(tmp_path)
+
+        assert region_elements(path, "core").tolist() == [0]
+        assert region_elements(path, "clad").tolist() == [1]
+
+    def test_a_region_that_is_not_on_the_mesh_is_reported(self, tmp_path):
+        path = _two_region_mesh(tmp_path)
+
+        with pytest.raises(ValueError, match="electrode_high"):
+            region_elements(path, "electrode_high")
