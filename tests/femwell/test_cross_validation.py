@@ -83,11 +83,9 @@ def _solve_both(sim):
     text = results if hasattr(results, "modes") else load_text_results(results)
     n_eff_palace = text.modes[1]["n_eff"]
 
-    eps = epsilon_by_region(
-        sim._last_mesh_result.mesh_path, sim.stack, wavelength_um=WL_UM
-    )
+    eps = epsilon_by_region(sim.mesh_path, sim.stack, wavelength_um=WL_UM)
     modes = solve_modes(
-        sim._last_mesh_result.mesh_path,
+        sim.mesh_path,
         epsilon=eps,
         wavelength_um=WL_UM,
         num_modes=1,

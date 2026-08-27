@@ -87,11 +87,11 @@ class TestContactLineGroups:
             tmp_path,
             [{"name": "anode", "layer_a": "p_rib", "layer_b": "n_rib"}],
         )
-        contact_lines = sim._last_mesh_result.groups["contact_lines"]
+        contact_lines = sim.mesh_groups["contact_lines"]
         assert "anode" in contact_lines
         assert contact_lines["anode"]["tags"]
 
-        mesh = meshio.read(sim._last_mesh_result.mesh_path)
+        mesh = meshio.read(sim.mesh_path)
         field_data = mesh.field_data
         assert "anode" in field_data
         dim = int(np.asarray(field_data["anode"])[1])
@@ -117,7 +117,7 @@ class TestContactLineGroups:
                 {"name": "cathode", "layer_a": "n_rib", "layer_b": "sio2"},
             ],
         )
-        contact_lines = sim._last_mesh_result.groups["contact_lines"]
+        contact_lines = sim.mesh_groups["contact_lines"]
         assert {"anode", "cathode"} <= set(contact_lines)
 
     def test_nontouching_pair_raises(self, tmp_path):

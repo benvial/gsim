@@ -16,8 +16,10 @@ The solve uses DEVSIM's prebuilt Scharfetter-Gummel drift-diffusion physics
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -35,7 +37,30 @@ from gsim.tcad.runtime import import_simple_physics, require_devsim
 
 logger = logging.getLogger(__name__)
 
-_DEVSIM_MESH_NAME = "gsim_tcad_mesh"
+# DEVSIM keeps meshes and devices in one process-wide namespace, so every
+# sim (and every re-mesh) claims its own names: two Studies, or one Stage
+# re-run after a configuration change, would otherwise collide on the
+# second setup with "a mesh already exists with name ...".
+_DEVSIM_NAME_IDS = itertools.count()
+
+
+def _unique_devsim_name(kind: str) -> str:
+    """Return a process-unique DEVSIM mesh or device name."""
+    return f"gsim_tcad_{kind}_{next(_DEVSIM_NAME_IDS)}"
+
+
+#: DEVSIM devices this process created and has not deleted. DEVSIM solves
+#: every registered device in one Newton, so a device left behind by a
+#: finished sim would take part in the next sim's solve.
+_LIVE_DEVICES: set[str] = set()
+
+
+def _release_gsim_devices(devsim: Any) -> None:
+    """Delete the DEVSIM devices gsim created and still holds."""
+    for name in list(_LIVE_DEVICES):
+        with suppress(Exception):
+            devsim.delete_device(device=name)
+        _LIVE_DEVICES.discard(name)
 
 
 class ChargeTransportSim(BaseModel):
@@ -86,10 +111,18 @@ class ChargeTransportSim(BaseModel):
     max_iterations: int = Field(default=100, gt=0)
     #: Use DEVSIM's 128-bit extended-precision assembly (recommended).
     extended_precision: bool = True
+    #: Claim DEVSIM's process-global namespace when this sim sets up its
+    #: device: drop the circuit (DEVSIM refuses new circuit nodes once an
+    #: analysis has run) and delete the devices gsim created earlier
+    #: (DEVSIM solves every registered device in one Newton). Foreign
+    #: DEVSIM devices are never touched. Turn this off only when an
+    #: earlier charge-transport device in the process must stay alive.
+    claim_devsim_namespace: bool = True
 
     # Meshing is delegated to the shared native-2D BoundaryMode pipeline.
     _bsim: Any = PrivateAttr(default=None)
     _devsim_mesh_path: Path | None = PrivateAttr(default=None)
+    _devsim_mesh_name: str | None = PrivateAttr(default=None)
     _device: str | None = PrivateAttr(default=None)
     _contact_regions: dict[str, str] = PrivateAttr(default_factory=dict)
     _interface_names: list[str] = PrivateAttr(default_factory=list)
@@ -181,6 +214,11 @@ class ChargeTransportSim(BaseModel):
         return self._bsim.stack if self._bsim is not None else None
 
     @property
+    def cross_section(self) -> Any:
+        """The delegated cross-section plane and window (or None)."""
+        return self._bsim.cross_section if self._bsim is not None else None
+
+    @property
     def contact_specs(self) -> list[Any]:
         """Declared contact specs."""
         return list(self._bsim.contact_specs) if self._bsim is not None else []
@@ -191,28 +229,49 @@ class ChargeTransportSim(BaseModel):
         return self._bsim.output_dir if self._bsim is not None else None
 
     @property
-    def _mesh_result(self) -> Any:
-        """Last mesh result of the delegated pipeline (or None)."""
-        if self._bsim is None:
-            return None
-        return self._bsim._last_mesh_result  # noqa: SLF001
+    def has_mesh(self) -> bool:
+        """Whether ``mesh()`` has run and left a mesh to read."""
+        return self._bsim is not None and bool(self._bsim.has_mesh)
+
+    def _meshed_boundary_sim(self) -> Any:
+        """Return the delegated mesh pipeline, or explain it has not meshed."""
+        if not self.has_mesh:
+            raise ValueError(
+                "No mesh generated for this ChargeTransportSim. Call mesh() first."
+            )
+        return self._bsim
 
     @property
-    def mesh_path(self) -> Path | None:
-        """Path of the shared native-2D mesh (um), once meshed."""
-        result = self._mesh_result
-        return None if result is None else Path(result.mesh_path)
+    def mesh_path(self) -> Path:
+        """Path of the shared native-2D mesh (um), once meshed.
+
+        Raises:
+            ValueError: When read before ``mesh()`` has run.
+        """
+        return Path(self._meshed_boundary_sim().mesh_path)
 
     @property
-    def devsim_mesh_path(self) -> Path | None:
-        """Path of the cm-scaled mesh copy loaded by DEVSIM, once meshed."""
+    def devsim_mesh_path(self) -> Path:
+        """Path of the cm-scaled mesh copy loaded by DEVSIM, once meshed.
+
+        Raises:
+            ValueError: When read before ``mesh()`` has run.
+        """
+        if self._devsim_mesh_path is None:
+            raise ValueError(
+                "No DEVSIM mesh generated for this ChargeTransportSim. "
+                "Call mesh() first."
+            )
         return self._devsim_mesh_path
 
     @property
     def mesh_groups(self) -> dict[str, Any]:
-        """Physical groups of the generated mesh."""
-        result = self._mesh_result
-        return {} if result is None else dict(result.groups or {})
+        """Physical groups of the generated mesh, once meshed.
+
+        Raises:
+            ValueError: When read before ``mesh()`` has run.
+        """
+        return dict(self._meshed_boundary_sim().mesh_groups)
 
     # ------------------------------------------------------------------
     # Meshing
@@ -244,14 +303,34 @@ class ChargeTransportSim(BaseModel):
         )
         # A new mesh invalidates any existing DEVSIM device.
         self.reset_device()
+        self._devsim_mesh_name = _unique_devsim_name("mesh")
         return result
 
     # ------------------------------------------------------------------
     # DEVSIM device setup
     # ------------------------------------------------------------------
 
+    def _release_devsim_device(self) -> None:
+        """Best-effort removal of this sim's DEVSIM device and mesh."""
+        if self._device is None:
+            return
+        try:
+            import importlib
+
+            devsim: Any = importlib.import_module("devsim")
+        except ImportError:  # pragma: no cover - nothing to release
+            return
+        with suppress(Exception):
+            devsim.delete_device(device=self._device)
+        _LIVE_DEVICES.discard(self._device)
+        if self._devsim_mesh_name is not None:
+            with suppress(Exception):
+                devsim.delete_mesh(mesh=self._devsim_mesh_name)
+
     def reset_device(self) -> None:
         """Forget the DEVSIM device; setup runs again on the next solve."""
+        self._release_devsim_device()
+        self._devsim_mesh_name = None
         self._device = None
         self._dd_initialized = False
         self._contact_regions = {}
@@ -362,22 +441,40 @@ class ChargeTransportSim(BaseModel):
             equation="Donors - Acceptors",
         )
 
-    def setup_device(self, device: str = "device") -> str:
+    def setup_device(self, device: str | None = None) -> str:
         """Create the DEVSIM device from the shared mesh.
 
         Loads the cm-scaled mesh, registers one DEVSIM region per doped
         mesh region and one contact per declared contact, applies the
         doping node models, and sets up the potential-only physics.
 
+        DEVSIM's meshes, devices and circuits live in one process-global
+        namespace, and it refuses new circuit nodes once an analysis has
+        run. This device therefore claims the circuit by default
+        (``claim_devsim_circuit``), which drops the contact sources of any
+        DEVSIM device built earlier in the process — including this sim's
+        own previous device. One charge-transport device is live at a
+        time; meshes and devices themselves get process-unique names.
+
         Args:
-            device: DEVSIM device name.
+            device: DEVSIM device name; a process-unique one is generated
+                when omitted.
 
         Returns:
             The device name.
         """
         regions = self._validate_setup()
+        device = device if device is not None else _unique_devsim_name("device")
         devsim = require_devsim()
         sp = import_simple_physics()
+
+        if self.claim_devsim_namespace:
+            # The circuit is process-global and refuses new nodes after an
+            # analysis, and every registered device joins the next solve;
+            # a previous charge device's circuit and device have to go.
+            with suppress(Exception):
+                devsim.delete_circuit()
+            _release_gsim_devices(devsim)
 
         if self.extended_precision:
             # 128-bit float assembly: the 2D drift-diffusion Newton floors
@@ -387,19 +484,19 @@ class ChargeTransportSim(BaseModel):
             devsim.set_parameter(name="extended_model", value=True)
             devsim.set_parameter(name="extended_equation", value=True)
 
-        devsim.create_gmsh_mesh(
-            mesh=_DEVSIM_MESH_NAME, file=str(self._devsim_mesh_path)
-        )
+        mesh_name = self._devsim_mesh_name or _unique_devsim_name("mesh")
+        self._devsim_mesh_name = mesh_name
+        devsim.create_gmsh_mesh(mesh=mesh_name, file=str(self._devsim_mesh_path))
         for region in regions:
             devsim.add_gmsh_region(
-                mesh=_DEVSIM_MESH_NAME,
+                mesh=mesh_name,
                 gmsh_name=region,
                 region=region,
                 material=self.material,
             )
         for spec in self._electrical_contacts:
             devsim.add_gmsh_contact(
-                mesh=_DEVSIM_MESH_NAME,
+                mesh=mesh_name,
                 gmsh_name=spec.name,
                 region=self._contact_regions[spec.name],
                 material="metal",
@@ -407,14 +504,14 @@ class ChargeTransportSim(BaseModel):
             )
         for name, (region_a, region_b) in self._interface_regions.items():
             devsim.add_gmsh_interface(
-                mesh=_DEVSIM_MESH_NAME,
+                mesh=mesh_name,
                 gmsh_name=name,
                 region0=region_a,
                 region1=region_b,
                 name=name,
             )
-        devsim.finalize_mesh(mesh=_DEVSIM_MESH_NAME)
-        devsim.create_device(mesh=_DEVSIM_MESH_NAME, device=device)
+        devsim.finalize_mesh(mesh=mesh_name)
+        devsim.create_device(mesh=mesh_name, device=device)
 
         for region in regions:
             self._apply_doping(devsim, device, region)
@@ -440,6 +537,7 @@ class ChargeTransportSim(BaseModel):
             self._interface_continuity(devsim, sp, device, name, "Potential")
 
         self._device = device
+        _LIVE_DEVICES.add(device)
         self._dd_initialized = False
         return device
 

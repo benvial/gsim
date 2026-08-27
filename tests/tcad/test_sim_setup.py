@@ -247,3 +247,35 @@ class TestSolveWiring:
             "ElectronContinuityEquation",
             "HoleContinuityEquation",
         } <= equations
+
+
+class TestDevsimNamespace:
+    """DEVSIM's mesh/device namespace is process-wide, so names must differ."""
+
+    def test_each_setup_claims_its_own_mesh_and_device(self, meshed_sim, fake_devsim):
+        devsim, _sp = fake_devsim
+        first = meshed_sim.setup_device()
+        first_mesh = devsim.called("create_gmsh_mesh")[0]["mesh"]
+
+        meshed_sim.reset_device()
+        second = meshed_sim.setup_device()
+        second_mesh = devsim.called("create_gmsh_mesh")[1]["mesh"]
+
+        assert first != second
+        assert first_mesh != second_mesh
+
+    def test_reset_releases_the_device_and_its_mesh(self, meshed_sim, fake_devsim):
+        devsim, _sp = fake_devsim
+        device = meshed_sim.setup_device()
+        mesh_name = devsim.called("create_gmsh_mesh")[0]["mesh"]
+
+        meshed_sim.reset_device()
+
+        assert devsim.called("delete_device") == [{"device": device}]
+        assert devsim.called("delete_mesh") == [{"mesh": mesh_name}]
+
+    def test_the_mesh_name_is_recognisable(self, meshed_sim, fake_devsim):
+        devsim, _sp = fake_devsim
+        meshed_sim.setup_device()
+        name = devsim.called("create_gmsh_mesh")[0]["mesh"]
+        assert name.startswith("gsim_tcad_mesh")

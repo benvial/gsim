@@ -198,6 +198,38 @@ class PalaceSimMixin:
         """Get the current output directory."""
         return self._output_dir
 
+    @property
+    def has_mesh(self) -> bool:
+        """Whether ``mesh()`` has run and left a mesh to read."""
+        return getattr(self, "_last_mesh_result", None) is not None
+
+    def _require_mesh_result(self) -> Any:
+        """Return the last mesh result, or explain that meshing is missing."""
+        result = getattr(self, "_last_mesh_result", None)
+        if result is None:
+            raise ValueError(
+                f"No mesh generated for this {type(self).__name__}. Call mesh() first."
+            )
+        return result
+
+    @property
+    def mesh_path(self) -> Path:
+        """Path of the generated mesh (um), once meshed.
+
+        Raises:
+            ValueError: When read before ``mesh()`` has run.
+        """
+        return Path(self._require_mesh_result().mesh_path)
+
+    @property
+    def mesh_groups(self) -> dict[str, Any]:
+        """Physical groups of the generated mesh, once meshed.
+
+        Raises:
+            ValueError: When read before ``mesh()`` has run.
+        """
+        return dict(self._require_mesh_result().groups or {})
+
     # -------------------------------------------------------------------------
     # Geometry methods
     # -------------------------------------------------------------------------

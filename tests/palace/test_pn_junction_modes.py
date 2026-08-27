@@ -104,7 +104,7 @@ def hires_mode(tmp_path_factory):
 class TestCapacitanceMode:
     def test_no_junction_domain_on_mesh(self, cap_mode):
         sim, _config, _pn = cap_mode
-        groups = sim._last_mesh_result.groups
+        groups = sim.mesh_groups
         assert "junction" not in groups["volumes"]
 
     def test_impedance_boundary_in_config(self, cap_mode):
@@ -124,14 +124,14 @@ class TestCapacitanceMode:
 
     def test_doped_domains_present(self, cap_mode):
         sim, _config, _pn = cap_mode
-        groups = sim._last_mesh_result.groups
+        groups = sim.mesh_groups
         assert {"p_rib", "n_rib"} <= set(groups["volumes"])
 
 
 class TestHighResMode:
     def test_junction_dielectric_domain_on_mesh(self, hires_mode):
         sim, _config, _pn = hires_mode
-        groups = sim._last_mesh_result.groups
+        groups = sim.mesh_groups
         assert "junction" in groups["volumes"]
         assert groups["volumes"]["junction"].get("is_shaped_dielectric") is True
 
@@ -141,7 +141,7 @@ class TestHighResMode:
 
     def test_junction_material_is_pure_dielectric(self, hires_mode):
         sim, config, _pn = hires_mode
-        groups = sim._last_mesh_result.groups
+        groups = sim.mesh_groups
         junc_attr = groups["volumes"]["junction"]["phys_group"]
         materials = config["Domains"]["Materials"]
         entries = [m for m in materials if junc_attr in m.get("Attributes", [])]
@@ -155,5 +155,5 @@ class TestHighResMode:
     def test_p_n_junction_strip_contiguous(self, hires_mode):
         """All three regions survive as separate domains."""
         sim, _config, _pn = hires_mode
-        volumes = sim._last_mesh_result.groups["volumes"]
+        volumes = sim.mesh_groups["volumes"]
         assert {"p_rib", "n_rib", "junction"} <= set(volumes)

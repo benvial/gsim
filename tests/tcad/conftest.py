@@ -73,6 +73,16 @@ class FakeDevsim(types.ModuleType):
     def create_device(self, **kwargs):
         self._record("create_device", **kwargs)
 
+    def delete_circuit(self, **kwargs):
+        self._record("delete_circuit", **kwargs)
+        self.circuit.clear()
+
+    def delete_device(self, **kwargs):
+        self._record("delete_device", **kwargs)
+
+    def delete_mesh(self, **kwargs):
+        self._record("delete_mesh", **kwargs)
+
     # -- models / solutions --------------------------------------------
     def node_solution(self, **kwargs):
         self._record("node_solution", **kwargs)

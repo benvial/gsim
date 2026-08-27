@@ -90,7 +90,7 @@ class TestWindowedMesh:
         window = (-23.0, -17.0)
         window_z = (-1.0, 1.2)
         sim = _mesh_sim(tmp_path, window=window, window_z=window_z)
-        mesh = meshio.read(sim._last_mesh_result.mesh_path)
+        mesh = meshio.read(sim.mesh_path)
         pts = np.asarray(mesh.points)
         assert pts[:, 0].min() == pytest.approx(window[0], abs=1e-6)
         assert pts[:, 0].max() == pytest.approx(window[1], abs=1e-6)
@@ -99,15 +99,15 @@ class TestWindowedMesh:
 
     def test_window_keeps_rib_domain(self, tmp_path):
         sim = _mesh_sim(tmp_path, window=(-23.0, -17.0), window_z=(-1.0, 1.2))
-        volumes = sim._last_mesh_result.groups["volumes"]
+        volumes = sim.mesh_groups["volumes"]
         # The rib layer intersects the window and must survive the clip.
         assert any("core" in name or "WG" in name for name in volumes) or volumes
 
     def test_unwindowed_domain_is_larger(self, tmp_path):
         sim_full = _mesh_sim(tmp_path / "full")
         sim_win = _mesh_sim(tmp_path / "win", window=(-23.0, -17.0))
-        full_pts = np.asarray(meshio.read(sim_full._last_mesh_result.mesh_path).points)
-        win_pts = np.asarray(meshio.read(sim_win._last_mesh_result.mesh_path).points)
+        full_pts = np.asarray(meshio.read(sim_full.mesh_path).points)
+        win_pts = np.asarray(meshio.read(sim_win.mesh_path).points)
         full_span = full_pts[:, 0].max() - full_pts[:, 0].min()
         win_span = win_pts[:, 0].max() - win_pts[:, 0].min()
         assert win_span == pytest.approx(6.0, abs=1e-6)

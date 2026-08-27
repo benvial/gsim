@@ -87,14 +87,14 @@ def staircase_sim(tmp_path_factory):
 class TestStaircaseDomains:
     def test_every_strip_is_a_mesh_domain(self, staircase_sim):
         sim, _config, _staircase = staircase_sim
-        volumes = sim._last_mesh_result.groups["volumes"]
+        volumes = sim.mesh_groups["volumes"]
         for i in range(N_STRIPS):
             assert f"strip_{i}" in volumes, f"strip_{i} missing from mesh domains"
             assert volumes[f"strip_{i}"].get("is_shaped_dielectric") is True
 
     def test_config_has_material_block_per_strip(self, staircase_sim):
         sim, config, staircase = staircase_sim
-        volumes = sim._last_mesh_result.groups["volumes"]
+        volumes = sim.mesh_groups["volumes"]
         materials = config["Domains"]["Materials"]
         sigma = staircase["strips"]["sigma_s_per_m"]
         for i in range(N_STRIPS):
