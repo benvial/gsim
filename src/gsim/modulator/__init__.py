@@ -48,10 +48,16 @@ from gsim.modulator.layout import (
 )
 from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
 from gsim.modulator.rf import RFStage
+from gsim.modulator.route import (
+    DEFAULT_PALACE_STRIPS,
+    EMRoute,
+    PalaceMode,
+)
 from gsim.modulator.stage import Stage, StageNotRunError
 from gsim.modulator.study import Study
 
 __all__ = [
+    "DEFAULT_PALACE_STRIPS",
     "CarrierResponse",
     "CarrierResponseSweep",
     "CarriersStage",
@@ -59,11 +65,13 @@ __all__ = [
     "Contact",
     "Device",
     "DeviceLayout",
+    "EMRoute",
     "Interface",
     "MaterialResponse",
     "OpticalMode",
     "OpticalStage",
     "OpticalSweep",
+    "PalaceMode",
     "RFStage",
     "Span",
     "Stage",

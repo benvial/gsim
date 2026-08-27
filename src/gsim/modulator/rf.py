@@ -20,34 +20,51 @@ Marks-Williams power-current integral over the signal conductor — the
 electrode on the Contact the RF drive is applied to, identified from the
 device description rather than passed as element indices.
 
-femwell is optional: the Stage checks for it before it meshes, so a
-missing extra costs nothing but the error message.
+Either Backend can solve the Staircase. The femwell Route is the
+default and the only one that reads the Mode's fields, so it is the one
+that extracts the characteristic impedance and checks the Window; the
+Palace Route solves the same Staircase on the same mesh and reports the
+effective index, leaving the impedance NaN rather than fabricating it.
+
+The Palace Route is the harder one here. A Staircase carries its
+electrodes as volumes of conducting material, whose permittivity has a
+huge imaginary part at RF, and Palace's shift-and-invert search will
+return those metal-dominated modes rather than the quasi-TEM one unless
+it is aimed carefully: expect to raise ``num_modes`` and move ``n_guess``
+onto the expected line index, and to be told so by
+:func:`~gsim.common.modes.select_line_mode` when neither is enough.
+
+The selected Route's runtime is checked before the Stage meshes, so a
+missing extra or a missing binary costs nothing but the error message.
 """
 
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from pydantic import Field, PrivateAttr, field_validator
 
 from gsim.common.modes import LineModeRule
-from gsim.common.stack.staircase import DEFAULT_ELECTRODES, ElectrodeSpec
+from gsim.common.stack.staircase import (
+    DEFAULT_ELECTRODES,
+    STRIP_LENGTH_UM,
+    ElectrodeSpec,
+)
+from gsim.modulator.route import EMRoute, require_route
 from gsim.modulator.stage import Stage
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from gsim.common.stack.staircase import StaircaseCrossSection
     from gsim.common.twmzm_report import RFLineParams
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
     from gsim.palace import BoundaryModeSim
 
 __all__ = ["RFStage"]
-
-#: Drawn length of the Staircase along the propagation direction (um).
-#: The Cross-section is invariant along it, so it is not a setting; the
-#: plane is taken through the middle of the drawn rectangles.
-STRIP_LENGTH_UM: float = 10.0
 
 #: Biases this far apart (V) count as the same Bias point.
 BIAS_TOL_V: float = 1e-9
@@ -57,6 +74,13 @@ class RFStage(Stage):
     """The line parameters of the Traveling-wave electrode, versus frequency.
 
     Attributes:
+        route: Backend answering this Stage — ``"femwell"`` (the default)
+            or ``"palace"``. Both solve the same Staircase on the same
+            mesh; only femwell reads the Mode's fields, so the Palace
+            Route reports NaN for the characteristic impedance and for
+            the Window-containment ratio, and needs ``num_modes`` and
+            ``n_guess`` aimed at the line Mode to find it past the
+            electrodes' metal-dominated ones.
         frequencies_hz: RF frequencies to solve at (Hz), kept ascending.
         n_strips: Number of Strips the Carrier map is reduced to; more
             strips approximate the continuous profile more closely at the
@@ -106,6 +130,7 @@ class RFStage(Stage):
     #: :attr:`solved_bias_v`.
     _solved_bias_v: float | None = PrivateAttr(default=None)
 
+    route: EMRoute = "femwell"
     frequencies_hz: list[float] = Field(
         default_factory=lambda: [10e9, 40e9], min_length=1
     )
@@ -322,33 +347,54 @@ class RFStage(Stage):
         """Bias the cached line parameters were solved at, or None."""
         return self._solved_bias_v if self.has_run else None
 
-    def _solve(self) -> RFLineParams:
-        """Mesh the Staircase and solve the line Mode at every frequency."""
+    def _pick_line_mode(self, modes: Sequence[Any], freq_hz: float) -> Any:
+        """Select the physical line Mode of one frequency, and check it.
+
+        Args:
+            modes: Every Mode the Route solved at this frequency.
+            freq_hz: The frequency, named in the containment warning.
+
+        Returns:
+            The selected Mode.
+        """
+        from gsim.common.modes import select_line_mode
+        from gsim.modulator.route import mode_boundary_ratio
+
+        mode = select_line_mode(
+            modes,
+            rule=self.rule,
+            min_index=self.min_index,
+            degeneracy_rtol=self.degeneracy_rtol,
+        )
+        self._check_containment(mode_boundary_ratio(mode), freq_hz)
+        return mode
+
+    def _solve_femwell(
+        self, sim: BoundaryModeSim, staircase: StaircaseCrossSection
+    ) -> tuple[list[complex], list[complex]]:
+        """Solve the Staircase with femwell, per frequency.
+
+        The femwell Route reads the Mode's fields, so it is the Route that
+        extracts the characteristic impedance over the signal conductor.
+
+        Args:
+            sim: The meshed Staircase simulation.
+            staircase: The Staircase it was built from.
+
+        Returns:
+            ``(n_eff, z0_ohm)``, one entry per configured frequency.
+        """
         import meshio
         from scipy.constants import speed_of_light as c0
 
-        from gsim.common.modes import select_line_mode
-        from gsim.common.twmzm_report import line_params_from_neff
         from gsim.femwell.adapter import (
-            boundary_field_ratio,
             epsilon_by_region,
             region_elements,
             solve_modes,
             z0_power_current,
         )
-        from gsim.femwell.runtime import require_femwell, require_skfem
 
-        # Before the charge solve and before meshing: a user without the
-        # extra should pay nothing to find that out.
-        require_femwell()
-        require_skfem()
-
-        point = self.bias_point()
-        staircase = self.staircase()
         stack = staircase.stack("rf")
-
-        sim = self.simulation(staircase)
-        sim.mesh(**self.mesh)
         mesh_path = sim.mesh_path
         mesh = meshio.read(str(mesh_path))
         signal_elements = region_elements(mesh, self.signal_electrode())
@@ -365,19 +411,81 @@ class RFStage(Stage):
                 metallic_boundaries=self.metallic_boundaries,
                 n_guess=self.n_guess,
             )
-            mode = select_line_mode(
-                modes,
-                rule=self.rule,
-                min_index=self.min_index,
-                degeneracy_rtol=self.degeneracy_rtol,
-            )
-            self._check_containment(boundary_field_ratio(mode), freq)
+            mode = self._pick_line_mode(modes, freq)
             n_eff.append(complex(mode.n_eff))
             z0_ohm.append(
                 z0_power_current(
                     mode, frequency_hz=freq, current_elements=signal_elements
                 )
             )
+        return n_eff, z0_ohm
+
+    def _solve_palace(
+        self, sim: BoundaryModeSim, binary: Path | None
+    ) -> tuple[list[complex], list[complex]]:
+        """Solve the same Staircase on the same mesh with Palace.
+
+        Palace's ``BoundaryMode`` results are effective indices without
+        fields, so the Marks-Williams impedance integral has nothing to
+        integrate: the impedance comes back NaN, once warned about,
+        rather than silently wrong.
+
+        Args:
+            sim: The meshed Staircase simulation.
+            binary: Palace executable, as ``require_route`` resolved
+                it; resolved again when ``None``.
+
+        Returns:
+            ``(n_eff, z0_ohm)``, one entry per configured frequency.
+        """
+        from gsim.modulator.route import (
+            containment_unmeasurable,
+            palace_binary,
+            solve_palace_modes,
+        )
+
+        warnings.warn(
+            f"The {self.stage_name} stage's palace route reports no "
+            "characteristic impedance: Palace's boundary-mode results carry "
+            "no mode fields, so the Marks-Williams extraction cannot run and "
+            "z0_ohm comes back NaN. Solve with "
+            f"study.{self.stage_name}(route='femwell') for the impedance.",
+            stacklevel=2,
+        )
+        warnings.warn(containment_unmeasurable(self.stage_name), stacklevel=2)
+        executable = palace_binary(binary, stage_name=self.stage_name)
+        verbose = self._is_verbose()
+
+        n_eff: list[complex] = []
+        for freq in self.frequencies_hz:
+            modes = solve_palace_modes(
+                sim,
+                freq_hz=freq,
+                num_modes=self.num_modes,
+                binary=executable,
+                target=self.n_guess if self.n_guess is not None else 0.0,
+                verbose=verbose,
+            )
+            n_eff.append(complex(self._pick_line_mode(modes, freq).n_eff))
+        return n_eff, [complex(float("nan"), float("nan"))] * len(n_eff)
+
+    def _solve(self) -> RFLineParams:
+        """Mesh the Staircase and solve the line Mode at every frequency."""
+        from gsim.common.twmzm_report import line_params_from_neff
+
+        # Before the charge solve and before meshing: a user whose Route
+        # cannot run should pay nothing to find that out.
+        binary = require_route(self.route, stage_name=self.stage_name)
+
+        point = self.bias_point()
+        staircase = self.staircase()
+        sim = self.simulation(staircase)
+        sim.mesh(**self.mesh)
+
+        if self.route == "femwell":
+            n_eff, z0_ohm = self._solve_femwell(sim, staircase)
+        else:
+            n_eff, z0_ohm = self._solve_palace(sim, binary)
 
         self._solved_bias_v = point.bias_v
         return line_params_from_neff(

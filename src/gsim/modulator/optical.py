@@ -11,25 +11,40 @@ Each Bias point becomes one complex effective index, from which the two
 numbers a designer wants follow: the index shift relative to zero bias,
 which sets modulation efficiency, and the bias-dependent loss.
 
-femwell is optional: the Stage checks for it before it meshes, so a
-missing extra costs nothing but the error message.
+Either Backend can answer, and the choice changes how the carriers reach
+the solver. femwell — the default Route — carries a continuous
+``eps(x, y)`` projected onto the mesh elements of the drawn device.
+Palace takes piecewise-constant materials per Region and nothing else, so
+selecting it moves the Stage onto a Staircase: the Carrier map reduced to
+Strips tiling the Junction extent, drawn as its own Cross-section. Asking
+for a strip count puts the femwell Route on that same Staircase too,
+which is what makes the two Routes comparable at all.
+
+The selected Route's runtime is checked before the Stage meshes, so a
+missing extra or a missing binary costs nothing but the error message.
 """
 
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field
 
+from gsim.common.stack.staircase import DEFAULT_SI_INDEX, STRIP_LENGTH_UM
+from gsim.modulator.route import DEFAULT_PALACE_STRIPS, EMRoute, require_route
 from gsim.modulator.stage import Stage
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import meshio
 
+    from gsim.common.stack.staircase import StaircaseCrossSection
+    from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import CarrierMap
 
@@ -103,11 +118,35 @@ class OpticalStage(Stage):
     """The carrier-perturbed optical Mode, bias point by bias point.
 
     Attributes:
+        route: Backend answering this Stage — ``"femwell"`` (the default)
+            or ``"palace"``. The Palace Route cannot express a continuous
+            permittivity, so selecting it puts the Stage on a Staircase
+            (see ``n_strips``) and leaves the Window-containment ratio
+            NaN, Palace's results carrying no mode fields.
+        n_strips: Number of Strips the carrier response is reduced to.
+            ``None`` — the default — keeps the continuous ``eps(x, y)``
+            of the drawn device, which only the femwell Route can solve;
+            the Palace Route staircases with
+            :data:`~gsim.modulator.route.DEFAULT_PALACE_STRIPS` instead.
+            Setting a count puts either Route on the Staircase, so the
+            two solve the identical problem.
+        strip_span: ``(min, max)`` extent the Strips tile along the
+            junction axis (um); the Junction extent — the rib — when
+            unset. Unused when the continuous profile is solved.
+        strip_index: Unperturbed refractive index of the Strips, which
+            the plasma dispersion perturbs. Unused when the continuous
+            profile is solved, which reads each Region's index from
+            the stack.
+        substrate_thickness_um: Substrate below the Staircase (um).
+            Unused when the continuous profile is solved.
         wavelength_um: Vacuum wavelength of the solve (um).
         num_modes: Number of Modes to solve at each Bias point; the
             slowest propagating one is reported.
         window: In-plane optical Window (um); derived as a box around the
-            rib when unset.
+            rib when unset. On a Staircase the derived Window does not
+            apply — the Staircase is drawn to the Junction extent and the
+            airbox sizes the cladding — so it is the full extent unless
+            set.
         window_z: Vertical Window (um); derived from the guiding layer
             when unset.
         mode_margin_um: Half-width of the derived Window either side of
@@ -130,6 +169,11 @@ class OpticalStage(Stage):
 
     stage_name: ClassVar[str] = "optical"
 
+    route: EMRoute = "femwell"
+    n_strips: int | None = Field(default=None, ge=1)
+    strip_span: tuple[float, float] | None = None
+    strip_index: float = Field(default=DEFAULT_SI_INDEX, gt=0.0)
+    substrate_thickness_um: float = Field(default=2.0, gt=0.0)
     wavelength_um: float = Field(default=1.55, gt=0.0)
     num_modes: int = Field(default=1, ge=1)
     window: tuple[float, float] | None = None
@@ -212,6 +256,107 @@ class OpticalStage(Stage):
                 "or set window= explicitly."
             )
         return present
+
+    def effective_n_strips(self) -> int | None:
+        """Strip count this Stage will actually solve with.
+
+        Returns:
+            The configured count; ``None`` when the continuous
+            ``eps(x, y)`` is solved instead, which only the femwell Route
+            can do, so the Palace Route falls back to
+            :data:`~gsim.modulator.route.DEFAULT_PALACE_STRIPS`.
+        """
+        if self.n_strips is not None:
+            return int(self.n_strips)
+        return DEFAULT_PALACE_STRIPS if self.route == "palace" else None
+
+    def staircase(self, point: CarrierResponse) -> StaircaseCrossSection:
+        """Reduce one Bias point's Carrier map to a meshable Staircase.
+
+        The Strips tile the Junction extent unless ``strip_span`` widens
+        them, and take the plasma-dispersion coefficients of the carriers
+        Stage — the same coupling the continuous profile reads, evaluated on
+        strip averages instead of on mesh elements. No electrodes are
+        drawn: the optical Window is a box around the rib, and the
+        Traveling-wave metal is outside it.
+
+        Args:
+            point: The Bias point to staircase.
+
+        Returns:
+            The Staircase Cross-section, drawn on its own component.
+
+        Raises:
+            ValueError: When this Stage is solving the continuous
+                profile, so there is no strip count to tile with.
+        """
+        from gsim.common.stack.staircase import build_staircase_cross_section
+
+        n_strips = self.effective_n_strips()
+        if n_strips is None:
+            raise ValueError(
+                f"The {self.stage_name} stage is solving the continuous "
+                "permittivity, so it builds no staircase. Ask for one with "
+                f"study.{self.stage_name}(n_strips=...)."
+            )
+        study = self._require_study()
+        span = study.layout.junction_span
+        return build_staircase_cross_section(
+            point.carriers,
+            n_strips=n_strips,
+            junction=self.strip_span if self.strip_span is not None else span.h,
+            zmin=span.z[0],
+            zmax=span.z[1],
+            length=STRIP_LENGTH_UM,
+            electrodes=None,
+            dispersion=study.carriers.dispersion,
+            n0=self.strip_index,
+            mu_n_cm2=study.carriers.mu_n_cm2,
+            mu_p_cm2=study.carriers.mu_p_cm2,
+            axis="x",
+            value=STRIP_LENGTH_UM / 2.0,
+            substrate_thickness=self.substrate_thickness_um,
+        )
+
+    def staircase_simulation(
+        self, staircase: StaircaseCrossSection, *, output_dir: str | Path
+    ) -> BoundaryModeSim:
+        """Assemble the Staircase cross-section this Stage meshes.
+
+        The Staircase is a component of its own, so the plane cuts through
+        the middle of it rather than through the drawn device, and the
+        airbox — not the derived Window — is what puts cladding around
+        the Strips.
+
+        Args:
+            staircase: The Staircase to mesh.
+            output_dir: Directory this Bias point's mesh and solver files
+                land in; one per point, because the Strip materials move
+                with the bias.
+
+        Returns:
+            The configured (unmeshed) ``BoundaryModeSim``.
+        """
+        from scipy.constants import speed_of_light as c0
+
+        from gsim.palace import BoundaryModeSim
+
+        sim = BoundaryModeSim()
+        sim.set_output_dir(output_dir)
+        sim.set_stack(staircase.stack("optical"))
+        sim.set_geometry(staircase.component)
+        sim.set_airbox(**self.airbox)
+        sim.set_cross_section(
+            f"x={STRIP_LENGTH_UM / 2.0}",
+            window=self.window,
+            window_z=self.window_z,
+        )
+        sim.set_boundary_mode(
+            freq=c0 / (self.wavelength_um * 1e-6),
+            num_modes=self.num_modes,
+            target=self.n_guess if self.n_guess is not None else 0.0,
+        )
+        return sim
 
     def simulation(self) -> BoundaryModeSim:
         """Assemble the cross-section this Stage meshes.
@@ -319,8 +464,64 @@ class OpticalStage(Stage):
                 stacklevel=2,
             )
 
-    def _solve(self) -> OpticalSweep:
-        """Mesh the optical Window and solve the Mode at every Bias point."""
+    def _sweep_from(
+        self,
+        contact: str,
+        solved: list[tuple[float, complex, float]],
+    ) -> OpticalSweep:
+        """Assemble the sweep both Routes report.
+
+        Args:
+            contact: The Contact the charge sweep drove.
+            solved: ``(bias_v, n_eff, boundary_field_ratio)`` per Bias
+                point, in sweep order.
+
+        Returns:
+            The optical sweep, its index shift measured from zero bias
+            when the sweep visited it and from its first point otherwise.
+        """
+        reference_bias, reference_index, _ = next(
+            (entry for entry in solved if entry[0] == 0.0), solved[0]
+        )
+        wavelength_cm = self.wavelength_um * 1e-4
+        return OpticalSweep(
+            contact=contact,
+            wavelength_um=self.wavelength_um,
+            reference_bias_v=reference_bias,
+            points=[
+                OpticalMode(
+                    bias_v=bias_v,
+                    n_eff=n_eff,
+                    index_shift=n_eff.real - reference_index.real,
+                    loss_db_cm=_DB_PER_CM * abs(n_eff.imag) / wavelength_cm,
+                    boundary_field_ratio=ratio,
+                )
+                for bias_v, n_eff, ratio in solved
+            ],
+        )
+
+    def _bias_sweep(self) -> CarrierResponseSweep:
+        """The Bias sweep to solve, running the upstream Stages if needed.
+
+        Raises:
+            ValueError: When the sweep is empty, so there is no Mode to
+                solve.
+        """
+        responses: CarrierResponseSweep = self._require_study().carriers.run()
+        if not responses.points:
+            raise ValueError(
+                "The bias sweep has no points, so there is no mode to solve. "
+                "Configure study.charge(biases=[...])."
+            )
+        return responses
+
+    def _solve_continuous(self) -> OpticalSweep:
+        """Solve the drawn device with a continuous ``eps(x, y)``.
+
+        One mesh serves the whole sweep: the geometry does not move with
+        the bias, only the per-element permittivity the Carrier maps
+        imply.
+        """
         import meshio
 
         from gsim.common.modes import select_line_mode
@@ -329,20 +530,9 @@ class OpticalStage(Stage):
             epsilon_by_region,
             solve_modes,
         )
-        from gsim.femwell.runtime import require_femwell, require_skfem
-
-        # Before the charge solve and before meshing: a user without the
-        # extra should pay nothing to find that out.
-        require_femwell()
-        require_skfem()
 
         study = self._require_study()
-        responses = study.carriers.run()
-        if not responses.points:
-            raise ValueError(
-                "The bias sweep has no points, so there is no mode to solve. "
-                "Configure study.charge(biases=[...])."
-            )
+        responses = self._bias_sweep()
 
         sim = self.simulation()
         sim.mesh(**self.mesh)
@@ -366,23 +556,118 @@ class OpticalStage(Stage):
             ratio = boundary_field_ratio(mode)
             self._check_containment(ratio, point.bias_v)
             solved.append((point.bias_v, complex(mode.n_eff), ratio))
+        return self._sweep_from(responses.contact, solved)
 
-        reference_bias, reference_index, _ = next(
-            (entry for entry in solved if entry[0] == 0.0), solved[0]
-        )
-        wavelength_cm = self.wavelength_um * 1e-4
-        return OpticalSweep(
-            contact=responses.contact,
+    def _staircase_modes(
+        self,
+        sim: BoundaryModeSim,
+        staircase: StaircaseCrossSection,
+        *,
+        binary: Path | None,
+        verbose: bool,
+    ) -> Sequence[Any]:
+        """Solve one meshed Staircase on the selected Route.
+
+        Both Routes read the Strip materials off the same Staircase and
+        the same mesh; they differ only in who does the algebra.
+
+        Args:
+            sim: The meshed Staircase simulation.
+            staircase: The Staircase it was built from.
+            binary: Palace executable, on the Palace Route; ``None`` on
+                the femwell Route, which needs none.
+            verbose: Stream the Backend's own output.
+
+        Returns:
+            Every Mode the Route solved.
+        """
+        from scipy.constants import speed_of_light as c0
+
+        if self.route == "palace":
+            from gsim.modulator.route import palace_binary, solve_palace_modes
+
+            return solve_palace_modes(
+                sim,
+                freq_hz=c0 / (self.wavelength_um * 1e-6),
+                num_modes=self.num_modes,
+                binary=palace_binary(binary, stage_name=self.stage_name),
+                target=self.n_guess if self.n_guess is not None else 0.0,
+                verbose=verbose,
+            )
+
+        import meshio
+
+        from gsim.femwell.adapter import epsilon_by_region, solve_modes
+
+        mesh = meshio.read(str(sim.mesh_path))
+        modes: Sequence[Any] = solve_modes(
+            sim.mesh_path,
+            epsilon=epsilon_by_region(
+                mesh, staircase.stack("optical"), wavelength_um=self.wavelength_um
+            ),
             wavelength_um=self.wavelength_um,
-            reference_bias_v=reference_bias,
-            points=[
-                OpticalMode(
-                    bias_v=bias_v,
-                    n_eff=n_eff,
-                    index_shift=n_eff.real - reference_index.real,
-                    loss_db_cm=_DB_PER_CM * abs(n_eff.imag) / wavelength_cm,
-                    boundary_field_ratio=ratio,
-                )
-                for bias_v, n_eff, ratio in solved
-            ],
+            num_modes=self.num_modes,
+            order=self.order,
+            n_guess=self.n_guess,
         )
+        return modes
+
+    def _solve_staircase(self, binary: Path | None) -> OpticalSweep:
+        """Solve the Staircase of every Bias point, on either Route.
+
+        Each Bias point gets its own Staircase, and its own mesh under its
+        own directory: the Strip edges do not move with the bias but the
+        Strip materials do, and Palace reads its materials off the meshed
+        stack rather than from an array handed in per solve.
+
+        Args:
+            binary: Palace executable, on the Palace Route.
+        """
+        from gsim.common.modes import select_line_mode
+        from gsim.modulator.route import (
+            containment_unmeasurable,
+            mode_boundary_ratio,
+        )
+
+        study = self._require_study()
+        responses = self._bias_sweep()
+        stage_dir = study.stage_dir(self.stage_name)
+        verbose = self._is_verbose()
+        if self.route == "palace":
+            if self.n_strips is None:
+                warnings.warn(
+                    f"The {self.stage_name} stage's palace route cannot carry "
+                    "a continuous permittivity, so it is solving a staircase "
+                    f"of {DEFAULT_PALACE_STRIPS} strips instead of the "
+                    "continuous eps(x, y) the femwell route would have used. "
+                    f"Choose the count with study.{self.stage_name}"
+                    "(n_strips=...).",
+                    stacklevel=2,
+                )
+            warnings.warn(containment_unmeasurable(self.stage_name), stacklevel=2)
+
+        solved: list[tuple[float, complex, float]] = []
+        for index, point in enumerate(responses.points):
+            staircase = self.staircase(point)
+            point_dir = stage_dir / f"bias_{index:02d}"
+            point_dir.mkdir(parents=True, exist_ok=True)
+            sim = self.staircase_simulation(staircase, output_dir=point_dir)
+            sim.mesh(**self.mesh)
+
+            modes = self._staircase_modes(
+                sim, staircase, binary=binary, verbose=verbose
+            )
+            mode = select_line_mode(modes, min_index=self.min_index)
+            ratio = mode_boundary_ratio(mode)
+            self._check_containment(ratio, point.bias_v)
+            solved.append((point.bias_v, complex(mode.n_eff), ratio))
+        return self._sweep_from(responses.contact, solved)
+
+    def _solve(self) -> OpticalSweep:
+        """Solve the Mode at every Bias point, on the selected Route."""
+        # Before the charge solve and before meshing: a user whose Route
+        # cannot run should pay nothing to find that out.
+        binary = require_route(self.route, stage_name=self.stage_name)
+        if self.effective_n_strips() is None:
+            return self._solve_continuous()
+        return self._solve_staircase(binary)

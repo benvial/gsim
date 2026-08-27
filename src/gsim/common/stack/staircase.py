@@ -50,6 +50,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_ELECTRODES",
+    "DEFAULT_STRIP_LAYER",
+    "STRIP_LENGTH_UM",
     "ElectrodeSpec",
     "StaircaseCrossSection",
     "build_staircase_cross_section",
@@ -59,6 +61,18 @@ __all__ = [
 
 #: Unperturbed silicon refractive index near 1.55 um.
 DEFAULT_SI_INDEX: float = 3.4757
+
+#: ``(layer, datatype)`` Strip 0 is drawn on, Strip ``i`` taking
+#: ``datatype + i``. Deliberately outside the range gdsfactory's generic
+#: PDK uses: a Strip landing on a PDK metal or via layer is resolved as
+#: that conductor, which a solver reading the stack (Palace) then honours
+#: and one reading only the mesh regions (femwell) does not.
+DEFAULT_STRIP_LAYER: tuple[int, int] = (300, 0)
+
+#: Drawn length of a Staircase along the propagation direction (um).
+#: The Cross-section is invariant along it, so it is not a setting;
+#: a Stage meshing a Staircase cuts through the middle of it.
+STRIP_LENGTH_UM: float = 10.0
 
 
 def strip_averages_from_nodes(
@@ -287,8 +301,6 @@ def make_staircase_profile(
         Dict with keys ``layer_specs``, ``materials``, ``centres`` and
         ``strips`` (per-strip edges/values).
     """
-    import gdsfactory as gf
-
     from gsim.common.stack.extractor import Layer
 
     edge_arr = np.asarray(edges, dtype=np.float64).ravel()
@@ -336,8 +348,13 @@ def make_staircase_profile(
         gds_layer = (base_layer[0], base_layer[1] + i)
         y0, y1 = float(edge_arr[i]), float(edge_arr[i + 1])
 
-        rect = comp << gf.c.rectangle((length, y1 - y0), layer=gds_layer)
-        rect.y = (y0 + y1) / 2
+        # Drawn from its two edges rather than from a width and a centre:
+        # adjacent Strips then hand the GDS grid the identical coordinate
+        # for the edge they share, so no strip count can snap a sliver of
+        # background between them.
+        comp.add_polygon(
+            [(0.0, y0), (length, y0), (length, y1), (0.0, y1)], layer=gds_layer
+        )
         centres[name] = (y0 + y1) / 2
 
         layer_specs[name] = Layer(
@@ -558,8 +575,6 @@ def _electrode_layers(
     tuple[tuple[float, float], ...],
 ]:
     """Draw the flanking electrodes and build their layer specs."""
-    import gdsfactory as gf
-
     from gsim.common.stack.extractor import Layer
 
     if spec.width_um <= 0:
@@ -580,8 +595,11 @@ def _electrode_layers(
     centres: dict[str, float] = {}
     for index, (name, (y0, y1)) in enumerate(zip(spec.names, spans, strict=True)):
         gds_layer = (spec.gds_layer[0], spec.gds_layer[1] + index)
-        rect = comp << gf.c.rectangle((length, y1 - y0), layer=gds_layer)
-        rect.y = (y0 + y1) / 2
+        # From its edges, like the Strips: an electrode is meant to touch
+        # the Strip lattice, not to sit a grid rounding away from it.
+        comp.add_polygon(
+            [(0.0, y0), (length, y0), (length, y1), (0.0, y1)], layer=gds_layer
+        )
         centres[name] = (y0 + y1) / 2
         layer_specs[name] = Layer(
             name=name,
@@ -604,7 +622,7 @@ def build_staircase_cross_section(
     zmin: float,
     zmax: float,
     band: tuple[float, float] | None = None,
-    length: float = 10.0,
+    length: float = STRIP_LENGTH_UM,
     electrodes: ElectrodeSpec | None = DEFAULT_ELECTRODES,
     dispersion: PlasmaDispersionModel | None = None,
     n0: float = DEFAULT_SI_INDEX,
@@ -612,7 +630,7 @@ def build_staircase_cross_section(
     mu_n_cm2: float = DEFAULT_MU_N_CM2,
     mu_p_cm2: float = DEFAULT_MU_P_CM2,
     fmax: float = 200e9,
-    base_layer: tuple[int, int] = (40, 0),
+    base_layer: tuple[int, int] = DEFAULT_STRIP_LAYER,
     name_prefix: str = "strip_",
     mesh_resolution: str | float = "fine",
     axis: Literal["x", "y", "z"] = "x",
@@ -652,7 +670,9 @@ def build_staircase_cross_section(
         mu_n_cm2: Electron mobility (cm^2/Vs) for the RF conductivity.
         mu_p_cm2: Hole mobility (cm^2/Vs) for the RF conductivity.
         fmax: Upper validity frequency (Hz) of the RF Drude materials.
-        base_layer: ``(layer, datatype)`` of Strip 0.
+        base_layer: ``(layer, datatype)`` of Strip 0; defaults to
+            :data:`DEFAULT_STRIP_LAYER`, outside the generic PDK's
+            own layers.
         name_prefix: Region-name prefix of the Strips.
         mesh_resolution: Mesh resolution assigned to the Strip layers.
         axis: Cross-section normal axis of the resolved stack.

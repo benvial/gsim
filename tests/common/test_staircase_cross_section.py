@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import sys
+from itertools import pairwise
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from gsim.common.stack.staircase import (
+    DEFAULT_STRIP_LAYER,
     ElectrodeSpec,
     build_staircase_cross_section,
 )
@@ -196,6 +198,73 @@ class TestStripCount:
             )
         assert errors[0] > errors[1] > errors[2]
         assert errors[-1] < 0.01
+
+
+class TestDrawnGeometry:
+    """What the Strips are drawn as, which is what a solver reads back.
+
+    Both of these are the difference between the two EM Routes seeing the
+    same problem and seeing two different ones: Palace resolves the drawn
+    layers against the stack and honours whatever conductor it finds
+    there, while femwell reads only the meshed regions.
+    """
+
+    def test_strips_are_not_drawn_on_a_generic_pdk_layer(self):
+        """A Strip on a PDK metal or via layer resolves as that conductor."""
+        import gdsfactory as gf
+
+        gf.gpdk.PDK.activate()
+        from gdsfactory.gpdk.layer_map import LAYER
+
+        pdk_layers = set()
+        for name in dir(LAYER):
+            if name.startswith("_"):
+                continue
+            layer = getattr(LAYER, name)
+            try:
+                pdk_layers.add((int(layer.layer), int(layer.datatype)))
+            except (AttributeError, TypeError, ValueError):
+                continue
+
+        staircase = build(n_strips=8)
+        drawn = {
+            (spec.gds_layer[0], spec.gds_layer[1])
+            for name, spec in staircase._layer_specs.items()
+            if name in staircase.strip_names
+        }
+        assert DEFAULT_STRIP_LAYER in drawn
+        assert not (drawn & pdk_layers)
+
+    @pytest.mark.parametrize("n_strips", [3, 5, 8, 16])
+    def test_adjacent_strips_share_their_edge_exactly(self, n_strips):
+        """No strip count may snap a sliver of background between Strips.
+
+        Strip edges land off the GDS grid for some counts — eight strips
+        across a 0.6 um junction put every centre on a half-nanometre —
+        so a Strip drawn from a width and a centre can be rounded a
+        nanometre away from its neighbour. Drawn from its two edges, the
+        shared edge is one coordinate that rounds once.
+        """
+        staircase = build(n_strips=n_strips)
+        component = staircase.component
+        dbu = component.kcl.dbu
+
+        spans = []
+        for name in staircase.strip_names:
+            spec = staircase._layer_specs[name]
+            raw = component.get_polygons(layers=(tuple(spec.gds_layer),), merge=False)
+            points = [
+                (point.y * dbu)
+                for value in raw.values()
+                for polygon in (value if isinstance(value, list) else [value])
+                for point in polygon.each_point_hull()
+            ]
+            spans.append((min(points), max(points)))
+
+        assert len(spans) == n_strips
+        spans.sort()
+        for (_low, high), (next_low, _next_high) in pairwise(spans):
+            assert high == next_low
 
 
 def test_builds_without_any_solver_runtime(monkeypatch):
