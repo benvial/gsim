@@ -68,6 +68,15 @@ class TestPiecewiseConstantSolve:
                 wavelength_um=1.55,
             )
 
+    def test_region_missing_from_epsilon_raises(self, strip_mesh):
+        # A region left out of the map would otherwise be solved at eps = 0.
+        with pytest.raises(ValueError, match="clad"):
+            solve_modes(
+                strip_mesh,
+                epsilon={"core": 3.48**2 + 0j},
+                wavelength_um=1.55,
+            )
+
 
 class TestContinuousSolve:
     def test_elementwise_epsilon_matches_piecewise(self, strip_mesh):

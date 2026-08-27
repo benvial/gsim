@@ -36,7 +36,7 @@ import tempfile
 from contextlib import suppress
 from pathlib import Path
 from urllib.request import Request, urlopen
-from zipfile import ZipFile
+from zipfile import ZipFile, is_zipfile
 
 logger = logging.getLogger(__name__)
 
@@ -141,14 +141,28 @@ def install_palace_runtime(force: bool = False, timeout: float = 180.0) -> Path:
     wheel_name = f"palacetoolkit_palace_cpu-{tag}-py3-none-linux_x86_64.whl"
     wheel_path = downloads / wheel_name
 
-    if force or not wheel_path.is_file():
+    def _download_wheel() -> None:
         url = _binary_wheel_url(tag)
-        with suppress(Exception):
+        try:
             discovered = _binary_wheel_url_from_release(tag, timeout=timeout)
+        except Exception as exc:
+            logger.debug("Palace release lookup failed (%s); using %s", exc, url)
+        else:
             if discovered:
                 url = discovered
         with urlopen(url, timeout=timeout) as response:  # noqa: S310
             wheel_path.write_bytes(response.read())
+
+    # A half-written or truncated wheel left by an interrupted download would
+    # otherwise be reused forever, since only its existence was checked.
+    if force or not wheel_path.is_file() or not is_zipfile(wheel_path):
+        _download_wheel()
+    if not is_zipfile(wheel_path):
+        wheel_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Downloaded file for Palace {tag} is not a valid wheel archive; "
+            "the cached copy was discarded. Check the download URL or network."
+        )
 
     with tempfile.TemporaryDirectory(
         prefix="palace-runtime-", dir=_runtime_cache_dir()

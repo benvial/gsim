@@ -265,6 +265,12 @@ def solve_modes(
 
     Returns:
         The femwell ``Modes`` result (each mode carries ``n_eff``).
+
+    Raises:
+        ValueError: If the mesh has no triangles, if a region in ``epsilon``
+            is not on the mesh, if a 2D region on the mesh is missing from
+            ``epsilon``, or if per-element values do not match the element
+            count.
     """
     require_femwell()
     skfem = require_skfem()
@@ -317,6 +323,23 @@ def solve_modes(
                 )
             # ElementTriP0: one dof per element, in element order.
             eps[phys_tags == group_tags[region]] = value
+        # Every element must get a permittivity: a region left out of the map
+        # keeps eps = 0, which is not a material at all -- it either makes the
+        # shift-invert factorization singular or returns modes of a structure
+        # the caller never described.
+        mapped = {group_tags[region] for region in eps_map}
+        present = {int(tag) for tag in np.unique(phys_tags)}
+        missing = sorted(present - mapped)
+        if missing:
+            tag_names = {tag: name for name, tag in group_tags.items()}
+            named = [
+                f"'{tag_names[tag]}'" if tag in tag_names else f"tag {tag}"
+                for tag in missing
+            ]
+            raise ValueError(
+                f"No permittivity given for mesh region(s) {', '.join(named)}. "
+                "Every 2D region on the mesh must appear in the epsilon map."
+            )
     else:
         eps = np.asarray(epsilon, dtype=np.complex128)
         if eps.size != basis0.N:

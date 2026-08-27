@@ -169,6 +169,25 @@ class TestValidation:
         with pytest.raises(ValueError, match="fit"):
             _build(big)
 
+    def test_depletion_past_one_flank_rejected(self):
+        """An asymmetric depletion can overrun a flank while W < rib_width.
+
+        Each doped rectangle only occupies half the rib, so the fit test is
+        per side: here xp = 0.34 um overruns the 0.2 um P flank even though
+        W = 0.34 um is still narrower than the 0.4 um rib.
+        """
+        lopsided = PNJunctionConfig(na_cm3=1e16, nd_cm3=1e19)
+        assert lopsided.w_um < RIB_WIDTH
+        assert lopsided.xp_um > RIB_WIDTH / 2
+        with pytest.raises(ValueError, match="fit"):
+            _build(lopsided, mode="high_res", junction_region=JUNCTION_REGION)
+
+    def test_depletion_within_both_flanks_accepted(self):
+        junc = _wide_junction()
+        assert max(junc.xp_um, junc.xn_um) < RIB_WIDTH / 2
+        _comp, res = _build(junc, mode="high_res", junction_region=JUNCTION_REGION)
+        assert res["junction"]["mode"] == "high_res"
+
     def test_invalid_zmax_rejected(self):
         with pytest.raises(ValueError):
             _build(_thin_junction(), zmax=-1.0)

@@ -753,6 +753,88 @@ class TestInstallPalaceRuntime:
                 rt.install_palace_runtime()
 
     @pytest.mark.usefixtures("_mock_gcloud")
+    def test_corrupt_cached_wheel_is_refetched(self, tmp_path: Path) -> None:
+        """A truncated wheel in the download cache must not brick the install."""
+        import io
+        import zipfile
+
+        import gsim.palace.runtime as rt
+
+        tag = "0.9.9"
+        cache_dir = tmp_path / "cache"
+        wheel_buf = io.BytesIO()
+        with zipfile.ZipFile(wheel_buf, "w") as zf:
+            zf.writestr("palacetoolkit_palace_cpu/bin/palace", "#!/bin/sh\nexit 0\n")
+            zf.writestr("palacetoolkit_palace_cpu/lib/libfoo.so", "libdata")
+        wheel_buf.seek(0)
+        downloads: list[str] = []
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                downloads.append("hit")
+                return wheel_buf.getvalue()
+
+        wheel_name = f"palacetoolkit_palace_cpu-{tag}-py3-none-linux_x86_64.whl"
+        corrupt = cache_dir / "downloads" / wheel_name
+        corrupt.parent.mkdir(parents=True)
+        corrupt.write_bytes(b"PK\x03\x04 truncated")
+
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr(rt, "_runtime_cache_dir", lambda: cache_dir)
+            mp.setattr(rt, "_binary_tag", lambda: tag)
+            mp.setattr(rt, "_is_linux_x86_64", lambda: True)
+            mp.setattr(
+                rt, "_binary_wheel_url", lambda t: "https://example.invalid/x.whl"
+            )
+            mp.setattr(rt, "_binary_wheel_url_from_release", lambda t, timeout: None)
+            mp.setattr(rt, "urlopen", lambda *a, **k: _FakeResponse())
+
+            result = rt.install_palace_runtime(force=False)
+
+        assert downloads, "corrupt cached wheel was not re-downloaded"
+        assert result.is_file()
+
+    @pytest.mark.usefixtures("_mock_gcloud")
+    def test_undecodable_download_clears_the_cache(self, tmp_path: Path) -> None:
+        """A download that is still not a zip fails loudly and drops the file."""
+        import gsim.palace.runtime as rt
+
+        tag = "0.9.9"
+        cache_dir = tmp_path / "cache"
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b"<html>404</html>"
+
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr(rt, "_runtime_cache_dir", lambda: cache_dir)
+            mp.setattr(rt, "_binary_tag", lambda: tag)
+            mp.setattr(rt, "_is_linux_x86_64", lambda: True)
+            mp.setattr(
+                rt, "_binary_wheel_url", lambda t: "https://example.invalid/x.whl"
+            )
+            mp.setattr(rt, "_binary_wheel_url_from_release", lambda t, timeout: None)
+            mp.setattr(rt, "urlopen", lambda *a, **k: _FakeResponse())
+
+            with pytest.raises(RuntimeError, match="not a valid wheel"):
+                rt.install_palace_runtime(force=False)
+
+        wheel_name = f"palacetoolkit_palace_cpu-{tag}-py3-none-linux_x86_64.whl"
+        assert not (cache_dir / "downloads" / wheel_name).exists()
+
+    @pytest.mark.usefixtures("_mock_gcloud")
     def test_downloads_and_extracts_runtime(self, tmp_path: Path) -> None:
         import io
         import zipfile

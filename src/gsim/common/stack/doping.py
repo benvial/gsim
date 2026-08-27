@@ -276,10 +276,14 @@ def make_pn_junction_profile(
         raise ValueError("zmax must exceed zmin.")
     if length <= 0:
         raise ValueError("length must be positive.")
-    if cfg.xp_um + cfg.xn_um > rib_width:
+    # Each doped rectangle spans one half-rib, so the depletion has to fit
+    # in a flank on each side separately: an asymmetric junction can overrun
+    # the lightly doped flank while W itself is still narrower than the rib.
+    if max(cfg.xp_um, cfg.xn_um) > rib_width / 2:
         raise ValueError(
-            f"Depletion width W={cfg.w_um:.4g} um does not fit in the "
-            f"{rib_width:.4g} um rib."
+            f"Depletion width W={cfg.w_um:.4g} um (xp={cfg.xp_um:.4g} um, "
+            f"xn={cfg.xn_um:.4g} um) does not fit in the "
+            f"{rib_width / 2:.4g} um flanks of the {rib_width:.4g} um rib."
         )
 
     flank_um = rib_width / 2
