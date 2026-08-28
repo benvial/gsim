@@ -7,12 +7,19 @@ every caller re-invents, so :func:`select_line_mode` owns the default
 rule, the substitution point for unusual lines, and the ambiguity
 warning.
 
-The default rule keeps Modes that propagate (``Re(n_eff)`` above the
-light line, ``|Im(n_eff)|`` smaller than ``Re(n_eff)``) and picks the
-slowest-travelling of them — the right choice for a line with a single
-signal conductor, where the loaded quasi-TEM Mode carries the highest
-effective index. Lines that break that assumption pass their own
-candidate rule instead.
+The default rule keeps Modes that propagate — ``Re(n_eff)`` above the
+light line, and losing no more per unit length than they advance in
+phase — and picks the slowest-travelling of them: the right choice for a
+line with a single signal conductor, where the loaded quasi-TEM Mode
+carries the highest effective index. Lines that break that assumption
+pass their own candidate rule instead.
+
+How much loss still counts as propagating is the ``max_loss_ratio``
+bound on ``|Im(n_eff)| / Re(n_eff)``. It defaults to one — the point
+where a Mode decays as fast as it advances — because that is the widest
+bound that is a bound at all; a caller who knows the answer is a
+transmission line rather than a waveguide Mode should tighten it, since
+a discretization's spurious Modes cluster just inside it.
 
 Modes are read duck-typed: anything with an ``n_eff`` attribute (femwell
 ``Mode``), a mapping with an ``"n_eff"`` key (the Palace result rows), or
@@ -63,6 +70,7 @@ def propagating_modes[ModeT](
     modes: Sequence[ModeT],
     *,
     min_index: float = 1.0,
+    max_loss_ratio: float = 1.0,
 ) -> list[ModeT]:
     """Keep the Modes that propagate, dropping evanescent and spurious ones.
 
@@ -70,6 +78,10 @@ def propagating_modes[ModeT](
         modes: Every solved Mode.
         min_index: Lower bound on ``Re(n_eff)``; Modes at or below it are
             not guided by the line (default: the vacuum light line).
+        max_loss_ratio: Upper bound on ``|Im(n_eff)| / Re(n_eff)``; a
+            Mode losing more than this per unit length than it advances
+            in phase is not propagating (default: one, where the two are
+            equal).
 
     Returns:
         The propagating Modes, in the order they were solved.
@@ -77,7 +89,7 @@ def propagating_modes[ModeT](
     kept = []
     for mode in modes:
         n_eff = mode_index(mode)
-        if n_eff.real > min_index and abs(n_eff.imag) < n_eff.real:
+        if n_eff.real > min_index and abs(n_eff.imag) < max_loss_ratio * n_eff.real:
             kept.append(mode)
     return kept
 
@@ -95,6 +107,7 @@ def select_line_mode[ModeT](
     *,
     rule: LineModeRule | None = None,
     min_index: float = 1.0,
+    max_loss_ratio: float = 1.0,
     degeneracy_rtol: float = 0.03,
 ) -> ModeT:
     """Select the physical line Mode from a set of solved Modes.
@@ -106,6 +119,8 @@ def select_line_mode[ModeT](
             returns the physically admissible ones; the slowest of those
             (highest ``Re(n_eff)``) is selected.
         min_index: Lower bound on ``Re(n_eff)`` for the default rule.
+        max_loss_ratio: Upper bound on ``|Im(n_eff)| / Re(n_eff)`` for
+            the default rule.
         degeneracy_rtol: Relative spread in ``Re(n_eff)`` within which two
             candidates count as ambiguous and a warning is issued.
 
@@ -122,7 +137,7 @@ def select_line_mode[ModeT](
             choice between them is not physically meaningful.
     """
     candidates: Sequence[ModeT] = (
-        propagating_modes(modes, min_index=min_index)
+        propagating_modes(modes, min_index=min_index, max_loss_ratio=max_loss_ratio)
         if rule is None
         else list(rule(modes))
     )

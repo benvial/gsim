@@ -21,6 +21,7 @@ selects a Route pays for neither.
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -34,8 +35,10 @@ __all__ = [
     "EMRoute",
     "PalaceMode",
     "containment_unmeasurable",
+    "metallic_boundary_unexpressed",
     "mode_boundary_ratio",
     "palace_binary",
+    "palace_line_impedance",
     "require_palace_binary",
     "require_route",
     "solve_palace_modes",
@@ -55,16 +58,20 @@ DEFAULT_PALACE_STRIPS: int = 5
 class PalaceMode:
     """One Mode of a Palace ``BoundaryMode`` solve.
 
-    Palace reports its Modes as effective indices in a text result rather
-    than as field vectors, so a Palace Mode carries its index and its
-    solver-assigned number and nothing else. Anything reading fields —
-    the Marks-Williams impedance extraction, the Window-containment
-    check — is a femwell-Route capability, and the Stages report those
-    quantities as NaN under this Route rather than inventing them.
+    Palace's *text* results report Modes as effective indices rather than
+    as field vectors, so a Palace Mode carries its index and its
+    solver-assigned number and nothing else. Its fields are not lost —
+    a solve asked to save them writes them to ParaView, and
+    :func:`palace_line_impedance` reads one back through
+    :mod:`gsim.palace.mode_fields` — but they are not in hand at
+    selection time, so anything a Stage measures while choosing a Mode
+    (the Window-containment ratio) stays a femwell-Route capability
+    rather than something to invent.
 
     Attributes:
         n_eff: Complex effective index (``exp(+i omega t)`` convention).
-        mode_id: Palace's own mode number, 1-based.
+        mode_id: Palace's own mode number, 1-based. This is also the
+            ParaView cycle its saved fields land in.
     """
 
     n_eff: complex
@@ -162,6 +169,7 @@ def solve_palace_modes(
     num_modes: int,
     binary: Path,
     target: float = 0.0,
+    save: int = 0,
     verbose: bool = False,
 ) -> list[PalaceMode]:
     """Solve one ``BoundaryMode`` problem with Palace on an existing mesh.
@@ -178,6 +186,11 @@ def solve_palace_modes(
             search; ``0.0`` leaves it to Palace.
         binary: Palace executable, from :func:`require_route` or
             :func:`require_palace_binary`.
+        save: Number of Modes whose fields are written to ParaView, in
+            mode order. A Stage reading fields back — the RF Stage, for
+            its characteristic impedance — asks for every Mode it might
+            select, because which one that is is not known until they
+            are all solved.
         verbose: Stream Palace's output.
 
     Returns:
@@ -188,7 +201,12 @@ def solve_palace_modes(
     """
     from gsim.palace.results import load_text_results
 
-    sim.set_boundary_mode(freq=float(freq_hz), num_modes=int(num_modes), target=target)
+    sim.set_boundary_mode(
+        freq=float(freq_hz),
+        num_modes=int(num_modes),
+        target=target,
+        save=int(save),
+    )
     sim.write_config(photonic=True)
     results: Any = sim.run_local(palace_executable=binary, verbose=verbose)
     text = results if hasattr(results, "modes") else load_text_results(results)
@@ -209,9 +227,11 @@ def containment_unmeasurable(stage_name: str) -> str:
 
     ADR 0002 makes a Stage warn when a solved Mode still carries field at
     its Window boundary, because a too-small Window is the failure mode
-    per-Stage Windows create. Palace's boundary-mode results carry no
-    fields, so the check cannot run there — and a check that quietly does
-    not run is worse than one that says so.
+    per-Stage Windows create. The check is measured on every candidate
+    Mode as the Stage chooses between them, and Palace's *text* results —
+    which is all a Stage has at that point — carry only effective
+    indices. A check that quietly does not run is worse than one that
+    says so.
 
     Args:
         stage_name: Stage the message names.
@@ -221,10 +241,40 @@ def containment_unmeasurable(stage_name: str) -> str:
     """
     return (
         f"The {stage_name} stage's palace route cannot check window "
-        "containment: Palace's boundary-mode results carry no mode fields, "
-        "so boundary_field_ratio is NaN and a mode clipped by its window "
-        "will not announce itself (ADR 0002). Re-solve with "
+        "containment: the mode table it selects from carries only effective "
+        "indices, so boundary_field_ratio is NaN and a mode clipped by its "
+        "window will not announce itself (ADR 0002). Re-solve with "
         f"study.{stage_name}(route='femwell') to have the window checked."
+    )
+
+
+def metallic_boundary_unexpressed(stage_name: str) -> str:
+    """Why the Palace Route does not shield its Window.
+
+    ``metallic_boundaries`` puts a perfect conductor on the outer edge of
+    a Stage's Window, which is what makes a line solve a *shielded* line
+    solve. Nothing in the Palace pipeline expresses it: the native-2D
+    mesher tags a conductor's own outline, never the domain wall, and
+    Palace's own default for a boundary attribute it was given no
+    condition for is PMC — the magnetic wall, the opposite one. So the
+    two Routes do not solve the same boundary-value problem, and their
+    Modes cannot be expected to match.
+
+    Args:
+        stage_name: Stage the message names.
+
+    Returns:
+        The warning text.
+    """
+    return (
+        f"The {stage_name} stage's palace route cannot put a metallic wall "
+        "around its window: nothing in the palace pipeline expresses "
+        "metallic_boundaries, and palace's own default for the outer "
+        "boundary is PMC rather than PEC. The femwell route shields the "
+        "same window, so the two routes are solving different problems and "
+        "their modes will not agree. Widen the window until the wall stops "
+        f"mattering, or set study.{stage_name}(metallic_boundaries=False) to "
+        "make the femwell route match this one."
     )
 
 
@@ -235,12 +285,65 @@ def mode_boundary_ratio(mode: Any) -> float:
         mode: A solved Mode from either Route.
 
     Returns:
-        The ratio for a femwell Mode, and NaN for a Palace one — Palace's
-        text results carry no field, so the containment check is a
-        femwell-Route capability rather than a number to fabricate.
+        The ratio for a femwell Mode, and NaN for a Palace one — the
+        Palace mode table a Stage selects from carries no field, so the
+        containment check is a femwell-Route capability rather than a
+        number to fabricate.
     """
     if isinstance(mode, PalaceMode):
         return math.nan
     from gsim.femwell.adapter import boundary_field_ratio
 
     return boundary_field_ratio(mode)
+
+
+def palace_line_impedance(
+    sim: BoundaryModeSim,
+    mode: PalaceMode,
+    *,
+    h_span: tuple[float, float],
+    v_span: tuple[float, float],
+    stage_name: str,
+) -> complex:
+    """Characteristic impedance of a Palace Mode, off its saved fields.
+
+    The Marks-Williams power-current integral the femwell Route runs,
+    run on the fields Palace wrote for the selected Mode: the complex
+    Poynting flux over the whole Cross-section, over the current
+    Ampere's law reads around the signal conductor.
+
+    Reading fields back is the one part of a Palace solve that depends
+    on a file the solver may not have written, so a missing or
+    unreadable one is reported as NaN with the reason rather than
+    raising in the middle of a frequency sweep.
+
+    Args:
+        sim: The simulation that was run, holding its output directory.
+        mode: The selected Mode, whose ``mode_id`` names its saved
+            fields.
+        h_span: ``(min, max)`` of the signal conductor along the
+            Cross-section's in-plane axis (um).
+        v_span: ``(min, max)`` along its vertical axis (um).
+        stage_name: Stage asking, named in the warning.
+
+    Returns:
+        The complex characteristic impedance in ohms, or NaN when the
+        fields could not be read.
+    """
+    from gsim.palace.mode_fields import load_boundary_mode_field
+    from gsim.palace.mode_fields import z0_power_current as palace_z0
+
+    output_dir = sim.output_dir
+    try:
+        if output_dir is None:
+            raise RuntimeError("the simulation has no output directory.")  # noqa: TRY301
+        field = load_boundary_mode_field(output_dir, mode_id=mode.mode_id)
+        return palace_z0(field, h_span=h_span, v_span=v_span)
+    except Exception as err:
+        warnings.warn(
+            f"The {stage_name} stage's palace route could not read mode "
+            f"{mode.mode_id}'s saved fields, so its characteristic impedance "
+            f"comes back NaN: {err} Palace's output is in {output_dir}.",
+            stacklevel=2,
+        )
+        return complex(math.nan, math.nan)

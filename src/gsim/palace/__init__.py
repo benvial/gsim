@@ -94,6 +94,12 @@ from gsim.palace.mesh import (
     generate_mesh,
 )
 
+# Saved boundary-mode fields, and the line parameters they carry
+from gsim.palace.mode_fields import (
+    BoundaryModeField,
+    load_boundary_mode_field,
+)
+
 # Models (new submodule)
 from gsim.palace.models import (
     BoundaryModeConfig,
@@ -156,6 +162,7 @@ __all__ = [
     "MATERIALS_DB",
     "BoundaryFieldData",
     "BoundaryModeConfig",
+    "BoundaryModeField",
     "BoundaryModeSim",
     "CPWPortConfig",
     "CrossSectionPlaneConfig",
@@ -213,6 +220,7 @@ __all__ = [
     "install_palace_runtime",
     "interactive_mode",
     "load_boundary_field_data",
+    "load_boundary_mode_field",
     "load_field_context",
     "load_fields",
     "load_sparams",

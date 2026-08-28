@@ -2,11 +2,34 @@
 
 ## Unreleased
 
+- The modulator RF Stage's Palace Route solves an electrode-loaded Staircase and reports its characteristic impedance. A
+  Staircase's electrodes now carry a `conductor_model` (ADR 0003): `"volume"` meshes each as a Region of lossy metal,
+  `"pec"` leaves its interior out of the meshed domain and makes its outline a perfect conductor. Palace's
+  shift-and-invert search returns a metal Region's own modes rather than the line's, so the Palace Route takes `"pec"`
+  and the femwell Route, which carries the metal's loss, keeps `"volume"`; setting both to the same value is what makes
+  the two Routes comparable. No existing femwell answer moves.
+
+- `gsim.palace.mode_fields` reads a saved Palace boundary Mode's fields back off disk and runs the Marks-Williams
+  power-current integrals on them, so `study.rf(route="palace")` reports `z0_ohm` instead of NaN.
+
+- `gsim.femwell.adapter.z0_power_current` accepts `current_facets`: the signal current of a perfect conductor, which
+  carries no volume current, as Ampere's contour integral around it. Validated against the analytic PEC-coax impedance.
+
+- The modulator RF Stage's Palace Route says that it cannot shield its Window. `metallic_boundaries` puts a perfect
+  conductor on the Window's outer wall, femwell honours it, and nothing in the Palace pipeline expresses it — Palace's
+  default for that wall is PMC, the opposite condition — so the two Routes are not solving the same boundary-value
+  problem and their modes do not agree. Warned about rather than left in the numbers.
+
+- `gsim.common.modes.select_line_mode` takes a `max_loss_ratio` bound on `|Im(n_eff)| / Re(n_eff)`, and the RF Stage
+  tightens it to 0.5: a transmission line advances several radians of phase per radian of loss, and the Modes sitting
+  just inside the previous bound of one are the discretization's rather than the line's.
+
 - PN-junction depletion model from Sze *Physics of Semiconductor Devices* (`PNJunctionConfig`,
   `make_pn_junction_profile`): computes built-in voltage, depletion width `W` (abrupt or linearly graded), asymmetric
   P/N split `x_p`/`x_n`, and capacitance `C_j = eps_s A / W`. The depletion region is represented automatically — meshed
   as a dielectric strip in high-res mode when `W >= ~1/5` of the flanking doped sections, otherwise applied as a lumped
   Impedance boundary via `sim.set_pn_junction()`. The 2D TWMZM demo now illustrates both modes.
+
 - Fix: `build_doped_cross_section()` now registers doping/rib materials on `stack.materials`; previously doped domains
   silently resolved to eps=1.0 without conductivity in generated Palace configs.
 

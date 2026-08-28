@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from gsim.common.stack.extractor import LayerStack
 
 __all__ = [
+    "boundary_facets_on_rect",
     "boundary_field_ratio",
     "elementwise_epsilon",
     "epsilon_by_region",
@@ -454,21 +455,85 @@ def boundary_field_ratio(mode: Any) -> float:
     return float(np.sqrt(float(magnitude[elements].max()) / peak))
 
 
+def boundary_facets_on_rect(
+    mesh: Any,
+    *,
+    h_span: tuple[float, float],
+    v_span: tuple[float, float],
+    tol_um: float = 1e-4,
+) -> NDArray[np.int64]:
+    """Facets of the domain boundary lying on one axis-aligned rectangle.
+
+    A conductor the mesh leaves out of its meshed domain — a Staircase
+    electrode under the ``"pec"`` conductor model — is a hole, and its
+    outline is part of the domain boundary. This finds that outline from
+    the rectangle the conductor was drawn as, which is what
+    :func:`z0_power_current` integrates the line current around.
+
+    Args:
+        mesh: The skfem mesh a Mode was solved on
+            (``mode.basis.mesh``).
+        h_span: ``(min, max)`` of the rectangle along the first
+            coordinate (um).
+        v_span: ``(min, max)`` along the second coordinate (um).
+        tol_um: How far a facet midpoint may sit off the rectangle's
+            perimeter and still count as on it (um). Loose enough to
+            absorb the rounding a mesh file's own coordinate precision
+            leaves, and far tighter than any drawn feature.
+
+    Returns:
+        The facet indices, ascending.
+
+    Raises:
+        ValueError: When no boundary facet lies on the rectangle, which
+            means the conductor was meshed as a domain rather than left
+            out of one.
+    """
+    facets = mesh.boundary_facets()
+    midpoints = mesh.p[:, mesh.facets[:, facets]].mean(axis=1)
+    h, v = midpoints[0], midpoints[1]
+    inside_h = (h >= h_span[0] - tol_um) & (h <= h_span[1] + tol_um)
+    inside_v = (v >= v_span[0] - tol_um) & (v <= v_span[1] + tol_um)
+    on_side = (
+        (np.abs(h - h_span[0]) <= tol_um)
+        | (np.abs(h - h_span[1]) <= tol_um)
+        | (np.abs(v - v_span[0]) <= tol_um)
+        | (np.abs(v - v_span[1]) <= tol_um)
+    )
+    selected = facets[inside_h & inside_v & on_side]
+    if selected.size == 0:
+        raise ValueError(
+            f"No boundary facet lies on the rectangle h={h_span}, v={v_span}, "
+            "so that conductor is not a hole in the meshed domain. Its "
+            "current is a conduction integral over its elements rather than "
+            "a contour integral around it."
+        )
+    return np.asarray(np.sort(selected), dtype=np.int64)
+
+
 def z0_power_current(
     mode: Any,
     *,
     frequency_hz: float,
     sigma_s_per_m: ArrayLike | None = None,
     current_elements: ArrayLike | None = None,
+    current_facets: ArrayLike | None = None,
 ) -> complex:
     """Marks-Williams power-current characteristic impedance of an RF mode.
 
     ``Z_0 = 2 P / |I|^2`` with the complex Poynting flux
     ``P = (1/2) integral (E_t x H_t*) . z dA`` over the whole cross-section
-    and the longitudinal conduction current ``I = integral sigma E_z dA``
-    over the signal conductor. The ratio is invariant to the mode's field
-    normalization; the mesh coordinates are in um and ``sigma`` in S/m, the
-    unit conversion is internal.
+    and the longitudinal current ``I`` on the signal conductor. The ratio
+    is invariant to the mode's field normalization; the mesh coordinates
+    are in um and ``sigma`` in S/m, the unit conversion is internal.
+
+    The current is read one of two ways, because a conductor reaches a
+    mode solve one of two ways. A conductor meshed as a Region carries a
+    conduction current ``I = integral sigma E_z dA`` over its elements. A
+    conductor the mesh leaves out of its domain — a perfect one — carries
+    no volume current at all, and Ampere's law reads it off the field
+    around it instead: ``I = contour integral of H . dl`` over its
+    outline, which :func:`boundary_facets_on_rect` locates.
 
     Args:
         mode: A femwell ``Mode`` from :func:`solve_modes` (fields solved
@@ -477,19 +542,73 @@ def z0_power_current(
         frequency_hz: RF frequency of the solve in Hz.
         sigma_s_per_m: Conductivity per mesh element in S/m. Defaults to
             the conduction profile implied by the mode's own epsilon:
-            ``sigma = -Im(eps_r) omega eps_0`` where negative.
+            ``sigma = -Im(eps_r) omega eps_0`` where negative. Unused
+            when the current comes from ``current_facets``.
         current_elements: Element indices (or boolean mask) carrying the
             signal current. Defaults to every element with positive
             conductivity — valid only when the mesh has a single signal
             conductor; on a two-conductor line (e.g. CPS electrodes) the
             signal and return currents nearly cancel in that sum, so pass
             the elements of one conductor explicitly.
+        current_facets: Facets of a closed contour around the signal
+            conductor, from :func:`boundary_facets_on_rect`. Given
+            these, the current is Ampere's contour integral rather than
+            a conduction integral, which is the only one a perfect
+            conductor has.
 
     Returns:
         Complex characteristic impedance in ohms.
+
+    Raises:
+        ValueError: When both current definitions are asked for at once,
+            when there is nothing to integrate over, or when the
+            integral comes out zero.
     """
     skfem = require_skfem()
     from skfem.helpers import cross
+
+    if current_elements is not None and current_facets is not None:
+        raise ValueError(
+            "Give the signal current as elements to integrate the conduction "
+            "current over, or as facets to integrate the field around, not "
+            "both."
+        )
+
+    basis = mode.basis
+
+    @skfem.Functional(dtype=np.complex128)  # type: ignore[untyped-decorator]
+    def _power_form(w: Any) -> Any:
+        return cross(w["E"][0], np.conj(w["H"][0]))
+
+    power = 0.5 * _power_form.assemble(
+        basis,
+        E=basis.interpolate(mode.E),
+        H=basis.interpolate(mode.H),
+    )
+
+    if current_facets is not None:
+        current = _contour_current(mode, current_facets)
+    else:
+        current = _conduction_current(
+            mode,
+            frequency_hz=frequency_hz,
+            sigma_s_per_m=sigma_s_per_m,
+            current_elements=current_elements,
+        )
+    if current == 0:
+        raise ValueError("Zero longitudinal current over the selected conductor.")
+    return complex(2.0 * power / (abs(current) ** 2))
+
+
+def _conduction_current(
+    mode: Any,
+    *,
+    frequency_hz: float,
+    sigma_s_per_m: ArrayLike | None,
+    current_elements: ArrayLike | None,
+) -> complex:
+    """Longitudinal conduction current over a conductor's own elements."""
+    skfem = require_skfem()
 
     omega = 2.0 * np.pi * float(frequency_hz)
     eps = np.asarray(mode.epsilon_r, dtype=np.complex128)
@@ -515,30 +634,54 @@ def z0_power_current(
             "was solved without conductive regions (all Im(eps) >= 0)."
         )
 
-    basis = mode.basis
-
-    @skfem.Functional(dtype=np.complex128)  # type: ignore[untyped-decorator]
-    def _power_form(w: Any) -> Any:
-        return cross(w["E"][0], np.conj(w["H"][0]))
-
-    power = 0.5 * _power_form.assemble(
-        basis,
-        E=basis.interpolate(mode.E),
-        H=basis.interpolate(mode.H),
-    )
-
     @skfem.Functional(dtype=np.complex128)  # type: ignore[untyped-decorator]
     def _current_form(w: Any) -> Any:
         return w["sigma"] * w["E"][1]
 
-    sub = basis.with_elements(elements)
+    sub = mode.basis.with_elements(elements)
     sub_sigma = mode.basis_epsilon_r.with_elements(elements)
     # Mesh coordinates are um: S/m -> S/um so the um^2 area integral is in A.
-    current = 1e-6 * _current_form.assemble(
-        sub,
-        E=sub.interpolate(mode.E),
-        sigma=sub_sigma.interpolate(np.asarray(sigma, dtype=np.float64)),
+    return complex(
+        1e-6
+        * _current_form.assemble(
+            sub,
+            E=sub.interpolate(mode.E),
+            sigma=sub_sigma.interpolate(np.asarray(sigma, dtype=np.float64)),
+        )
     )
-    if current == 0:
-        raise ValueError("Zero longitudinal current over the selected elements.")
-    return complex(2.0 * power / (abs(current) ** 2))
+
+
+def _contour_current(mode: Any, facets: ArrayLike) -> complex:
+    """Ampere's contour integral of ``H`` around a closed set of facets.
+
+    The facets bound the conductor, so the enclosed current is
+    ``I = contour integral of H . dl``, written with the facet normal as
+    ``(n x H) . z``. The normal a boundary facet carries points out of
+    the meshed domain and so consistently into the conductor, which sets
+    the sign of the whole contour and leaves ``|I|`` — the only part
+    ``Z_0`` reads — right either way.
+
+    Args:
+        mode: The solved Mode.
+        facets: Facet indices of the closed contour.
+
+    Returns:
+        The enclosed current, in the same scale as the conduction
+        integral (um-coordinate mesh, SI fields).
+    """
+    skfem = require_skfem()
+
+    selected = np.atleast_1d(np.asarray(facets, dtype=np.int64))
+    facet_basis = skfem.FacetBasis(mode.basis.mesh, mode.basis.elem, facets=selected)
+
+    @skfem.Functional(dtype=np.complex128)  # type: ignore[untyped-decorator]
+    def _ampere_form(w: Any) -> Any:
+        (h_x, h_y), _h_z = w["H"]
+        return w.n[0] * h_y - w.n[1] * h_x
+
+    # Mesh coordinates are um and H is in A/m, so the um line integral is
+    # 1e6 times the current in A -- the same scale the conduction integral
+    # above lands in, which is what makes 2 P / |I|^2 come out in ohms.
+    return complex(
+        _ampere_form.assemble(facet_basis, H=facet_basis.interpolate(mode.H))
+    )

@@ -96,3 +96,28 @@ class TestNoCandidates:
 
     def test_is_a_value_error(self):
         assert issubclass(NoLineModeError, ValueError)
+
+
+class TestLossBound:
+    """How much loss still counts as propagating."""
+
+    def test_a_mode_losing_as_fast_as_it_advances_is_dropped(self):
+        candidates = propagating_modes([3.0 - 3.0j, 3.0 - 0.1j])
+        assert candidates == [3.0 - 0.1j]
+
+    def test_a_tighter_bound_drops_the_modes_just_inside_the_default(self):
+        """A discretization's spurious modes cluster where alpha ~ beta."""
+        spurious = 31.9 - 31.8j
+        assert propagating_modes([spurious, 2.0 - 1e-6j]) == [spurious, 2.0 - 1e-6j]
+        assert propagating_modes([spurious, 2.0 - 1e-6j], max_loss_ratio=0.5) == [
+            2.0 - 1e-6j
+        ]
+
+    def test_the_bound_reaches_the_selection(self):
+        modes = [31.9 - 31.8j, 2.0 - 1e-6j]
+        assert select_line_mode(modes) == 31.9 - 31.8j
+        assert select_line_mode(modes, max_loss_ratio=0.5) == 2.0 - 1e-6j
+
+    def test_a_bound_nothing_survives_is_reported(self):
+        with pytest.raises(NoLineModeError, match="No propagating line mode"):
+            select_line_mode([3.0 - 2.0j], max_loss_ratio=0.5)

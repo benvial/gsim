@@ -177,6 +177,67 @@ class TestElectrodes:
         assert staircase.electrode_spans == ()
 
 
+class TestConductorModel:
+    """How the electrode metal reaches the mesh (ADR 0003)."""
+
+    def test_a_volume_electrode_is_a_region_of_lossy_metal(self):
+        staircase = build()
+        stack = staircase.stack("rf")
+
+        assert staircase.conductor_model == "volume"
+        for name in staircase.electrode_names:
+            assert stack.layers[name].layer_type == "dielectric"
+            assert material_of(stack, name).conductivity > 1e6
+
+    def test_a_pec_electrode_is_a_conductor_layer_without_conductivity(self):
+        """A conductor layer is what the native-2D mesher meshes as an
+        outline, and no conductivity is what makes that outline perfect
+        rather than a surface impedance."""
+        staircase = build(electrodes=ElectrodeSpec(conductor_model="pec"))
+        stack = staircase.stack("rf")
+
+        assert staircase.conductor_model == "pec"
+        for name in staircase.electrode_names:
+            assert stack.layers[name].layer_type == "conductor"
+            assert not material_of(stack, name).conductivity
+
+    def test_a_pec_electrode_needs_no_optical_permittivity(self):
+        """A perfect conductor carries no permittivity to be asked for."""
+        staircase = build(electrodes=ElectrodeSpec(conductor_model="pec"))
+        stack = staircase.stack("optical")
+        assert stack.layers[staircase.electrode_names[0]].layer_type == "conductor"
+
+    def test_the_model_does_not_move_the_drawn_metal(self):
+        """Only how the metal is expressed changes, not where it is."""
+        volume = build()
+        pec = build(electrodes=ElectrodeSpec(conductor_model="pec"))
+        assert pec.electrode_spans == volume.electrode_spans
+        assert pec.electrode_extent(pec.electrode_names[0]) == volume.electrode_extent(
+            volume.electrode_names[0]
+        )
+
+
+class TestElectrodeExtent:
+    def test_it_reports_the_rectangle_the_electrode_occupies(self):
+        spec = ElectrodeSpec(width_um=1.5, gap_um=0.4, thickness_um=0.6)
+        staircase = build(electrodes=spec)
+
+        h_span, v_span = staircase.electrode_extent("electrode_high")
+        assert h_span == pytest.approx((JUNCTION[1] + 0.4, JUNCTION[1] + 0.4 + 1.5))
+        assert v_span == pytest.approx((0.0, 0.6))
+
+    def test_an_electrode_the_staircase_never_drew_is_reported(self):
+        staircase = build()
+        with pytest.raises(ValueError, match="no electrode named 'ground'"):
+            staircase.electrode_extent("ground")
+
+    def test_a_staircase_without_electrodes_has_no_extent(self):
+        staircase = build(electrodes=None)
+        assert staircase.conductor_model is None
+        with pytest.raises(ValueError, match="no electrode named"):
+            staircase.electrode_extent("electrode_low")
+
+
 class TestOpticalElectrodes:
     def test_an_rf_electrode_is_refused_by_an_optical_stack(self):
         staircase = build()

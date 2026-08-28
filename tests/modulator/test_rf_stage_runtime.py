@@ -197,6 +197,75 @@ class TestSignalConductor:
         assert captured["elements"].tolist() == signal.tolist()
 
 
+@pytest.fixture(scope="module")
+def pec_solved(tmp_path_factory):
+    """The same RF Stage run with perfect electrodes instead of lossy ones."""
+    study = build_study(tmp_path_factory.mktemp("modulator-rf-pec"))
+    study.rf(
+        frequencies_hz=FREQS_HZ,
+        n_strips=3,
+        conductor_model="pec",
+        # The contour integral reads h on the domain boundary, where
+        # femwell's first-order h is piecewise constant.
+        order=2,
+    )
+    return study, study.rf.run()
+
+
+class TestPerfectConductorElectrodes:
+    """The ``"pec"`` conductor model on the femwell Route (ADR 0003).
+
+    A perfect electrode is left out of the meshed domain, so the Stage
+    has no conduction current to integrate and reads Ampere's contour
+    integral around the hole instead. What that must not do is change
+    the answer: the same line, modelled with lossless metal instead of
+    lossy metal, has to come out with much the same impedance and much
+    less loss.
+    """
+
+    def test_the_electrodes_are_not_regions_of_the_mesh(self, pec_solved):
+        import meshio
+
+        study, _ = pec_solved
+        mesh = meshio.read(str(study.stage_dir("rf") / "palace.msh"))
+        regions = {
+            str(name)
+            for name, data in mesh.field_data.items()
+            if int(np.asarray(data)[1]) == 2
+        }
+
+        assert {"strip_0", "strip_1", "strip_2"} <= regions
+        assert not {"electrode_low", "electrode_high"} & regions
+
+    def test_the_contour_current_reaches_a_physical_impedance(self, pec_solved):
+        _, line = pec_solved
+
+        assert np.all(np.isfinite(line.z0_ohm))
+        assert np.all(line.z0_ohm.real > 10.0)
+        assert np.all(line.z0_ohm.real < 1e3)
+
+    def test_it_lands_where_the_lossy_metal_model_does(self, pec_solved, solved):
+        """Two models of the same electrode, one line: same impedance."""
+        _, pec = pec_solved
+        _, volume = solved
+
+        assert pec.z0_ohm[0].real == pytest.approx(volume.z0_ohm[0].real, rel=0.1)
+
+    def test_the_line_is_far_less_lossy_without_the_metal(self, pec_solved, solved):
+        """The metal's own loss is what the pec model drops."""
+        _, pec = pec_solved
+        _, volume = solved
+
+        assert np.all(pec.alpha_rf_np_m > 0.0)
+        assert np.all(pec.alpha_rf_np_m < 0.01 * volume.alpha_rf_np_m)
+
+    def test_a_first_order_solve_says_the_impedance_is_biased(self, tmp_path):
+        study = build_study(tmp_path, biases=[0.0])
+        study.rf(frequencies_hz=[10e9], n_strips=2, conductor_model="pec", order=1)
+        with pytest.warns(UserWarning, match="biased high by tens of percent"):
+            study.rf.run()
+
+
 class TestWindowTooSmall:
     def test_the_default_window_does_not_warn(self, tmp_path):
         """The full extent shields the line rather than squeezing it."""

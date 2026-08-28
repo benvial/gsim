@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from gsim.common.modes import NoLineModeError
 from gsim.modulator import Device, Study
 
 from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_demo
@@ -179,6 +180,46 @@ class TestCrossRouteAgreement:
         study.optical(route="palace", n_strips=3, num_modes=1, n_guess=2.5)
         with pytest.warns(UserWarning, match="cannot check window containment"):
             study.optical.run()
+
+
+def rf_line(study, **settings):
+    """Solve the RF Stage once and return its line parameters."""
+    study.rf(frequencies_hz=[10e9], n_strips=3, num_modes=4, n_guess=2.0, **settings)
+    return study.rf.run()
+
+
+class TestRFElectrodeModel:
+    """What the Palace Route can express of the electrode metal (ADR 0003).
+
+    The RF Stage's cross-Route numeric gate is not here, and ticket 17
+    carries it: the RF Stage's ``metallic_boundaries`` puts a perfect
+    conductor on the Window's outer wall, femwell honours it and nothing
+    in the Palace pipeline expresses it, so the two Routes are solving
+    different boundary-value problems. Palace also crashes on the
+    perfect-electrode solve about half the time in this version
+    (``free(): corrupted unsorted chunks``), which is why nothing here
+    asserts on a live one. What is settled, and what this holds, is which
+    model of the metal Palace can solve at all.
+    """
+
+    def test_a_metal_region_leaves_palace_no_line_mode_to_find(self, tmp_path):
+        """A region with ``|Im(eps)| ~ 1e7`` returns its own modes.
+
+        This is why the Palace Route does not default to the model the
+        femwell Route does. Every mode of the search comes back losing
+        far more than it advances, so none of them is a line mode.
+        """
+        study = study_at(tmp_path)
+        with pytest.raises(NoLineModeError, match="No propagating line mode"):
+            rf_line(study, route="palace", conductor_model="volume")
+
+    def test_the_route_says_it_cannot_shield_the_window(self, tmp_path):
+        """The mismatch is announced rather than left in the numbers."""
+        from gsim.modulator.route import metallic_boundary_unexpressed
+
+        study = study_at(tmp_path)
+        assert study.rf.metallic_boundaries is True
+        assert "cannot put a metallic wall" in metallic_boundary_unexpressed("rf")
 
 
 class TestStripCountConvergence:

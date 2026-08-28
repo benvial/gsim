@@ -53,6 +53,7 @@ __all__ = [
     "DEFAULT_ELECTRODES",
     "DEFAULT_STRIP_LAYER",
     "STRIP_LENGTH_UM",
+    "ConductorModel",
     "ElectrodeSpec",
     "StaircaseCrossSection",
     "build_staircase_cross_section",
@@ -428,6 +429,11 @@ def make_staircase_profile(
     return result
 
 
+#: How the drawn conductors of a Traveling-wave electrode are expressed
+#: in the meshed Cross-section. See ADR 0003.
+ConductorModel = Literal["volume", "pec"]
+
+
 @dataclass(frozen=True)
 class ElectrodeSpec:
     """The Traveling-wave electrodes flanking a Staircase.
@@ -436,15 +442,25 @@ class ElectrodeSpec:
         width_um: Width of each electrode along the junction axis (um).
         gap_um: Gap between the Junction extent and the electrode edge (um).
         thickness_um: Electrode thickness (um).
+        conductor_model: How the metal is expressed in the mesh (ADR 0003).
+            ``"volume"`` meshes each electrode as a Region of lossy metal
+            carrying :attr:`sigma_s_per_m`; ``"pec"`` leaves its interior
+            out of the meshed domain and makes its outline a perfect
+            conductor. Only ``"pec"`` is a Cross-section both first-class
+            Routes express identically, and only ``"pec"`` keeps an
+            eigenvalue search off the metal-dominated modes a
+            ``|eps| ~ 1e7`` Region carries.
         sigma_s_per_m: Electrode conductivity (S/m; aluminium by default),
-            used for the RF target.
+            used for the RF target of the ``"volume"`` model. A ``"pec"``
+            electrode has no conductivity to carry.
         optical_permittivity: Complex relative permittivity of the
             electrode metal at the optical wavelength, in the
             ``exp(+i omega t)`` convention (``Im < 0`` is lossy). The RF
             Drude conductivity above is meaningless at optical
-            frequencies, so an optical Staircase that contains the
-            electrodes needs this value; leave it unset when the optical
-            Window excludes them.
+            frequencies, so an optical ``"volume"`` Staircase that
+            contains the electrodes needs this value; leave it unset when
+            the optical Window excludes them, or when the electrodes are
+            ``"pec"`` and so carry no permittivity at all.
         zmin: Bottom z of the electrodes (um); defaults to the strip zmin.
         names: Region names of the low-side and high-side electrode.
         gds_layer: ``(layer, datatype)`` of the low-side electrode; the
@@ -454,6 +470,7 @@ class ElectrodeSpec:
     width_um: float = 2.0
     gap_um: float = 0.0
     thickness_um: float = 0.5
+    conductor_model: ConductorModel = "volume"
     sigma_s_per_m: float = 3.8e7
     optical_permittivity: complex | None = None
     zmin: float | None = None
@@ -502,6 +519,43 @@ class StaircaseCrossSection:
     _fmax: float
     _stacks: dict[str, LayerStack] = field(default_factory=dict)
 
+    @property
+    def conductor_model(self) -> ConductorModel | None:
+        """How the electrodes are expressed in the mesh, or None.
+
+        Returns:
+            The :class:`ElectrodeSpec`'s model, and ``None`` for a
+            Staircase drawn without electrodes.
+        """
+        return self._electrodes.conductor_model if self._electrodes else None
+
+    def electrode_extent(self, name: str) -> tuple[tuple[float, float], ...]:
+        """The rectangle one electrode occupies on the Cross-section.
+
+        A downstream integral over a conductor — the line current the
+        characteristic impedance divides by — needs the conductor's
+        outline, and under the ``"pec"`` model the mesh no longer carries
+        it as a Region to look up.
+
+        Args:
+            name: Region name of the electrode.
+
+        Returns:
+            ``((h_min, h_max), (v_min, v_max))`` in um: the extent along
+            the junction axis, then the vertical one.
+
+        Raises:
+            ValueError: When the Staircase has no electrode of that name.
+        """
+        if name not in self.electrode_names:
+            raise ValueError(
+                f"The staircase has no electrode named '{name}'; it drew "
+                f"{list(self.electrode_names)}."
+            )
+        index = self.electrode_names.index(name)
+        layer = self._layer_specs[name]
+        return (self.electrode_spans[index], (layer.zmin, layer.zmax))
+
     def doping(self, target: Literal["rf", "optical"] = "rf") -> dict[str, Any]:
         """Layer specs, materials and centres for ``build_doped_cross_section``.
 
@@ -543,13 +597,26 @@ class StaircaseCrossSection:
             ``{name: MaterialProperties}`` for every electrode.
 
         Raises:
-            ValueError: For an optical Staircase whose electrodes have no
-                optical permittivity — the RF conductivity would model
-                them as a near-transparent dielectric.
+            ValueError: For an optical ``"volume"`` Staircase whose
+                electrodes have no optical permittivity — the RF
+                conductivity would model them as a near-transparent
+                dielectric.
         """
         spec = self._electrodes
         if spec is None or not self.electrode_names:
             return {}
+        if spec.conductor_model == "pec":
+            # No conductivity and no loss: the native-2D mesher reads the
+            # material to decide whether an electrode's outline carries a
+            # finite-conductivity surface impedance or is a perfect
+            # conductor, and a perfect conductor is the one both Routes
+            # express identically (ADR 0003).
+            return {
+                name: MaterialProperties(
+                    permittivity=1.0, loss_tangent=0.0, dispersion_models=[]
+                )
+                for name in self.electrode_names
+            }
         if target == "rf":
             return make_doped_materials(
                 [(name, spec.sigma_s_per_m) for name in self.electrode_names],
@@ -653,7 +720,11 @@ def _electrode_layers(
             zmax=base_z + spec.thickness_um,
             thickness=spec.thickness_um,
             material=name,
-            layer_type="dielectric",
+            # A conductor layer is what the native-2D mesher meshes as an
+            # outline rather than as a domain, which is what makes the
+            # "pec" model a boundary condition instead of a Region
+            # (ADR 0003).
+            layer_type="conductor" if spec.conductor_model == "pec" else "dielectric",
             mesh_resolution=mesh_resolution,
         )
     return layer_specs, centres, spans

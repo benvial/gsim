@@ -131,6 +131,57 @@ class TestStaircase:
         assert set(staircase.strip_names) <= set(staircase.stack("rf").layers)
 
 
+class TestConductorModel:
+    """Which model of the electrode metal a run takes (ADR 0003)."""
+
+    def test_the_femwell_route_meshes_the_metal_as_a_region(self, biased):
+        """femwell can carry the metal's own loss, so it does."""
+        assert biased.rf.effective_conductor_model() == "volume"
+        staircase = biased.rf.staircase()
+        assert staircase.conductor_model == "volume"
+        stack = staircase.stack("rf")
+        assert stack.layers[staircase.electrode_names[0]].layer_type == "dielectric"
+
+    def test_the_palace_route_meshes_the_metal_as_a_perfect_conductor(self, biased):
+        """A metal region takes palace's eigenvalue search over; an
+        outline does not."""
+        biased.rf(route="palace")
+        assert biased.rf.effective_conductor_model() == "pec"
+        staircase = biased.rf.staircase()
+        assert staircase.conductor_model == "pec"
+        stack = staircase.stack("rf")
+        assert stack.layers[staircase.electrode_names[0]].layer_type == "conductor"
+
+    @pytest.mark.parametrize("route", ["femwell", "palace"])
+    @pytest.mark.parametrize("model", ["volume", "pec"])
+    def test_an_explicit_model_overrides_the_route_default(self, biased, route, model):
+        """What makes the two routes comparable: one cross-section, both."""
+        biased.rf(route=route, conductor_model=model)
+        assert biased.rf.effective_conductor_model() == model
+        assert biased.rf.staircase().conductor_model == model
+
+    def test_changing_the_model_invalidates_the_result(self, biased):
+        biased.rf._result = object()
+        biased.rf._has_run = True
+        biased.rf(conductor_model="pec")
+        assert not biased.rf.has_run
+
+
+class TestContourOrder:
+    """A perfect conductor's current is read off the field around it."""
+
+    def test_a_first_order_solve_of_a_pec_staircase_is_reported(self, biased):
+        biased.rf(conductor_model="pec", order=1)
+        with pytest.warns(UserWarning, match="biased high by tens of percent"):
+            biased.rf._check_contour_order()
+
+    def test_a_second_order_solve_is_not(self, biased):
+        biased.rf(conductor_model="pec", order=2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            biased.rf._check_contour_order()
+
+
 class TestStripMaterials:
     def test_the_strips_are_valid_up_to_the_highest_frequency_solved(self, biased):
         biased.rf(frequencies_hz=[10e9, 90e9])
