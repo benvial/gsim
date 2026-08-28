@@ -137,6 +137,8 @@ def pn_phase_shifter(
         n_strips: Strips the RF Staircase is built with, and the optical
             one wherever the optical Stage needs a Staircase at all —
             which the Palace Route does and the femwell Route does not.
+            The RF Staircase spans the whole doped slab, so raise this on
+            a device whose pads are much wider than its rib.
         length_um: Length of the Traveling-wave electrode (um).
         n_group: Optical group index the Velocity mismatch is measured
             against; the line Stage stands the phase index in, and warns,
@@ -191,10 +193,16 @@ def pn_phase_shifter(
         wavelength_um=wavelength_um,
         n_strips=n_strips if route == "palace" else None,
     )
+    # The RF Staircase tiles the doped slab rather than the rib alone:
+    # the pads are part of the line the drive sees, and a Staircase that
+    # stops at the rib puts the electrodes against it, dropping their
+    # series resistance. Strips are of equal width, so a device with pads
+    # far wider than its rib wants more of them than the default.
     study.rf(
         route=route,
         frequencies_hz=list(frequencies_hz),
         n_strips=n_strips,
+        strip_span=layout.doped_span,
     )
     study.line(length_um=length_um, n_group=n_group)
     return study

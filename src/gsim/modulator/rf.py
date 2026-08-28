@@ -48,13 +48,9 @@ import numpy as np
 from pydantic import Field, PrivateAttr, field_validator
 
 from gsim.common.modes import LineModeRule
-from gsim.common.stack.staircase import (
-    DEFAULT_ELECTRODES,
-    STRIP_LENGTH_UM,
-    ElectrodeSpec,
-)
-from gsim.modulator.route import EMRoute, require_route
-from gsim.modulator.stage import Stage
+from gsim.common.stack.staircase import DEFAULT_ELECTRODES, ElectrodeSpec
+from gsim.modulator.route import require_route
+from gsim.modulator.staircase import StaircaseStage
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,7 +66,7 @@ __all__ = ["RFStage"]
 BIAS_TOL_V: float = 1e-9
 
 
-class RFStage(Stage):
+class RFStage(StaircaseStage):
     """The line parameters of the Traveling-wave electrode, versus frequency.
 
     Attributes:
@@ -89,8 +85,15 @@ class RFStage(Stage):
             the Bias sweep when unset.
         strip_span: ``(min, max)`` extent the Strips tile along the
             junction axis (um); the Junction extent — the rib — when
-            unset. Widen it to the doped slab to carry the pads, and
-            their series resistance, into the RF solve.
+            unset, which leaves the doped pads out of the Staircase and
+            so leaves out the series resistance they carry, the
+            electrodes standing directly against the rib.
+            :func:`~gsim.modulator.preset.pn_phase_shifter` therefore
+            widens it to the doped slab
+            (:attr:`~gsim.modulator.layout.DeviceLayout.doped_span`).
+            The Strips are of equal width, so on a device whose pads are
+            much wider than the rib, widening dilutes the resolution
+            around the Junction: raise ``n_strips`` with it.
         window: In-plane RF Window (um); the full Cross-section extent
             when unset.
         window_z: Vertical RF Window (um); the full extent when unset.
@@ -120,6 +123,14 @@ class RFStage(Stage):
         n_guess: Effective-index guess centering the eigenvalue search;
             RF materials have large conductive ``|Im(eps)|``, so the
             default guess is the slow-wave index rather than the solver's.
+        track_modes: Follow the line Mode across the sweep, guessing each
+            frequency from the index solved at the one before it, so a
+            shift-and-invert search anchored to one number cannot settle
+            on a different branch as the materials move with frequency.
+            Turn it off to aim every frequency at ``n_guess`` instead.
+        jump_rtol: Relative step in ``Re(n_eff)`` between neighbouring
+            frequencies above which the sweep is reported as having
+            jumped branch rather than dispersed.
         mesh: Keyword arguments forwarded to the mesh pipeline.
         airbox: Background region around the Staircase.
     """
@@ -130,15 +141,11 @@ class RFStage(Stage):
     #: :attr:`solved_bias_v`.
     _solved_bias_v: float | None = PrivateAttr(default=None)
 
-    route: EMRoute = "femwell"
     frequencies_hz: list[float] = Field(
         default_factory=lambda: [10e9, 40e9], min_length=1
     )
     n_strips: int = Field(default=5, ge=1)
     bias_v: float | None = None
-    strip_span: tuple[float, float] | None = None
-    window: tuple[float, float] | None = None
-    window_z: tuple[float, float] | None = None
     electrodes: ElectrodeSpec = Field(default=DEFAULT_ELECTRODES)
     signal_contact: str | None = None
     num_modes: int = Field(default=4, ge=1)
@@ -146,28 +153,12 @@ class RFStage(Stage):
     min_index: float = Field(default=1.0, ge=0.0)
     degeneracy_rtol: float = Field(default=0.03, gt=0.0)
     strip_permittivity: float = Field(default=11.9, gt=0.0)
-    substrate_thickness_um: float = Field(default=2.0, gt=0.0)
     boundary_field_tol: float = Field(default=0.2, gt=0.0)
     metallic_boundaries: bool = True
     order: int = Field(default=1, ge=1)
     n_guess: float | None = 3.0
-    mesh: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "preset": "coarse",
-            "refined_mesh_size": 0.05,
-            "max_mesh_size": 40.0,
-            "verbose": False,
-        }
-    )
-    airbox: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "margin_x": 2.0,
-            "margin_y": 2.0,
-            "z_above": 1.5,
-            "z_below": 1.0,
-            "material": "sio2",
-        }
-    )
+    track_modes: bool = True
+    jump_rtol: float = Field(default=0.25, gt=0.0)
 
     @field_validator("frequencies_hz")
     @classmethod
@@ -262,27 +253,12 @@ class RFStage(Stage):
         Returns:
             The Staircase Cross-section, drawn on its own component.
         """
-        from gsim.common.stack.staircase import build_staircase_cross_section
-
-        study = self._require_study()
-        span = study.layout.junction_span
-        point = self.bias_point()
-        return build_staircase_cross_section(
-            point.carriers,
+        return self.build_staircase(
+            self.bias_point().carriers,
             n_strips=self.n_strips,
-            junction=self.strip_span if self.strip_span is not None else span.h,
-            zmin=span.z[0],
-            zmax=span.z[1],
-            length=STRIP_LENGTH_UM,
             electrodes=self.electrodes,
-            dispersion=study.carriers.dispersion,
             permittivity=self.strip_permittivity,
-            mu_n_cm2=study.carriers.mu_n_cm2,
-            mu_p_cm2=study.carriers.mu_p_cm2,
             fmax=max(self.frequencies_hz),
-            axis="x",
-            value=STRIP_LENGTH_UM / 2.0,
-            substrate_thickness=self.substrate_thickness_um,
         )
 
     def simulation(
@@ -302,28 +278,19 @@ class RFStage(Stage):
         Returns:
             The configured (unmeshed) ``BoundaryModeSim``.
         """
-        from gsim.palace import BoundaryModeSim
-
         study = self._require_study()
         stair = staircase if staircase is not None else self.staircase()
-
-        sim = BoundaryModeSim()
-        sim.set_output_dir(study.stage_dir(self.stage_name))
-        sim.set_stack(stair.stack("rf"))
-        sim.set_geometry(stair.component)
-        sim.set_airbox(**self.airbox)
-        sim.set_cross_section(
-            f"x={STRIP_LENGTH_UM / 2.0}",
-            window=self.window,
-            window_z=self.window_z,
-        )
         # One mesh serves the whole frequency sweep: the femwell Route
-        # re-solves it per frequency without reading this block, which
-        # records the first one so the sim is a complete description.
-        sim.set_boundary_mode(
-            freq=float(self.frequencies_hz[0]), num_modes=self.num_modes
+        # re-solves it per frequency without reading the boundary-mode
+        # block, which records the first frequency so the sim is a
+        # complete description.
+        return self.build_staircase_simulation(
+            stair,
+            kind="rf",
+            output_dir=study.stage_dir(self.stage_name),
+            freq_hz=float(self.frequencies_hz[0]),
+            num_modes=self.num_modes,
         )
-        return sim
 
     # ------------------------------------------------------------------
     # Results
@@ -369,6 +336,55 @@ class RFStage(Stage):
         self._check_containment(mode_boundary_ratio(mode), freq_hz)
         return mode
 
+    def _guess_for(self, solved: Sequence[complex]) -> float | None:
+        """Effective-index guess for the next frequency of the sweep.
+
+        Args:
+            solved: The line Modes' indices solved so far, in sweep order.
+
+        Returns:
+            The previous frequency's index when the Mode is tracked, and
+            the configured guess otherwise.
+        """
+        if self.track_modes and solved:
+            return float(solved[-1].real)
+        return self.n_guess
+
+    def _check_continuity(self, n_eff: Sequence[complex]) -> None:
+        """Warn when ``n_rf(f)`` steps rather than disperses.
+
+        A shift-and-invert search can settle on a different branch from
+        one frequency to the next, and the sweep then reports an RF index
+        that jumps. Tracking makes that unlikely rather than impossible,
+        so the sweep is checked either way.
+
+        Args:
+            n_eff: The solved indices, in frequency order.
+        """
+        indices = np.asarray([value.real for value in n_eff], dtype=np.float64)
+        if indices.size < 2:
+            return
+        previous = indices[:-1]
+        steps = np.abs(np.diff(indices)) / np.maximum(np.abs(previous), 1e-12)
+        jumped = np.nonzero(steps > self.jump_rtol)[0]
+        if jumped.size == 0:
+            return
+        where = ", ".join(
+            f"{self.frequencies_hz[i] / 1e9:g} -> "
+            f"{self.frequencies_hz[i + 1] / 1e9:g} GHz "
+            f"({indices[i]:.3g} -> {indices[i + 1]:.3g})"
+            for i in jumped
+        )
+        warnings.warn(
+            f"The {self.stage_name} stage's rf index jumps across the sweep "
+            f"at {where}, by more than {self.jump_rtol:.0%}: the eigenvalue "
+            "search has most likely settled on a different mode branch "
+            "rather than the line mode dispersing. Raise num_modes, tighten "
+            f"the selection with study.{self.stage_name}(min_index=...) or "
+            "solve the frequencies that jumped on their own.",
+            stacklevel=2,
+        )
+
     def _solve_femwell(
         self, sim: BoundaryModeSim, staircase: StaircaseCrossSection
     ) -> tuple[list[complex], list[complex]]:
@@ -409,7 +425,7 @@ class RFStage(Stage):
                 num_modes=self.num_modes,
                 order=self.order,
                 metallic_boundaries=self.metallic_boundaries,
-                n_guess=self.n_guess,
+                n_guess=self._guess_for(n_eff),
             )
             mode = self._pick_line_mode(modes, freq)
             n_eff.append(complex(mode.n_eff))
@@ -458,12 +474,13 @@ class RFStage(Stage):
 
         n_eff: list[complex] = []
         for freq in self.frequencies_hz:
+            guess = self._guess_for(n_eff)
             modes = solve_palace_modes(
                 sim,
                 freq_hz=freq,
                 num_modes=self.num_modes,
                 binary=executable,
-                target=self.n_guess if self.n_guess is not None else 0.0,
+                target=guess if guess is not None else 0.0,
                 verbose=verbose,
             )
             n_eff.append(complex(self._pick_line_mode(modes, freq).n_eff))
@@ -486,6 +503,7 @@ class RFStage(Stage):
             n_eff, z0_ohm = self._solve_femwell(sim, staircase)
         else:
             n_eff, z0_ohm = self._solve_palace(sim, binary)
+        self._check_continuity(n_eff)
 
         self._solved_bias_v = point.bias_v
         return line_params_from_neff(

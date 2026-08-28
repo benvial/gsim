@@ -11,6 +11,7 @@ user without the femwell extra gets. The real solve lives in
 from __future__ import annotations
 
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -182,6 +183,31 @@ class TestSignalConductor:
         biased.rf(electrodes=ElectrodeSpec(names=("ground", "signal")))
         biased.rf(signal_contact="anode")
         assert biased.rf.signal_electrode() == "signal"
+
+
+class TestModeTracking:
+    def test_the_first_frequency_is_aimed_at_the_configured_guess(self, biased):
+        biased.rf(n_guess=2.5)
+        assert biased.rf._guess_for([]) == pytest.approx(2.5)
+
+    def test_later_frequencies_follow_the_mode_they_just_solved(self, biased):
+        biased.rf(n_guess=2.5)
+        assert biased.rf._guess_for([complex(3.9, -0.2)]) == pytest.approx(3.9)
+
+    def test_tracking_is_switchable_off(self, biased):
+        biased.rf(n_guess=2.5, track_modes=False)
+        assert biased.rf._guess_for([complex(3.9, -0.2)]) == pytest.approx(2.5)
+
+    def test_a_dispersing_index_is_not_reported_as_a_jump(self, biased):
+        biased.rf(frequencies_hz=[10e9, 20e9, 40e9])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            biased.rf._check_continuity([3.90 + 0j, 3.85 + 0j, 3.80 + 0j])
+
+    def test_an_index_that_steps_between_frequencies_is_reported(self, biased):
+        biased.rf(frequencies_hz=[10e9, 20e9, 40e9])
+        with pytest.warns(UserWarning, match=r"20 -> 40 GHz"):
+            biased.rf._check_continuity([3.90 + 0j, 3.85 + 0j, 0.4 + 0j])
 
 
 class TestWindow:

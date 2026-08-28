@@ -96,6 +96,20 @@ class TestPresetConfiguresEveryStage:
         assert study.rf.n_strips >= 1
         assert study.line.length_um > 0.0
 
+    def test_the_rf_staircase_spans_the_doped_slab(self, demo):
+        """The pads carry series resistance, so the RF strips include them."""
+        study = _study_over(demo)
+
+        assert study.rf.strip_span == pytest.approx(study.layout.doped_span)
+        assert study.rf.strip_span[0] < study.layout.junction_span.h[0]
+        assert study.rf.strip_span[1] > study.layout.junction_span.h[1]
+
+    def test_the_optical_staircase_stays_on_the_rib(self, demo):
+        """The optical window is a box around the rib, pads outside it."""
+        study = _study_over(demo, route="palace", n_strips=3)
+
+        assert study.optical.strip_span is None
+
     def test_the_route_reaches_both_em_stages(self, demo):
         study = _study_over(demo, route="palace", n_strips=3)
 

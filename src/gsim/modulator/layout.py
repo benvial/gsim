@@ -120,6 +120,17 @@ class DeviceLayout:
         )
 
     @property
+    def doped_span(self) -> tuple[float, float]:
+        """Extent of every doped Region along the junction axis (um).
+
+        The doped slab, pads included: the band an RF Staircase tiles to
+        carry the pads' series resistance into the line, as against
+        :attr:`junction_span`, which is the rib alone.
+        """
+        spans = [self.region_spans[name].h for name in self.doped_regions]
+        return (min(span[0] for span in spans), max(span[1] for span in spans))
+
+    @property
     def guide_span_z(self) -> tuple[float, float]:
         """Vertical extent of the doped Regions a Mode is guided in (um)."""
         spans = [self.region_spans[name] for name in self.doped_regions]

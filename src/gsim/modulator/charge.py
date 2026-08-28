@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import Field, PrivateAttr
 
+from gsim.modulator.meshing import stage_airbox, stage_mesh
 from gsim.modulator.stage import Stage
 from gsim.tcad.runtime import require_devsim
 
@@ -52,23 +53,12 @@ class ChargeStage(Stage):
     contact: str | None = None
     window: tuple[float, float] | None = None
     window_z: tuple[float, float] | None = None
+    # Finer elements than the shared default: the charge solve has to
+    # resolve the depletion edge, not a mode.
     mesh: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "preset": "coarse",
-            "refined_mesh_size": 0.02,
-            "max_mesh_size": 40.0,
-            "verbose": False,
-        }
+        default_factory=lambda: stage_mesh(refined_mesh_size=0.02)
     )
-    airbox: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "margin_x": 2.0,
-            "margin_y": 2.0,
-            "z_above": 1.5,
-            "z_below": 1.0,
-            "material": "sio2",
-        }
-    )
+    airbox: dict[str, Any] = Field(default_factory=stage_airbox)
     temperature: float = Field(default=300.0, gt=0.0)
     settings: dict[str, Any] = Field(default_factory=dict)
 

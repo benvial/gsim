@@ -34,9 +34,9 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field
 
-from gsim.common.stack.staircase import DEFAULT_SI_INDEX, STRIP_LENGTH_UM
-from gsim.modulator.route import DEFAULT_PALACE_STRIPS, EMRoute, require_route
-from gsim.modulator.stage import Stage
+from gsim.common.stack.staircase import DEFAULT_SI_INDEX
+from gsim.modulator.route import DEFAULT_PALACE_STRIPS, require_route
+from gsim.modulator.staircase import StaircaseStage
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -114,7 +114,7 @@ class OpticalSweep(BaseModel):
         return np.asarray([p.loss_db_cm for p in self.points], dtype=np.float64)
 
 
-class OpticalStage(Stage):
+class OpticalStage(StaircaseStage):
     """The carrier-perturbed optical Mode, bias point by bias point.
 
     Attributes:
@@ -169,36 +169,14 @@ class OpticalStage(Stage):
 
     stage_name: ClassVar[str] = "optical"
 
-    route: EMRoute = "femwell"
     n_strips: int | None = Field(default=None, ge=1)
-    strip_span: tuple[float, float] | None = None
     strip_index: float = Field(default=DEFAULT_SI_INDEX, gt=0.0)
-    substrate_thickness_um: float = Field(default=2.0, gt=0.0)
     wavelength_um: float = Field(default=1.55, gt=0.0)
     num_modes: int = Field(default=1, ge=1)
-    window: tuple[float, float] | None = None
-    window_z: tuple[float, float] | None = None
     mode_margin_um: float = Field(default=2.0, gt=0.0)
     z_above_um: float = Field(default=1.0, ge=0.0)
     z_below_um: float = Field(default=1.0, ge=0.0)
     perturbed_regions: list[str] | None = None
-    mesh: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "preset": "coarse",
-            "refined_mesh_size": 0.05,
-            "max_mesh_size": 40.0,
-            "verbose": False,
-        }
-    )
-    airbox: dict[str, Any] = Field(
-        default_factory=lambda: {
-            "margin_x": 2.0,
-            "margin_y": 2.0,
-            "z_above": 1.5,
-            "z_below": 1.0,
-            "material": "sio2",
-        }
-    )
     min_index: float = Field(default=1.0, ge=0.0)
     boundary_field_tol: float = Field(default=0.01, gt=0.0)
     order: int = Field(default=1, ge=1)
@@ -291,8 +269,6 @@ class OpticalStage(Stage):
             ValueError: When this Stage is solving the continuous
                 profile, so there is no strip count to tile with.
         """
-        from gsim.common.stack.staircase import build_staircase_cross_section
-
         n_strips = self.effective_n_strips()
         if n_strips is None:
             raise ValueError(
@@ -300,27 +276,15 @@ class OpticalStage(Stage):
                 "permittivity, so it builds no staircase. Ask for one with "
                 f"study.{self.stage_name}(n_strips=...)."
             )
-        study = self._require_study()
-        span = study.layout.junction_span
-        return build_staircase_cross_section(
+        return self.build_staircase(
             point.carriers,
             n_strips=n_strips,
-            junction=self.strip_span if self.strip_span is not None else span.h,
-            zmin=span.z[0],
-            zmax=span.z[1],
-            length=STRIP_LENGTH_UM,
             electrodes=None,
-            dispersion=study.carriers.dispersion,
             # The coefficients are the carriers Stage's, but the
             # wavelength they are read at is this Stage's: the model's own
             # is where it was fitted, not where the Mode is solved.
             wavelength_um=self.wavelength_um,
             n0=self.strip_index,
-            mu_n_cm2=study.carriers.mu_n_cm2,
-            mu_p_cm2=study.carriers.mu_p_cm2,
-            axis="x",
-            value=STRIP_LENGTH_UM / 2.0,
-            substrate_thickness=self.substrate_thickness_um,
         )
 
     def staircase_simulation(
@@ -344,24 +308,14 @@ class OpticalStage(Stage):
         """
         from scipy.constants import speed_of_light as c0
 
-        from gsim.palace import BoundaryModeSim
-
-        sim = BoundaryModeSim()
-        sim.set_output_dir(output_dir)
-        sim.set_stack(staircase.stack("optical"))
-        sim.set_geometry(staircase.component)
-        sim.set_airbox(**self.airbox)
-        sim.set_cross_section(
-            f"x={STRIP_LENGTH_UM / 2.0}",
-            window=self.window,
-            window_z=self.window_z,
-        )
-        sim.set_boundary_mode(
-            freq=c0 / (self.wavelength_um * 1e-6),
+        return self.build_staircase_simulation(
+            staircase,
+            kind="optical",
+            output_dir=output_dir,
+            freq_hz=c0 / (self.wavelength_um * 1e-6),
             num_modes=self.num_modes,
             target=self.n_guess if self.n_guess is not None else 0.0,
         )
-        return sim
 
     def simulation(self) -> BoundaryModeSim:
         """Assemble the cross-section this Stage meshes.
