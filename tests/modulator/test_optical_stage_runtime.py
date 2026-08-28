@@ -15,7 +15,7 @@ import pytest
 from gsim.modulator import Device, OpticalSweep, Study
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
 
-from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_phase_shifter
+from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_demo
 
 pytest.importorskip("gmsh")
 pytest.importorskip("femwell")
@@ -70,7 +70,8 @@ def canned_sweep(biases) -> BiasSweepResult:
 
 def build_study(output_dir):
     """A Study over the phase shifter, writing into ``output_dir``."""
-    component, stack = build_phase_shifter()
+    demo = build_demo()
+    component, stack = demo.component, demo.stack
     return Study(
         component=component,
         stack=stack,

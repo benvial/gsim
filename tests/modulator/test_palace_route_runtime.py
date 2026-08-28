@@ -18,7 +18,7 @@ import pytest
 
 from gsim.modulator import Device, Study
 
-from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_phase_shifter
+from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_demo
 
 pytest.importorskip("gmsh")
 pytest.importorskip("femwell")
@@ -97,7 +97,8 @@ def graded_carriers(bias_v: float = 0.0) -> CarrierMap:  # noqa: ARG001
 
 def study_at(tmp_path, *, biases=(0.0,), carriers=depletion_carriers) -> Study:
     """A Study whose charge Stage already holds a synthetic Bias sweep."""
-    component, stack = build_phase_shifter()
+    demo = build_demo()
+    component, stack = demo.component, demo.stack
     study = Study(
         component=component,
         stack=stack,

@@ -80,8 +80,10 @@ class TestSweptContact:
         )
         monkeypatch.setattr(
             "gsim.tcad.sim.ChargeTransportSim.sweep",
-            lambda self, biases, contact=None: calls.append(contact)
-            or BiasSweepResult(contact=str(contact), points=[]),
+            lambda self, biases, contact=None: (
+                calls.append(contact)
+                or BiasSweepResult(contact=str(contact), points=[])
+            ),
         )
         monkeypatch.setattr("gsim.modulator.charge.require_devsim", lambda: None)
 

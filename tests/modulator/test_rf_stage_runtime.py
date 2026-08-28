@@ -17,7 +17,7 @@ from gsim.common.modes import NoLineModeError
 from gsim.common.twmzm_report import RFLineParams
 from gsim.modulator import Device, Study
 
-from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_phase_shifter
+from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_demo
 
 pytest.importorskip("gmsh")
 pytest.importorskip("femwell")
@@ -66,7 +66,8 @@ def canned_sweep(biases) -> BiasSweepResult:
 
 def build_study(output_dir, biases=(0.0, 2.0)):
     """A Study whose charge Stage already holds a synthetic Bias sweep."""
-    component, stack = build_phase_shifter()
+    demo = build_demo()
+    component, stack = demo.component, demo.stack
     study = Study(
         component=component,
         stack=stack,
@@ -252,7 +253,8 @@ class TestModeSelection:
 class TestEndToEnd:
     def test_a_real_charge_solve_reaches_the_line_parameters(self, tmp_path):
         pytest.importorskip("devsim")
-        component, stack = build_phase_shifter()
+        demo = build_demo()
+        component, stack = demo.component, demo.stack
         study = Study(
             component=component,
             stack=stack,

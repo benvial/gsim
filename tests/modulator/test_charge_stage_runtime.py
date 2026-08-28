@@ -12,13 +12,14 @@ import pytest
 from gsim.modulator import Device, Study
 from gsim.tcad.results import BiasSweepResult
 
-from .conftest import build_phase_shifter
+from .conftest import build_demo
 
 
 @pytest.fixture(scope="module")
 def meshed(tmp_path_factory):
     """The charge Stage's simulation, actually meshed."""
-    component, stack = build_phase_shifter()
+    demo = build_demo()
+    component, stack = demo.component, demo.stack
     study = Study(
         component=component,
         stack=stack,
@@ -63,7 +64,8 @@ class TestDerivedNamesReachTheMesh:
 class TestSolve:
     def test_the_study_solves_the_bias_sweep(self, tmp_path):
         pytest.importorskip("devsim")
-        component, stack = build_phase_shifter()
+        demo = build_demo()
+        component, stack = demo.component, demo.stack
         study = Study(
             component=component,
             stack=stack,
@@ -87,7 +89,8 @@ class TestSolve:
     def test_re_running_after_a_change_solves_again(self, tmp_path):
         """DEVSIM's global device/mesh/circuit namespace survives a re-run."""
         pytest.importorskip("devsim")
-        component, stack = build_phase_shifter()
+        demo = build_demo()
+        component, stack = demo.component, demo.stack
         study = Study(
             component=component,
             stack=stack,

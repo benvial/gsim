@@ -11,7 +11,21 @@ something upstream of it changes.
 Backends are optional installs: importing this package never requires
 them. The full workflow installs with ``pip install 'gsim[modulator]'``.
 
-Example::
+One call configures every Stage of the usual lateral PN Phase shifter
+over a component and stack you already have::
+
+    from gsim.modulator import pn_phase_shifter
+
+    study = pn_phase_shifter(component=comp, stack=stack, device=device)
+    report = study.report()
+
+The preset only writes defaults, so every section stays yours to change.
+It never draws anything: the component and the stack are always yours.
+``demo_phase_shifter`` draws a rib device when an example or a test needs
+one to point at, and is scaffolding for exactly that — not a way to
+describe a real device.
+
+Configuring the Stages one by one is the same workflow spelled out::
 
     from gsim.modulator import Device, Study
 
@@ -41,6 +55,7 @@ from gsim.modulator.carriers import (
     MaterialResponse,
 )
 from gsim.modulator.charge import ChargeStage
+from gsim.modulator.demo import DemoPhaseShifter, demo_phase_shifter
 from gsim.modulator.device import Device
 from gsim.modulator.layout import (
     Contact,
@@ -51,6 +66,7 @@ from gsim.modulator.layout import (
 )
 from gsim.modulator.line import LineStage
 from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
+from gsim.modulator.preset import pn_phase_shifter
 from gsim.modulator.rf import RFStage
 from gsim.modulator.route import (
     DEFAULT_PALACE_STRIPS,
@@ -67,6 +83,7 @@ __all__ = [
     "CarriersStage",
     "ChargeStage",
     "Contact",
+    "DemoPhaseShifter",
     "Device",
     "DeviceLayout",
     "EMRoute",
@@ -82,5 +99,7 @@ __all__ = [
     "Stage",
     "StageNotRunError",
     "Study",
+    "demo_phase_shifter",
     "derive_layout",
+    "pn_phase_shifter",
 ]
