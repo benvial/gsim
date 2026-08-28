@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 from scipy.constants import mu_0 as MU0  # noqa: N812
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ __all__ = [
     "DEFAULT_PERIMETER_TOL_UM",
     "BoundaryModeField",
     "contour_current",
+    "field_index_ratio",
     "load_boundary_mode_field",
     "power_flux",
     "z0_power_current",
@@ -87,7 +89,10 @@ class BoundaryModeField:
         e_t: ``(N, 2)`` transverse electric field (V/m).
         e_n: ``(N,)`` longitudinal electric field (V/m).
         h_t: ``(N, 2)`` transverse magnetic field (A/m).
-        h_n: ``(N,)`` longitudinal magnetic field (A/m).
+        h_n: ``(N,)`` longitudinal magnetic field (A/m), or ``None``.
+            No integral here reads it, and which name Palace writes it
+            under has moved between versions, so a Mode saved without it
+            is still a Mode this can integrate.
     """
 
     points_um: NDArray[np.float64]
@@ -96,7 +101,7 @@ class BoundaryModeField:
     e_t: NDArray[np.complex128]
     e_n: NDArray[np.complex128]
     h_t: NDArray[np.complex128]
-    h_n: NDArray[np.complex128]
+    h_n: NDArray[np.complex128] | None
 
 
 def _complex_array(grid: Any, name: str) -> NDArray[np.complex128]:
@@ -180,7 +185,17 @@ def load_boundary_mode_field(
         )
     cells = np.asarray(grid.cell_connectivity, dtype=np.int64).reshape(-1, 6)
 
-    b_n = _complex_array(grid, "B")
+    # The longitudinal magnetic field is not read by any integral here,
+    # and Palace has spelled it both "B" and "Bn"; take whichever is
+    # there and do not fail the whole read for a field nothing wants.
+    b_n = next(
+        (
+            _complex_array(grid, name)
+            for name in ("B", "Bn")
+            if f"{name}_real" in grid.point_data
+        ),
+        None,
+    )
     return BoundaryModeField(
         points_um=np.asarray(grid.points[:, :2], dtype=np.float64),
         cells=cells,
@@ -188,7 +203,7 @@ def load_boundary_mode_field(
         e_t=_transverse(grid, "E"),
         e_n=_complex_array(grid, "En"),
         h_t=np.asarray(_transverse(grid, "Bt") / MU0, dtype=np.complex128),
-        h_n=np.asarray(b_n / MU0, dtype=np.complex128),
+        h_n=None if b_n is None else np.asarray(b_n / MU0, dtype=np.complex128),
     )
 
 
@@ -381,3 +396,32 @@ def z0_power_current(
             "it has no power-current impedance."
         )
     return complex(2.0 * power_flux(field) / (abs(current) ** 2))
+
+
+def field_index_ratio(field: BoundaryModeField) -> float:
+    """The effective index the saved fields themselves imply.
+
+    A Mode's transverse fields are related by its own index —
+    ``H_t = (n_eff / eta_0) z-hat x E_t`` exactly for a TEM Mode and
+    approximately for a quasi-TEM one — so ``eta_0 |H_t| / |E_t|``
+    recovers roughly ``|n_eff|`` from the fields alone. That makes it a
+    check on *which* Mode was read: the fields of one Mode put through
+    another one's index disagree grossly, which is the failure a
+    mode-to-cycle mapping can have.
+
+    It is an order-of-magnitude check and nothing more. The relation is
+    exact only for a TEM Mode, and the ratio of two field norms says
+    nothing about a Mode's loss.
+
+    Args:
+        field: The Mode's saved fields.
+
+    Returns:
+        ``eta_0`` times the ratio of the RMS transverse fields, and NaN
+        when the Mode carries no electric field to divide by.
+    """
+    e_rms = float(np.sqrt(np.mean(np.abs(field.e_t) ** 2)))
+    h_rms = float(np.sqrt(np.mean(np.abs(field.h_t) ** 2)))
+    if e_rms <= 0.0:
+        return float("nan")
+    return float(np.sqrt(MU0 / EPS0) * h_rms / e_rms)

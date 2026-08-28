@@ -196,9 +196,9 @@ class LineStage(Stage):
             warnings.warn(
                 f"The rf stage reported no characteristic impedance, so the "
                 f"{self.stage_name} stage's EO response and RLGC parameters "
-                "are NaN and the 3 dB bandwidth is unreadable. The palace "
-                "route does not extract Z0; solve the rf stage with "
-                "study.rf(route='femwell') for a response.",
+                "are NaN and the 3 dB bandwidth is unreadable. Both routes "
+                "extract Z0, so the rf stage will have said why it could "
+                "not — re-run it and read its warnings.",
                 stacklevel=2,
             )
 

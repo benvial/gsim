@@ -167,6 +167,25 @@ class TestConductorModel:
         assert not biased.rf.has_run
 
 
+class TestPerfectElectrodesNeedTheWall:
+    """femwell has one perfect-conductor condition, for the whole boundary."""
+
+    def test_a_pec_electrode_without_the_wall_is_refused(self, biased):
+        """Off, the electrode hole would come out as an open slot."""
+        biased.rf(conductor_model="pec", metallic_boundaries=False)
+        with pytest.raises(ValueError, match="open slots"):
+            biased.rf._require_metallic_boundaries()
+
+    def test_a_pec_electrode_with_the_wall_is_fine(self, biased):
+        biased.rf(conductor_model="pec", metallic_boundaries=True)
+        biased.rf._require_metallic_boundaries()
+
+    def test_a_volume_electrode_does_not_need_the_wall(self, biased):
+        """A metal region is a conductor whatever the boundary is."""
+        biased.rf(conductor_model="volume", metallic_boundaries=False)
+        assert biased.rf.effective_conductor_model() == "volume"
+
+
 class TestContourOrder:
     """A perfect conductor's current is read off the field around it."""
 

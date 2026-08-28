@@ -487,6 +487,32 @@ class RFStage(EMStage):
             stacklevel=2,
         )
 
+    def _require_metallic_boundaries(self) -> None:
+        """Refuse a perfect electrode that femwell would leave as a hole.
+
+        femwell has one perfect-conductor condition and applies it to
+        every facet of the domain boundary at once, so a ``"pec"``
+        electrode — which is a hole in that boundary — is a conductor
+        only while ``metallic_boundaries`` is on. Off, the same hole
+        takes the natural condition and the Stage would quietly solve a
+        cross-section with open slots where its electrodes should be.
+
+        Raises:
+            ValueError: When the two settings contradict each other.
+        """
+        if self.metallic_boundaries:
+            return
+        raise ValueError(
+            f"The {self.stage_name} stage's femwell route cannot leave its "
+            "electrodes perfect while metallic_boundaries is off: femwell "
+            "applies that one condition to the whole domain boundary, and a "
+            "perfect electrode is a hole in it, so the electrodes would come "
+            "out as open slots. Turn the wall back on with "
+            f"study.{self.stage_name}(metallic_boundaries=True), or mesh the "
+            "electrodes as lossy volumes with "
+            f"study.{self.stage_name}(conductor_model='volume')."
+        )
+
     def _check_contour_order(self) -> None:
         """Warn when the contour current is read off a first-order field.
 
@@ -546,6 +572,7 @@ class RFStage(EMStage):
         signal = self.signal_electrode()
         on_contour = self.effective_conductor_model() == "pec"
         if on_contour:
+            self._require_metallic_boundaries()
             self._check_contour_order()
             h_span, v_span = staircase.electrode_extent(signal)
             signal_elements = None

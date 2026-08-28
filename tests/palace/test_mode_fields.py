@@ -16,9 +16,13 @@ import pytest
 from gsim.palace.mode_fields import (
     BoundaryModeField,
     contour_current,
+    field_index_ratio,
+    load_boundary_mode_field,
     power_flux,
     z0_power_current,
 )
+
+MU0 = 4.0e-7 * np.pi
 
 SIDE = 4  # cells per axis of the unit square
 AREA = 1.0
@@ -164,3 +168,148 @@ class TestZ0PowerCurrent:
         field = field_from(uniform([0.0, 1.0]), uniform([1.0, 2.0]))
         with pytest.raises(ValueError, match="no current"):
             z0_power_current(field, h_span=(0.25, 0.75), v_span=(0.25, 0.75))
+
+
+def write_saved_mode(root, *, cycle=1, arrays):
+    """Write one ParaView cycle where a boundary-mode solve would put it.
+
+    Palace writes a partitioned dataset — a ``.pvtu`` naming its pieces —
+    so the reader is exercised through the same two files it meets in
+    a real output directory rather than through a lone ``.vtu``.
+    """
+    import pyvista as pv
+    import vtk
+
+    points = np.array(
+        [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)]
+    )
+    grid = pv.UnstructuredGrid(
+        np.array([6, 0, 1, 2, 3, 4, 5]),
+        np.array([69]),  # VTK_LAGRANGE_TRIANGLE
+        np.column_stack([points, np.zeros(6)]),
+    )
+    for name, value in arrays.items():
+        grid.point_data[name] = value
+    grid.cell_data["attribute"] = np.array([7])
+
+    cycle_dir = root / "paraview" / "boundarymode" / f"Cycle{cycle:06d}"
+    cycle_dir.mkdir(parents=True, exist_ok=True)
+    writer = vtk.vtkXMLPUnstructuredGridWriter()
+    writer.SetFileName(str(cycle_dir / "data.pvtu"))
+    writer.SetInputData(grid)
+    writer.SetNumberOfPieces(1)
+    writer.SetStartPiece(0)
+    writer.SetEndPiece(0)
+    writer.Write()
+    return points
+
+
+def saved_mode_arrays(**overrides):
+    """Field arrays whose two transverse components are told apart."""
+    arrays = {
+        "E_real": np.tile([1.0, 2.0], (6, 1)),
+        "E_imag": np.tile([0.5, 0.25], (6, 1)),
+        "En_real": np.full(6, 3.0),
+        "En_imag": np.zeros(6),
+        "Bt_real": np.tile([10.0, 20.0], (6, 1)),
+        "Bt_imag": np.zeros((6, 2)),
+        "B_real": np.full(6, 4.0),
+        "B_imag": np.zeros(6),
+    }
+    arrays.update(overrides)
+    return arrays
+
+
+class TestLoadingASavedMode:
+    """The path from Palace's own output directory to a field array."""
+
+    def test_it_reads_the_cycle_the_mode_was_saved_in(self, tmp_path):
+        pytest.importorskip("vtk")
+        write_saved_mode(tmp_path, cycle=1, arrays=saved_mode_arrays())
+
+        field = load_boundary_mode_field(tmp_path, mode_id=1)
+
+        assert field.cells.shape == (1, 6)
+        assert field.points_um.shape == (6, 2)
+        assert field.attribute.tolist() == [7]
+
+    def test_the_transverse_components_come_back_swapped(self, tmp_path):
+        """Palace writes them in the opposite order to its points."""
+        pytest.importorskip("vtk")
+        write_saved_mode(tmp_path, cycle=1, arrays=saved_mode_arrays())
+
+        field = load_boundary_mode_field(tmp_path, mode_id=1)
+
+        # File order is (1, 2) + (0.5, 0.25)j; the mesh order is the reverse.
+        assert np.allclose(field.e_t[:, 0], complex(2.0, 0.25))
+        assert np.allclose(field.e_t[:, 1], complex(1.0, 0.5))
+        assert np.allclose(field.h_t[:, 0], 20.0 / MU0)
+        assert np.allclose(field.h_t[:, 1], 10.0 / MU0)
+
+    def test_the_longitudinal_components_are_not_swapped(self, tmp_path):
+        pytest.importorskip("vtk")
+        write_saved_mode(tmp_path, cycle=1, arrays=saved_mode_arrays())
+
+        field = load_boundary_mode_field(tmp_path, mode_id=1)
+
+        assert np.allclose(field.e_n, 3.0)
+        assert field.h_n is not None
+        assert np.allclose(field.h_n, 4.0 / MU0)
+
+    def test_a_mode_saved_without_a_longitudinal_h_still_reads(self, tmp_path):
+        """No integral wants it, so its absence is not a failure."""
+        pytest.importorskip("vtk")
+        arrays = saved_mode_arrays()
+        del arrays["B_real"], arrays["B_imag"]
+        write_saved_mode(tmp_path, cycle=1, arrays=arrays)
+
+        field = load_boundary_mode_field(tmp_path, mode_id=1)
+
+        assert field.h_n is None
+        assert np.allclose(field.e_n, 3.0)
+
+    def test_a_mode_the_solve_never_saved_is_reported(self, tmp_path):
+        pytest.importorskip("vtk")
+        write_saved_mode(tmp_path, cycle=1, arrays=saved_mode_arrays())
+
+        with pytest.raises(FileNotFoundError):
+            load_boundary_mode_field(tmp_path, mode_id=4)
+
+    def test_a_cycle_carrying_no_fields_is_reported(self, tmp_path):
+        """Palace writes a last cycle holding only the mesh partition."""
+        pytest.importorskip("vtk")
+        write_saved_mode(tmp_path, cycle=1, arrays={"Rank": np.zeros(6)})
+
+        with pytest.raises(ValueError, match="carries no E_real"):
+            load_boundary_mode_field(tmp_path, mode_id=1)
+
+
+class TestFieldIndexRatio:
+    def test_a_tem_field_recovers_its_own_index(self):
+        """``H_t = (n / eta_0) z-hat x E_t`` is what the ratio inverts."""
+        eta0 = 376.730313668
+        n_eff = 2.4
+        e_t = np.tile([3.0 + 0j, -1.0 + 0j], (6, 1))
+        h_t = (n_eff / eta0) * np.stack([-e_t[:, 1], e_t[:, 0]], axis=1)
+        field = BoundaryModeField(
+            points_um=np.zeros((6, 2)),
+            cells=np.arange(6).reshape(1, 6),
+            attribute=np.array([1]),
+            e_t=e_t,
+            e_n=np.zeros(6, dtype=complex),
+            h_t=h_t,
+            h_n=None,
+        )
+        assert field_index_ratio(field) == pytest.approx(n_eff, rel=1e-9)
+
+    def test_a_mode_without_an_electric_field_has_no_ratio(self):
+        field = BoundaryModeField(
+            points_um=np.zeros((6, 2)),
+            cells=np.arange(6).reshape(1, 6),
+            attribute=np.array([1]),
+            e_t=np.zeros((6, 2), dtype=complex),
+            e_n=np.zeros(6, dtype=complex),
+            h_t=np.ones((6, 2), dtype=complex),
+            h_n=None,
+        )
+        assert np.isnan(field_index_ratio(field))

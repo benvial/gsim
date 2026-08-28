@@ -138,3 +138,68 @@ class TestMissingRuntime:
         monkeypatch.setitem(sys.modules, "femwell", None)
         with pytest.raises(ImportError, match=r"gsim\[femwell\]"):
             getattr(biased, stage_name).run()
+
+
+class TestSavedFieldsAreTheSelectedMode:
+    """Which ParaView cycle holds which Mode is a convention, so it is checked."""
+
+    def _field(self, *, n_from_fields: float):
+        from gsim.palace.mode_fields import BoundaryModeField
+
+        eta0 = 376.730313668
+        e_t = np.tile([1.0 + 0j, 0.0 + 0j], (6, 1))
+        h_t = (n_from_fields / eta0) * np.stack([-e_t[:, 1], e_t[:, 0]], axis=1)
+        return BoundaryModeField(
+            points_um=np.zeros((6, 2)),
+            cells=np.arange(6).reshape(1, 6),
+            attribute=np.array([1]),
+            e_t=e_t,
+            e_n=np.zeros(6, dtype=complex),
+            h_t=h_t,
+            h_n=None,
+        )
+
+    def test_fields_matching_the_mode_table_pass_quietly(self):
+        import warnings
+
+        from gsim.modulator.route import PalaceMode, _check_field_is_the_mode
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _check_field_is_the_mode(
+                self._field(n_from_fields=2.4),
+                PalaceMode(n_eff=complex(2.5, -0.01), mode_id=2),
+                stage_name="rf",
+            )
+
+    def test_fields_from_another_mode_are_reported(self):
+        from gsim.modulator.route import PalaceMode, _check_field_is_the_mode
+
+        with pytest.warns(UserWarning, match="different mode's fields"):
+            _check_field_is_the_mode(
+                self._field(n_from_fields=0.02),
+                PalaceMode(n_eff=complex(2.5, -0.01), mode_id=2),
+                stage_name="rf",
+            )
+
+    def test_a_mode_carrying_no_field_says_nothing(self):
+        """Nothing to compare is not the same as a mismatch."""
+        import warnings
+
+        from gsim.modulator.route import PalaceMode, _check_field_is_the_mode
+
+        field = self._field(n_from_fields=2.4)
+        field = type(field)(
+            points_um=field.points_um,
+            cells=field.cells,
+            attribute=field.attribute,
+            e_t=np.zeros_like(field.e_t),
+            e_n=field.e_n,
+            h_t=field.h_t,
+            h_n=None,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _check_field_is_the_mode(
+                field, PalaceMode(n_eff=complex(2.5), mode_id=1), stage_name="rf"
+            )

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_PALACE_STRIPS",
+    "FIELD_INDEX_RTOL",
     "EMRoute",
     "PalaceMode",
     "containment_unmeasurable",
@@ -272,9 +273,11 @@ def metallic_boundary_unexpressed(stage_name: str) -> str:
         "metallic_boundaries, and palace's own default for the outer "
         "boundary is PMC rather than PEC. The femwell route shields the "
         "same window, so the two routes are solving different problems and "
-        "their modes will not agree. Widen the window until the wall stops "
-        f"mattering, or set study.{stage_name}(metallic_boundaries=False) to "
-        "make the femwell route match this one."
+        "their modes will not agree. Widen the window with "
+        f"study.{stage_name}(window=..., window_z=...) until the wall stops "
+        "mattering, which is the only way to bring them together today: "
+        "turning the femwell route's wall off instead would leave its "
+        "perfect electrodes as open slots rather than as conductors."
     )
 
 
@@ -295,6 +298,47 @@ def mode_boundary_ratio(mode: Any) -> float:
     from gsim.femwell.adapter import boundary_field_ratio
 
     return boundary_field_ratio(mode)
+
+
+#: How far the index a saved Mode's fields imply may sit from the index
+#: its mode table reports before the two are called different Modes.
+#: Loose on purpose: the relation behind :func:`field_index_ratio` is
+#: exact only for a TEM Mode, so this catches a wrong file rather than a
+#: quasi-TEM Mode's own departure from it.
+FIELD_INDEX_RTOL: float = 2.0
+
+
+def _check_field_is_the_mode(field: Any, mode: PalaceMode, *, stage_name: str) -> None:
+    """Warn when the fields read back are not the selected Mode's.
+
+    Which ParaView cycle holds which Mode is a convention — Palace
+    writes them in mode order, so cycle ``m`` is Mode ``m`` — and a
+    convention is the kind of thing that changes without an error. The
+    fields carry their own index, so they can be asked whether they are
+    the Mode they were fetched for.
+
+    Args:
+        field: The fields that were read back.
+        mode: The Mode they were fetched for.
+        stage_name: Stage asking, named in the warning.
+    """
+    from gsim.palace.mode_fields import field_index_ratio
+
+    implied = field_index_ratio(field)
+    expected = abs(mode.n_eff)
+    if not math.isfinite(implied) or expected <= 0.0:
+        return
+    if 1.0 / (1.0 + FIELD_INDEX_RTOL) <= implied / expected <= 1.0 + FIELD_INDEX_RTOL:
+        return
+    warnings.warn(
+        f"The {stage_name} stage read back fields for palace mode "
+        f"{mode.mode_id} whose own effective index is about {implied:.3g}, "
+        f"against the {expected:.3g} its mode table reports: these are most "
+        "likely a different mode's fields, and the characteristic impedance "
+        "taken from them belongs to that one. Palace writes one paraview "
+        "cycle per saved mode in mode order; check that it still does.",
+        stacklevel=2,
+    )
 
 
 def palace_line_impedance(
@@ -338,6 +382,7 @@ def palace_line_impedance(
         if output_dir is None:
             raise RuntimeError("the simulation has no output directory.")  # noqa: TRY301
         field = load_boundary_mode_field(output_dir, mode_id=mode.mode_id)
+        _check_field_is_the_mode(field, mode, stage_name=stage_name)
         return palace_z0(field, h_span=h_span, v_span=v_span)
     except Exception as err:
         warnings.warn(
