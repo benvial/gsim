@@ -88,7 +88,9 @@ def strip_averages_from_nodes(
     """Average scattered node values into N strips along the junction axis.
 
     Node values (e.g. carrier concentrations on the charge-solve mesh) are
-    reduced to a 1D profile of ``h`` and binned with
+    reduced to a 1D profile of ``h`` — nodes sharing a coordinate are
+    averaged, so a band selected with ``v_range`` contributes all of its
+    rows and not just one — and binned with
     :func:`gsim.common.carriers.staircase_profile`, whose strip values are
     exact averages of the piecewise-linear interpolant — so ``n_strips=1``
     recovers the profile mean and increasing N converges to the continuous
@@ -125,6 +127,16 @@ def strip_averages_from_nodes(
             raise ValueError("No nodes inside v_range.")
         h_arr = np.asarray(h_arr[mask], dtype=np.float64)
         v_arr = np.asarray(v_arr[mask], dtype=np.float64)
+    # A 2D node cloud carries many nodes per h coordinate. staircase_profile
+    # reads its samples as a piecewise-linear function of h, so duplicated
+    # coordinates would leave one arbitrary node standing per h and discard
+    # the rest of the band: average them here instead.
+    coords, inverse, counts = np.unique(h_arr, return_inverse=True, return_counts=True)
+    if coords.size != h_arr.size:
+        h_arr = np.asarray(coords, dtype=np.float64)
+        v_arr = np.asarray(
+            np.bincount(inverse, weights=v_arr) / counts, dtype=np.float64
+        )
     return staircase_profile(h_arr, v_arr, n_bins=n_strips, h_min=h_min, h_max=h_max)
 
 

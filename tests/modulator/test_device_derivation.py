@@ -181,6 +181,20 @@ class TestDerivationCache:
 
         assert study.charge.has_run is False
 
+    def test_changing_the_component_drops_the_derived_layout(
+        self, study, phase_shifter
+    ):
+        component, _stack = phase_shifter
+        first = study.layout
+        study.component = component
+        assert study.layout is not first
+
+    def test_changing_the_stack_drops_the_derived_layout(self, study, phase_shifter):
+        _component, stack = phase_shifter
+        first = study.layout
+        study.stack = stack
+        assert study.layout is not first
+
     def test_moving_the_plane_is_validated(self, study):
         with pytest.raises(ValueError, match="plane"):
             study.plane = "w=3"

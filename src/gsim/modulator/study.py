@@ -90,8 +90,9 @@ def _parse_plane(plane: str) -> tuple[Literal["x", "y", "z"], float]:
 class Study:
     """A modulator device investigated across one set of conditions.
 
-    Re-assigning :attr:`device` or :attr:`plane` drops the derived layout
-    and every Stage's result, the same way re-configuring a Stage does.
+    Re-assigning :attr:`component`, :attr:`stack`, :attr:`device` or
+    :attr:`plane` drops the derived layout and every Stage's result, the
+    same way re-configuring a Stage does.
 
     Attributes:
         component: The drawn device.
@@ -127,8 +128,8 @@ class Study:
                 directory is used when omitted.
             verbose: Print one line per Stage on entry and exit.
         """
-        self.component = component
-        self.stack = stack
+        self._component = component
+        self._stack = stack
         self._device = (
             device if isinstance(device, Device) else Device.model_validate(device)
         )
@@ -172,6 +173,28 @@ class Study:
     # ------------------------------------------------------------------
     # Device description
     # ------------------------------------------------------------------
+
+    @property
+    def component(self) -> gf.Component:
+        """The drawn device."""
+        return self._component
+
+    @component.setter
+    def component(self, value: gf.Component) -> None:
+        """Redraw the device, dropping everything derived from it."""
+        self._component = value
+        self.invalidate()
+
+    @property
+    def stack(self) -> LayerStack:
+        """The layer stack the device's Regions are named in."""
+        return self._stack
+
+    @stack.setter
+    def stack(self, value: LayerStack) -> None:
+        """Replace the stack, dropping everything derived from it."""
+        self._stack = value
+        self.invalidate()
 
     @property
     def device(self) -> Device:

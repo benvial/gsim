@@ -49,6 +49,32 @@ class TestStripAveragesFromNodes:
         assert errors == sorted(errors, reverse=True)
         assert errors[-1] < 0.05 * errors[0]
 
+    def test_values_sharing_a_coordinate_are_averaged(self):
+        # Two rows inside the band carrying different fields: the strip value
+        # is the average over the band, not whichever node survives dedup.
+        h_row = np.linspace(0.0, 1.0, 51)
+        h = np.concatenate([h_row, h_row])
+        v = np.concatenate([np.zeros(51), np.full(51, 0.05)])
+        values = np.concatenate([np.zeros(51), 2.0 * h_row])
+        _edges, means = strip_averages_from_nodes(
+            h, values, n_strips=1, v_um=v, v_range=(-0.1, 0.1)
+        )
+        assert means[0] == pytest.approx(0.5)
+
+    def test_strips_track_the_band_averaged_profile(self):
+        # A field varying across the band as well as along it: each strip
+        # must land on the band average, not on one row.
+        h_row = np.linspace(0.0, 1.0, 41)
+        rows = np.linspace(0.0, 0.1, 5)
+        h = np.tile(h_row, rows.size)
+        v = np.repeat(rows, h_row.size)
+        values = h + 10.0 * v
+        _edges, means = strip_averages_from_nodes(
+            h, values, n_strips=4, v_um=v, v_range=(-0.01, 0.11)
+        )
+        expected = np.array([0.125, 0.375, 0.625, 0.875]) + 10.0 * rows.mean()
+        np.testing.assert_allclose(means, expected, rtol=1e-6)
+
     def test_band_without_nodes_raises(self):
         h = np.linspace(0.0, 1.0, 11)
         with pytest.raises(ValueError, match="v_range"):
