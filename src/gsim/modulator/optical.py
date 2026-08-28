@@ -276,9 +276,10 @@ class OpticalStage(Stage):
         The Strips tile the Junction extent unless ``strip_span`` widens
         them, and take the plasma-dispersion coefficients of the carriers
         Stage — the same coupling the continuous profile reads, evaluated on
-        strip averages instead of on mesh elements. No electrodes are
-        drawn: the optical Window is a box around the rib, and the
-        Traveling-wave metal is outside it.
+        strip averages instead of on mesh elements, and at this Stage's
+        own ``wavelength_um``, so both paths carry the same loss. No
+        electrodes are drawn: the optical Window is a box around the rib,
+        and the Traveling-wave metal is outside it.
 
         Args:
             point: The Bias point to staircase.
@@ -310,6 +311,10 @@ class OpticalStage(Stage):
             length=STRIP_LENGTH_UM,
             electrodes=None,
             dispersion=study.carriers.dispersion,
+            # The coefficients are the carriers Stage's, but the
+            # wavelength they are read at is this Stage's: the model's own
+            # is where it was fitted, not where the Mode is solved.
+            wavelength_um=self.wavelength_um,
             n0=self.strip_index,
             mu_n_cm2=study.carriers.mu_n_cm2,
             mu_p_cm2=study.carriers.mu_p_cm2,

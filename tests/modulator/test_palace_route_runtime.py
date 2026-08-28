@@ -119,18 +119,37 @@ def study_at(tmp_path, *, biases=(0.0,), carriers=depletion_carriers) -> Study:
     return study
 
 
-def optical_n_eff(study, *, route: str, n_strips: int) -> complex:
+def optical_n_eff(
+    study, *, route: str, n_strips: int, wavelength_um: float = 1.55
+) -> complex:
     """Solve the optical Staircase on one Route and return its index."""
-    study.optical(route=route, n_strips=n_strips, num_modes=1, n_guess=2.5)
+    study.optical(
+        route=route,
+        n_strips=n_strips,
+        num_modes=1,
+        n_guess=2.5,
+        wavelength_um=wavelength_um,
+    )
     return complex(study.optical.run().n_eff[0])
 
 
 class TestCrossRouteAgreement:
-    def test_the_optical_routes_agree_on_the_same_staircase(self, tmp_path):
+    # 1.55 um is where the default plasma-dispersion coefficients were
+    # fitted; 1.31 um is not, and the Staircase used to read its
+    # extinction off the fit rather than off the solve, so the Routes
+    # could only be trusted to agree at the first of these.
+    @pytest.mark.parametrize("wavelength_um", [1.55, 1.31])
+    def test_the_optical_routes_agree_on_the_same_staircase(
+        self, tmp_path, wavelength_um
+    ):
         """Identical Strips, identical mesh: one effective index, two solvers."""
         study = study_at(tmp_path)
-        femwell = optical_n_eff(study, route="femwell", n_strips=4)
-        palace = optical_n_eff(study, route="palace", n_strips=4)
+        femwell = optical_n_eff(
+            study, route="femwell", n_strips=4, wavelength_um=wavelength_um
+        )
+        palace = optical_n_eff(
+            study, route="palace", n_strips=4, wavelength_um=wavelength_um
+        )
 
         # Both must see the guided silicon mode, not the cladding.
         assert femwell.real > 2.0

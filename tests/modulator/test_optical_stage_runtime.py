@@ -228,3 +228,46 @@ class TestEndToEnd:
         assert len(sweep.points) == 2
         assert all(1.444 < n.real < 3.48 for n in sweep.n_eff)
         assert sweep.index_shift[1] > 0.0
+
+
+class TestStaircaseWavelength:
+    """The Staircase reads its loss at the wavelength being solved at.
+
+    A plasma-dispersion model's wavelength is where its coefficients were
+    fitted: it says what ``dalpha_cm`` a carrier concentration means, not
+    where anyone is solving. Turning that absorption into an extinction
+    coefficient — ``kappa = alpha lambda / 4 pi`` — is the step that needs
+    the solve's own wavelength, and the continuous path has always used
+    it. Building the Strips at the fit wavelength instead inflated every
+    Strip's loss by ``1.55 / 1.31``, about 18%, at 1.31 um.
+    """
+
+    @staticmethod
+    def _staircase_loss(output_dir, wavelength_um: float) -> float:
+        """Modal loss (dB/cm) of the Staircase solved at one wavelength."""
+        study = build_study(output_dir)
+        study.charge._result = canned_sweep([0.0])
+        study.charge._has_run = True
+        study.optical(
+            route="femwell",
+            wavelength_um=wavelength_um,
+            n_strips=8,
+            num_modes=1,
+            n_guess=2.5,
+        )
+        return float(study.optical.run().points[0].loss_db_cm)
+
+    def test_the_staircase_loss_is_the_carriers_not_the_wavelengths(self, tmp_path):
+        """Fixed coefficients, so dB/cm is a property of the carriers.
+
+        The material absorption does not move between 1.31 um and 1.55 um
+        here — the same 1.55 um fit answers both — so the modal loss may
+        only move by the confinement change, a couple of percent. The
+        defect made it move by 17%.
+        """
+        dispersion_um = 1.55
+        at_fit = self._staircase_loss(tmp_path / "at-fit", dispersion_um)
+        away = self._staircase_loss(tmp_path / "away", 1.31)
+
+        assert at_fit > 0.0
+        assert away == pytest.approx(at_fit, rel=0.05)

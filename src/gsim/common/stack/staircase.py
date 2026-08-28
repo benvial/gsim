@@ -135,6 +135,7 @@ def strip_response(
     *,
     n0: float = DEFAULT_SI_INDEX,
     dispersion: PlasmaDispersionModel | None = None,
+    wavelength_um: float | None = None,
     mu_n_cm2: float = DEFAULT_MU_N_CM2,
     mu_p_cm2: float = DEFAULT_MU_P_CM2,
 ) -> dict[str, Any]:
@@ -148,6 +149,12 @@ def strip_response(
         dispersion: Plasma-dispersion coefficients. The optical response
             (``dn``, ``dalpha_cm``, ``eps_complex``) is only computed when
             a model is given.
+        wavelength_um: Vacuum wavelength the optical Stage solves at (um),
+            which sets each Strip's extinction
+            ``kappa = dalpha_cm lambda / 4 pi``. The model's own
+            wavelength — where its coefficients were fitted, and so what
+            ``dalpha_cm`` means, not where anyone is solving — stands in
+            when omitted.
         mu_n_cm2: Electron mobility (cm^2/Vs) for the RF conductivity.
         mu_p_cm2: Hole mobility (cm^2/Vs) for the RF conductivity.
 
@@ -177,7 +184,11 @@ def strip_response(
                     n0=n0,
                     dn=float(dn[i]),
                     dalpha_cm=float(dalpha[i]),
-                    wavelength_um=dispersion.wavelength_um,
+                    wavelength_um=(
+                        wavelength_um
+                        if wavelength_um is not None
+                        else dispersion.wavelength_um
+                    ),
                 )
                 for i in range(n_arr.size)
             ]
@@ -249,6 +260,7 @@ def make_staircase_profile(
     permittivity: float = 11.9,
     n0: float = DEFAULT_SI_INDEX,
     dispersion: PlasmaDispersionModel | None = None,
+    wavelength_um: float | None = None,
     mu_n_cm2: float = DEFAULT_MU_N_CM2,
     mu_p_cm2: float = DEFAULT_MU_P_CM2,
     fmax: float = 200e9,
@@ -292,6 +304,8 @@ def make_staircase_profile(
         n0: Unperturbed refractive index for ``target="optical"``.
         dispersion: Plasma-dispersion coefficients; required for
             ``target="optical"``.
+        wavelength_um: Vacuum wavelength the optical Stage solves at (um);
+            the dispersion model's own wavelength stands in when omitted.
         mu_n_cm2: Electron mobility (cm^2/Vs) for the RF conductivity.
         mu_p_cm2: Hole mobility (cm^2/Vs) for the RF conductivity.
         fmax: Upper validity frequency (Hz) of the RF Drude materials.
@@ -339,6 +353,7 @@ def make_staircase_profile(
         p_arr,
         n0=n0,
         dispersion=dispersion,
+        wavelength_um=wavelength_um,
         mu_n_cm2=mu_n_cm2,
         mu_p_cm2=mu_p_cm2,
     )
@@ -625,6 +640,7 @@ def build_staircase_cross_section(
     length: float = STRIP_LENGTH_UM,
     electrodes: ElectrodeSpec | None = DEFAULT_ELECTRODES,
     dispersion: PlasmaDispersionModel | None = None,
+    wavelength_um: float | None = None,
     n0: float = DEFAULT_SI_INDEX,
     permittivity: float = 11.9,
     mu_n_cm2: float = DEFAULT_MU_N_CM2,
@@ -665,6 +681,12 @@ def build_staircase_cross_section(
         electrodes: Flanking electrodes; ``None`` draws none.
         dispersion: Plasma-dispersion coefficients for the optical
             response; defaults to the 1.55 um fit.
+        wavelength_um: Vacuum wavelength the optical Stage solves at (um).
+            Each Strip's extinction is built at it, so the Staircase and
+            a continuous ``eps(x, y)`` carry the same loss. The
+            dispersion model's own wavelength — where its coefficients
+            were fitted — stands in when omitted, which is right only
+            when the solve happens to sit there.
         n0: Unperturbed refractive index of the Strips.
         permittivity: Relative permittivity of the RF Strips.
         mu_n_cm2: Electron mobility (cm^2/Vs) for the RF conductivity.
@@ -748,6 +770,7 @@ def build_staircase_cross_section(
             if dispersion is not None
             else PlasmaDispersionModel.nedeljkovic_1550()
         ),
+        wavelength_um=wavelength_um,
         mu_n_cm2=mu_n_cm2,
         mu_p_cm2=mu_p_cm2,
         fmax=fmax,

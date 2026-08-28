@@ -116,6 +116,32 @@ class TestBothMaterialResponses:
             assert props.permittivity == pytest.approx(expected.real)
             assert props.loss_tangent > 0
 
+    def test_the_extinction_is_built_at_the_solve_wavelength(self):
+        """kappa = alpha lambda / 4 pi, and lambda is the solve's.
+
+        The dispersion model's own wavelength is where its coefficients
+        were fitted, which says what ``alpha`` is; it does not say what
+        wavelength the Stage is solving at. Reading the extinction off
+        the fit wavelength inflates the loss of every strip whenever the
+        two differ.
+        """
+        fitted = build(electrodes=None).strips
+        solved = build(electrodes=None, wavelength_um=1.31).strips
+
+        # alpha is the model's answer and does not move with the solve.
+        assert solved["dalpha_cm"] == pytest.approx(fitted["dalpha_cm"])
+        assert solved["dn"] == pytest.approx(fitted["dn"])
+        for at_fit, at_solve in zip(
+            fitted["eps_complex"], solved["eps_complex"], strict=True
+        ):
+            assert at_solve.imag == pytest.approx(at_fit.imag * 1.31 / 1.55)
+
+    def test_the_solve_wavelength_defaults_to_the_fitted_one(self):
+        """Omitting it keeps the model's own wavelength, as before."""
+        assert build(electrodes=None).strips["eps_complex"] == pytest.approx(
+            build(electrodes=None, wavelength_um=1.55).strips["eps_complex"]
+        )
+
     def test_both_stacks_share_one_component(self):
         staircase = build(electrodes=None)
         assert staircase.stack("rf") is not staircase.stack("optical")

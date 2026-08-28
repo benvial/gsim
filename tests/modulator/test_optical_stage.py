@@ -128,3 +128,71 @@ class TestInvalidation:
 
     def test_the_optical_stage_feeds_the_line_stage(self, study):
         assert study.optical._downstream == [study.line]
+
+
+class TestStaircaseWavelength:
+    """The Staircase and the continuous profile solve the one problem.
+
+    Both paths turn the same carriers into a complex permittivity, and
+    the only wavelength either may use for that is the one the Stage is
+    solving at. The plasma-dispersion model's own wavelength is where its
+    coefficients were fitted; using it instead inflates every Strip's
+    free-carrier absorption whenever the Stage solves somewhere else.
+    """
+
+    @staticmethod
+    def _strips(study, *, wavelength_um: float):
+        """The Strip response of a single-Bias Staircase at a wavelength."""
+        import numpy as np
+
+        from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
+
+        h = np.linspace(JUNCTION_Y - HALF_WIDTH, JUNCTION_Y + HALF_WIDTH, 41)
+        z = np.linspace(0.0, RIB_HEIGHT, 5)
+        hh, zz = (a.ravel() for a in np.meshgrid(h, z))
+        n_side = hh < JUNCTION_Y
+        study.charge._result = BiasSweepResult(
+            contact="cathode",
+            points=[
+                BiasPoint(
+                    bias_v=0.0,
+                    carriers=CarrierMap(
+                        x_um=hh,
+                        y_um=zz,
+                        region=["n_rib" if side else "p_rib" for side in n_side],
+                        electrons_cm3=np.where(n_side, 1e18, 1e10),
+                        holes_cm3=np.where(n_side, 1e10, 1e18),
+                        potential_v=np.zeros(hh.size),
+                        net_doping_cm3=np.zeros(hh.size),
+                    ),
+                )
+            ],
+        )
+        study.charge._has_run = True
+        study.optical(route="femwell", n_strips=4, wavelength_um=wavelength_um)
+        return study.optical.staircase(study.carriers.run().points[0]).strips
+
+    def test_the_strips_take_the_extinction_of_the_solve_wavelength(self, study):
+        """What the Staircase carries is what the continuous path builds."""
+        from gsim.common.carriers import permittivity_perturbation
+
+        wavelength_um = 1.31
+        assert study.carriers.dispersion.wavelength_um != wavelength_um
+        strips = self._strips(study, wavelength_um=wavelength_um)
+
+        for i, eps in enumerate(strips["eps_complex"]):
+            expected = permittivity_perturbation(
+                n0=study.optical.strip_index,
+                dn=float(strips["dn"][i]),
+                dalpha_cm=float(strips["dalpha_cm"][i]),
+                wavelength_um=wavelength_um,
+            )
+            assert eps == pytest.approx(expected)
+
+    def test_moving_the_solve_wavelength_moves_the_strip_loss(self, study):
+        """And it is the solve wavelength that moves it, not the fit."""
+        at_fit = self._strips(study, wavelength_um=1.55)["eps_complex"]
+        at_solve = self._strips(study, wavelength_um=1.31)["eps_complex"]
+
+        for fitted, solved in zip(at_fit, at_solve, strict=True):
+            assert solved.imag == pytest.approx(fitted.imag * 1.31 / 1.55)
