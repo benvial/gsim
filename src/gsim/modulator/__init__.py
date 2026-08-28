@@ -65,7 +65,6 @@ from gsim.modulator.layout import (
     derive_layout,
 )
 from gsim.modulator.line import LineStage
-from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH, stage_airbox, stage_mesh
 from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
 from gsim.modulator.preset import pn_phase_shifter
 from gsim.modulator.rf import RFStage
@@ -75,13 +74,10 @@ from gsim.modulator.route import (
     PalaceMode,
 )
 from gsim.modulator.stage import Stage, StageNotRunError
-from gsim.modulator.staircase import StaircaseStage
 from gsim.modulator.study import Study
 
 __all__ = [
     "DEFAULT_PALACE_STRIPS",
-    "STAGE_AIRBOX",
-    "STAGE_MESH",
     "CarrierResponse",
     "CarrierResponseSweep",
     "CarriersStage",
@@ -102,11 +98,8 @@ __all__ = [
     "Span",
     "Stage",
     "StageNotRunError",
-    "StaircaseStage",
     "Study",
     "demo_phase_shifter",
     "derive_layout",
     "pn_phase_shifter",
-    "stage_airbox",
-    "stage_mesh",
 ]

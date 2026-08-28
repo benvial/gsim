@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import gdsfactory as gf
 import numpy as np
 import pytest
@@ -74,6 +76,37 @@ class TestStripAveragesFromNodes:
         )
         expected = np.array([0.125, 0.375, 0.625, 0.875]) + 10.0 * rows.mean()
         np.testing.assert_allclose(means, expected, rtol=1e-6)
+
+    def test_an_irregular_cloud_lands_on_the_analytic_average(self):
+        # What a charge-solve mesh actually hands over: columns of unequal
+        # height, at coordinates agreeing only to rounding, carrying a
+        # field that varies along the band as well as across it.
+        rng = np.random.default_rng(0)
+        columns = np.linspace(-0.5, 0.5, 240)
+        h_parts, v_parts, value_parts = [], [], []
+        for h in columns:
+            rows = rng.integers(3, 12)
+            z = rng.uniform(0.0, 0.22, rows)
+            jitter = rng.normal(scale=1e-12, size=rows)
+            h_parts.append(np.full(rows, h) + jitter)
+            v_parts.append(z)
+            value_parts.append(np.exp(-10.0 * h**2) + 4.0 * z)
+        h = np.concatenate(h_parts)
+        v = np.concatenate(v_parts)
+        values = np.concatenate(value_parts)
+
+        edges, means = strip_averages_from_nodes(
+            h, values, n_strips=6, v_um=v, v_range=(0.0, 0.22)
+        )
+
+        # The band average of the field is exp(-10 h^2) + 4 * mean(z),
+        # integrated over each strip.
+        dense = np.linspace(-0.5, 0.5, 20001)
+        profile = np.exp(-10.0 * dense**2) + 4.0 * 0.11
+        expected = [
+            profile[(dense >= lo) & (dense <= hi)].mean() for lo, hi in pairwise(edges)
+        ]
+        np.testing.assert_allclose(means, expected, rtol=0.05)
 
     def test_band_without_nodes_raises(self):
         h = np.linspace(0.0, 1.0, 11)

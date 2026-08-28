@@ -42,15 +42,15 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 from pydantic import Field, PrivateAttr, field_validator
 
 from gsim.common.modes import LineModeRule
 from gsim.common.stack.staircase import DEFAULT_ELECTRODES, ElectrodeSpec
+from gsim.modulator.em import EMStage
 from gsim.modulator.route import require_route
-from gsim.modulator.staircase import StaircaseStage
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -65,8 +65,12 @@ __all__ = ["RFStage"]
 #: Biases this far apart (V) count as the same Bias point.
 BIAS_TOL_V: float = 1e-9
 
+#: Strips the Junction extent should span before the Staircase is warned
+#: about: fewer, and the depletion edge sits inside one Strip.
+MIN_STRIPS_ACROSS_RIB: int = 2
 
-class RFStage(StaircaseStage):
+
+class RFStage(EMStage):
     """The line parameters of the Traveling-wave electrode, versus frequency.
 
     Attributes:
@@ -93,7 +97,9 @@ class RFStage(StaircaseStage):
             (:attr:`~gsim.modulator.layout.DeviceLayout.doped_span`).
             The Strips are of equal width, so on a device whose pads are
             much wider than the rib, widening dilutes the resolution
-            around the Junction: raise ``n_strips`` with it.
+            around the Junction; the Stage says so when the rib stops
+            spanning :data:`MIN_STRIPS_ACROSS_RIB` Strips, and the answer
+            is to raise ``n_strips`` with the span.
         window: In-plane RF Window (um); the full Cross-section extent
             when unset.
         window_z: Vertical RF Window (um); the full extent when unset.
@@ -128,14 +134,17 @@ class RFStage(StaircaseStage):
             shift-and-invert search anchored to one number cannot settle
             on a different branch as the materials move with frequency.
             Turn it off to aim every frequency at ``n_guess`` instead.
-        jump_rtol: Relative step in ``Re(n_eff)`` between neighbouring
-            frequencies above which the sweep is reported as having
-            jumped branch rather than dispersed.
-        mesh: Keyword arguments forwarded to the mesh pipeline.
-        airbox: Background region around the Staircase.
+        jump_rtol: How far ``Re(n_eff)`` may step between neighbouring
+            frequencies, per unit of relative frequency step, before the
+            sweep is reported as having changed branch rather than
+            dispersed. Scaling by the frequency step is what lets one
+            number serve a sparse sweep and a dense one: a doubling in
+            frequency is allowed ``jump_rtol`` of index, a 1% step a
+            hundredth of it.
     """
 
     stage_name: ClassVar[str] = "rf"
+    stack_kind: ClassVar[Literal["rf", "optical"]] = "rf"
 
     #: Bias the cached result was solved at, read through
     #: :attr:`solved_bias_v`.
@@ -253,12 +262,43 @@ class RFStage(StaircaseStage):
         Returns:
             The Staircase Cross-section, drawn on its own component.
         """
+        self._check_strip_resolution()
         return self.build_staircase(
             self.bias_point().carriers,
             n_strips=self.n_strips,
             electrodes=self.electrodes,
             permittivity=self.strip_permittivity,
             fmax=max(self.frequencies_hz),
+        )
+
+    def _check_strip_resolution(self) -> None:
+        """Warn when the Strips are too wide to resolve the Junction.
+
+        Strips are of equal width, so tiling an extent wider than the rib
+        — the doped slab, which is what carries the pads' series
+        resistance into the line — buys that resistance at the cost of
+        resolution where the carriers actually move. Below two Strips
+        across the rib the depletion edge is inside a single Strip and the
+        Staircase has stopped resolving what it exists for.
+        """
+        span = self._require_study().layout.junction_span
+        extent = self.strip_span if self.strip_span is not None else span.h
+        strip_width = (extent[1] - extent[0]) / self.n_strips
+        rib_width = span.h[1] - span.h[0]
+        if strip_width * MIN_STRIPS_ACROSS_RIB <= rib_width:
+            return
+        wanted = int(
+            np.ceil(MIN_STRIPS_ACROSS_RIB * (extent[1] - extent[0]) / rib_width)
+        )
+        warnings.warn(
+            f"The {self.stage_name} stage tiles {extent[1] - extent[0]:.3g} um "
+            f"with {self.n_strips} strips of {strip_width:.3g} um, so the "
+            f"{rib_width:.3g} um junction extent falls inside fewer than "
+            f"{MIN_STRIPS_ACROSS_RIB} of them and the carrier profile across "
+            "it is not resolved. Raise the count with "
+            f"study.{self.stage_name}(n_strips={wanted}) or narrow the span "
+            f"with study.{self.stage_name}(strip_span=...).",
+            stacklevel=2,
         )
 
     def simulation(
@@ -286,7 +326,6 @@ class RFStage(StaircaseStage):
         # complete description.
         return self.build_staircase_simulation(
             stair,
-            kind="rf",
             output_dir=study.stage_dir(self.stage_name),
             freq_hz=float(self.frequencies_hz[0]),
             num_modes=self.num_modes,
@@ -362,11 +401,15 @@ class RFStage(StaircaseStage):
             n_eff: The solved indices, in frequency order.
         """
         indices = np.asarray([value.real for value in n_eff], dtype=np.float64)
+        frequencies = np.asarray(self.frequencies_hz, dtype=np.float64)
         if indices.size < 2:
             return
-        previous = indices[:-1]
-        steps = np.abs(np.diff(indices)) / np.maximum(np.abs(previous), 1e-12)
-        jumped = np.nonzero(steps > self.jump_rtol)[0]
+        steps = np.abs(np.diff(indices)) / np.maximum(np.abs(indices[:-1]), 1e-12)
+        # Against the frequency step, not against a fixed number: the
+        # sweep's spacing is the user's, and a line disperses by about as
+        # much as its frequency moves.
+        spacing = np.diff(frequencies) / frequencies[:-1]
+        jumped = np.nonzero(steps > self.jump_rtol * spacing)[0]
         if jumped.size == 0:
             return
         where = ", ".join(
@@ -375,13 +418,21 @@ class RFStage(StaircaseStage):
             f"({indices[i]:.3g} -> {indices[i + 1]:.3g})"
             for i in jumped
         )
+        tracked = (
+            " Every frequency after it was aimed at the index solved before "
+            "it, so the branch it changed to is the one the rest of the "
+            "sweep followed, smoothly and wrongly."
+            if self.track_modes
+            else ""
+        )
         warnings.warn(
             f"The {self.stage_name} stage's rf index jumps across the sweep "
-            f"at {where}, by more than {self.jump_rtol:.0%}: the eigenvalue "
+            f"at {where}, faster than the frequency step: the eigenvalue "
             "search has most likely settled on a different mode branch "
-            "rather than the line mode dispersing. Raise num_modes, tighten "
-            f"the selection with study.{self.stage_name}(min_index=...) or "
-            "solve the frequencies that jumped on their own.",
+            f"rather than the line mode dispersing.{tracked} Raise "
+            f"num_modes, tighten the selection with study.{self.stage_name}"
+            "(min_index=...), or solve the frequencies from the jump onwards "
+            "on their own.",
             stacklevel=2,
         )
 

@@ -28,15 +28,15 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field
 
 from gsim.common.stack.staircase import DEFAULT_SI_INDEX
+from gsim.modulator.em import EMStage
 from gsim.modulator.route import DEFAULT_PALACE_STRIPS, require_route
-from gsim.modulator.staircase import StaircaseStage
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -114,7 +114,7 @@ class OpticalSweep(BaseModel):
         return np.asarray([p.loss_db_cm for p in self.points], dtype=np.float64)
 
 
-class OpticalStage(StaircaseStage):
+class OpticalStage(EMStage):
     """The carrier-perturbed optical Mode, bias point by bias point.
 
     Attributes:
@@ -156,8 +156,6 @@ class OpticalStage(StaircaseStage):
         z_below_um: Margin below it (um).
         perturbed_regions: Regions whose permittivity the Carrier maps
             perturb; defaults to the device's doped Regions.
-        mesh: Keyword arguments forwarded to the mesh pipeline.
-        airbox: Background region around the clipped domain.
         min_index: Lower bound on ``Re(n_eff)`` for a Mode to count as
             guided; raise it to the cladding index to reject radiation
             Modes.
@@ -168,6 +166,7 @@ class OpticalStage(StaircaseStage):
     """
 
     stage_name: ClassVar[str] = "optical"
+    stack_kind: ClassVar[Literal["rf", "optical"]] = "optical"
 
     n_strips: int | None = Field(default=None, ge=1)
     strip_index: float = Field(default=DEFAULT_SI_INDEX, gt=0.0)
@@ -310,7 +309,6 @@ class OpticalStage(StaircaseStage):
 
         return self.build_staircase_simulation(
             staircase,
-            kind="optical",
             output_dir=output_dir,
             freq_hz=c0 / (self.wavelength_um * 1e-6),
             num_modes=self.num_modes,

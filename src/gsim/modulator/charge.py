@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import Field, PrivateAttr
 
-from gsim.modulator.meshing import stage_airbox, stage_mesh
+from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
 from gsim.modulator.stage import Stage
 from gsim.tcad.runtime import require_devsim
 
@@ -38,7 +38,7 @@ class ChargeStage(Stage):
             description when unset.
         window_z: Vertical Window (um); unclipped when unset.
         mesh: Keyword arguments forwarded to the mesh pipeline.
-        airbox: Background region around the clipped domain.
+        airbox: Background region around the Window.
         temperature: Lattice temperature (K).
         settings: Extra settings applied to the charge-transport sim.
     """
@@ -56,9 +56,9 @@ class ChargeStage(Stage):
     # Finer elements than the shared default: the charge solve has to
     # resolve the depletion edge, not a mode.
     mesh: dict[str, Any] = Field(
-        default_factory=lambda: stage_mesh(refined_mesh_size=0.02)
+        default_factory=lambda: STAGE_MESH | {"refined_mesh_size": 0.02}
     )
-    airbox: dict[str, Any] = Field(default_factory=stage_airbox)
+    airbox: dict[str, Any] = Field(default_factory=STAGE_AIRBOX.copy)
     temperature: float = Field(default=300.0, gt=0.0)
     settings: dict[str, Any] = Field(default_factory=dict)
 

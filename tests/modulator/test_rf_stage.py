@@ -17,41 +17,8 @@ import numpy as np
 import pytest
 
 from gsim.common.stack.staircase import ElectrodeSpec
-from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
 
-from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT
-
-SLAB = (CENTER_Y - HALF_WIDTH - PAD_WIDTH, CENTER_Y + HALF_WIDTH + PAD_WIDTH)
-
-
-def carriers_at(bias_v: float) -> CarrierMap:
-    """A Carrier map across the doped slab, depleting with reverse bias."""
-    y = np.linspace(SLAB[0], SLAB[1], 61)
-    z = np.linspace(0.0, RIB_HEIGHT, 5)
-    yy, zz = np.meshgrid(y, z, indexing="ij")
-    yy, zz = yy.ravel(), zz.ravel()
-    depleted = np.abs(yy - CENTER_Y) < 0.05 * np.sqrt(1.0 + abs(bias_v))
-    n_side = yy < CENTER_Y
-    return CarrierMap(
-        x_um=yy,
-        y_um=zz,
-        region=["n_rib" if side else "p_rib" for side in n_side],
-        electrons_cm3=np.where(depleted | ~n_side, 1e10, 1e18),
-        holes_cm3=np.where(depleted | n_side, 1e10, 1e18),
-        potential_v=np.zeros(yy.size),
-        net_doping_cm3=np.zeros(yy.size),
-    )
-
-
-@pytest.fixture
-def biased(study):
-    """A Study whose charge Stage already holds a two-point sweep."""
-    study.charge._result = BiasSweepResult(
-        contact="cathode",
-        points=[BiasPoint(bias_v=v, carriers=carriers_at(v)) for v in (0.0, 2.0)],
-    )
-    study.charge._has_run = True
-    return study
+from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, SLAB
 
 
 class TestConfiguration:
@@ -118,6 +85,18 @@ class TestStaircase:
 
         assert edges[0] == pytest.approx(slab[0])
         assert edges[-1] == pytest.approx(slab[1])
+
+    def test_strips_too_wide_for_the_rib_are_reported(self, biased):
+        """Widening the span without more strips loses the junction."""
+        biased.rf(n_strips=2, strip_span=SLAB)
+        with pytest.warns(UserWarning, match="not resolved"):
+            biased.rf.staircase()
+
+    def test_strips_that_resolve_the_rib_are_not_reported(self, biased):
+        biased.rf(n_strips=5, strip_span=SLAB)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            biased.rf.staircase()
 
     def test_the_strips_carry_the_carrier_derived_conductivity(self, biased):
         staircase = biased.rf.staircase()
@@ -197,6 +176,12 @@ class TestModeTracking:
     def test_tracking_is_switchable_off(self, biased):
         biased.rf(n_guess=2.5, track_modes=False)
         assert biased.rf._guess_for([complex(3.9, -0.2)]) == pytest.approx(2.5)
+
+    def test_a_dense_sweep_is_judged_on_its_own_spacing(self, biased):
+        """A step that is fine over a doubling is a jump over 1%."""
+        biased.rf(frequencies_hz=[40e9, 40.4e9])
+        with pytest.warns(UserWarning, match="jumps across the sweep"):
+            biased.rf._check_continuity([3.90 + 0j, 3.70 + 0j])
 
     def test_a_dispersing_index_is_not_reported_as_a_jump(self, biased):
         biased.rf(frequencies_hz=[10e9, 20e9, 40e9])

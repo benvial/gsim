@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from gsim.common.stack.extractor import Layer, LayerStack
 
 __all__ = [
+    "COLUMN_TOL_FRACTION",
     "DEFAULT_ELECTRODES",
     "DEFAULT_STRIP_LAYER",
     "STRIP_LENGTH_UM",
@@ -69,6 +70,11 @@ DEFAULT_SI_INDEX: float = 3.4757
 #: and one reading only the mesh regions (femwell) does not.
 DEFAULT_STRIP_LAYER: tuple[int, int] = (300, 0)
 
+#: Fraction of the sampled extent within which two nodes count as one
+#: column of the mesh, when no explicit tolerance is given. Node columns
+#: are what a 2D cloud is averaged over before it is binned into Strips.
+COLUMN_TOL_FRACTION: float = 1e-6
+
 #: Drawn length of a Staircase along the propagation direction (um).
 #: The Cross-section is invariant along it, so it is not a setting;
 #: a Stage meshing a Staircase cuts through the middle of it.
@@ -84,6 +90,7 @@ def strip_averages_from_nodes(
     h_max: float | None = None,
     v_um: ArrayLike | None = None,
     v_range: tuple[float, float] | None = None,
+    column_tol_um: float | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Average scattered node values into N strips along the junction axis.
 
@@ -106,6 +113,9 @@ def strip_averages_from_nodes(
             (e.g. z); used with ``v_range`` to select a band of a 2D node
             cloud before binning.
         v_range: Optional ``(min, max)`` band in the ``v_um`` coordinate.
+        column_tol_um: Nodes whose ``h`` agree to within this (um) are one
+            column of the mesh and are averaged together; defaults to
+            :data:`COLUMN_TOL_FRACTION` of the sampled extent.
 
     Returns:
         ``(edges, means)`` — strip edges of length ``n_strips + 1`` and
@@ -128,12 +138,20 @@ def strip_averages_from_nodes(
         h_arr = np.asarray(h_arr[mask], dtype=np.float64)
         v_arr = np.asarray(v_arr[mask], dtype=np.float64)
     # A 2D node cloud carries many nodes per h coordinate. staircase_profile
-    # reads its samples as a piecewise-linear function of h, so duplicated
-    # coordinates would leave one arbitrary node standing per h and discard
-    # the rest of the band: average them here instead.
-    coords, inverse, counts = np.unique(h_arr, return_inverse=True, return_counts=True)
-    if coords.size != h_arr.size:
-        h_arr = np.asarray(coords, dtype=np.float64)
+    # reads its samples as a piecewise-linear function of h, so a column of
+    # nodes would leave one arbitrary node standing per h and discard the
+    # rest of the band: average each column here instead. Columns are
+    # grouped within a tolerance rather than by exact equality — a mesh
+    # generator is free to place a column's nodes at coordinates agreeing
+    # only to rounding.
+    span = float(np.ptp(h_arr))
+    tol = column_tol_um if column_tol_um is not None else COLUMN_TOL_FRACTION * span
+    keys = np.round(h_arr / tol).astype(np.int64) if tol > 0.0 else h_arr
+    _unique, inverse, counts = np.unique(keys, return_inverse=True, return_counts=True)
+    if _unique.size != h_arr.size:
+        h_arr = np.asarray(
+            np.bincount(inverse, weights=h_arr) / counts, dtype=np.float64
+        )
         v_arr = np.asarray(
             np.bincount(inverse, weights=v_arr) / counts, dtype=np.float64
         )

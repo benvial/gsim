@@ -11,9 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH, stage_airbox, stage_mesh
-
-from .test_rf_stage import biased  # noqa: F401  (fixture)
+from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
 
 
 class TestSharedMeshingDefaults:
@@ -38,17 +36,26 @@ class TestSharedMeshingDefaults:
         assert study.optical.mesh["max_mesh_size"] == 1.0
         assert study.rf.mesh["max_mesh_size"] == STAGE_MESH["max_mesh_size"]
 
-    def test_the_defaults_are_copies_no_stage_can_mutate(self, study):
-        study.charge.airbox["material"] = "air"
+    def test_the_defaults_are_copies_no_stage_can_mutate(self, study, tmp_path):
+        from gsim.modulator import Study
 
+        study.charge.airbox["material"] = "air"
+        study.charge.mesh["preset"] = "fine"
+
+        other = Study(
+            component=study.component,
+            stack=study.stack,
+            device=study.device,
+            output_dir=tmp_path / "other",
+        )
         assert STAGE_AIRBOX["material"] == "sio2"
-        assert stage_airbox()["material"] == "sio2"
-        assert stage_mesh(preset="fine")["preset"] == "fine"
         assert STAGE_MESH["preset"] == "coarse"
+        assert other.charge.airbox["material"] == "sio2"
+        assert other.charge.mesh["preset"] == "coarse"
 
 
 class TestSharedStaircaseBuilder:
-    def test_both_em_stages_tile_the_same_strips(self, biased):  # noqa: F811
+    def test_both_em_stages_tile_the_same_strips(self, biased):
         span = (biased.layout.junction_span.h[0], biased.layout.junction_span.h[1])
         biased.optical(route="palace", n_strips=4, strip_span=span)
         biased.rf(n_strips=4, strip_span=span)
@@ -62,7 +69,7 @@ class TestSharedStaircaseBuilder:
         )
         assert optical.strip_names == rf.strip_names
 
-    def test_both_em_stages_read_the_same_substrate_setting(self, biased):  # noqa: F811
+    def test_both_em_stages_read_the_same_substrate_setting(self, biased):
         assert biased.optical.substrate_thickness_um == pytest.approx(
             biased.rf.substrate_thickness_um
         )

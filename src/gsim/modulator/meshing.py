@@ -6,13 +6,18 @@ three literals they drifted apart silently; kept here, a Stage overrides
 only what its own physics needs — the charge Stage its finer elements —
 and a user still overrides anything, per Stage, through the Stage's own
 ``mesh=`` and ``airbox=`` settings.
+
+Each Stage's field factory copies what it takes from here, so no Stage can
+mutate another's defaults::
+
+    mesh: dict[str, Any] = Field(default_factory=STAGE_MESH.copy)
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["STAGE_AIRBOX", "STAGE_MESH", "stage_airbox", "stage_mesh"]
+__all__ = ["STAGE_AIRBOX", "STAGE_MESH"]
 
 #: Mesh-pipeline arguments a Stage meshes with unless it says otherwise.
 STAGE_MESH: dict[str, Any] = {
@@ -22,7 +27,7 @@ STAGE_MESH: dict[str, Any] = {
     "verbose": False,
 }
 
-#: Background region a Stage puts around its clipped domain.
+#: Background region a Stage puts around its Window.
 STAGE_AIRBOX: dict[str, Any] = {
     "margin_x": 2.0,
     "margin_y": 2.0,
@@ -30,27 +35,3 @@ STAGE_AIRBOX: dict[str, Any] = {
     "z_below": 1.0,
     "material": "sio2",
 }
-
-
-def stage_mesh(**overrides: Any) -> dict[str, Any]:
-    """The shared mesh settings, with a Stage's own changes applied.
-
-    Args:
-        **overrides: Settings this Stage differs on.
-
-    Returns:
-        A fresh dict, so no Stage can mutate another's defaults.
-    """
-    return {**STAGE_MESH, **overrides}
-
-
-def stage_airbox(**overrides: Any) -> dict[str, Any]:
-    """The shared airbox settings, with a Stage's own changes applied.
-
-    Args:
-        **overrides: Settings this Stage differs on.
-
-    Returns:
-        A fresh dict, so no Stage can mutate another's defaults.
-    """
-    return {**STAGE_AIRBOX, **overrides}

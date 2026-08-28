@@ -14,12 +14,12 @@ top RF frequency — and that stays with the Stage that knows about it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import Field
 
 from gsim.common.stack.staircase import STRIP_LENGTH_UM
-from gsim.modulator.meshing import stage_airbox, stage_mesh
+from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
 from gsim.modulator.route import EMRoute
 from gsim.modulator.stage import Stage
 
@@ -33,11 +33,15 @@ if TYPE_CHECKING:
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import CarrierMap
 
-__all__ = ["StaircaseStage"]
+__all__ = ["EMStage"]
 
 
-class StaircaseStage(Stage):
+class EMStage(Stage):
     """A Stage that solves an EM Mode on a Staircase.
+
+    Subclasses declare which material response of the Staircase they
+    stack in :attr:`stack_kind`, and add the settings their own physics
+    needs on top of the ones here.
 
     Attributes:
         route: Backend answering this Stage — ``"femwell"`` (the default)
@@ -49,16 +53,19 @@ class StaircaseStage(Stage):
         window: In-plane Window (um) the Cross-section is clipped to.
         window_z: Vertical Window (um).
         mesh: Keyword arguments forwarded to the mesh pipeline.
-        airbox: Background region around the clipped domain.
+        airbox: Background region around what the Stage meshes.
     """
+
+    #: Which material response of a Staircase this Stage stacks.
+    stack_kind: ClassVar[Literal["rf", "optical"]] = "optical"
 
     route: EMRoute = "femwell"
     strip_span: tuple[float, float] | None = None
     substrate_thickness_um: float = Field(default=2.0, gt=0.0)
     window: tuple[float, float] | None = None
     window_z: tuple[float, float] | None = None
-    mesh: dict[str, Any] = Field(default_factory=stage_mesh)
-    airbox: dict[str, Any] = Field(default_factory=stage_airbox)
+    mesh: dict[str, Any] = Field(default_factory=STAGE_MESH.copy)
+    airbox: dict[str, Any] = Field(default_factory=STAGE_AIRBOX.copy)
 
     def build_staircase(
         self,
@@ -112,7 +119,6 @@ class StaircaseStage(Stage):
         self,
         staircase: StaircaseCrossSection,
         *,
-        kind: Literal["rf", "optical"],
         output_dir: str | Path,
         freq_hz: float,
         num_modes: int,
@@ -129,8 +135,6 @@ class StaircaseStage(Stage):
 
         Args:
             staircase: The Staircase to mesh.
-            kind: Which material response of it to stack — ``"optical"``
-                or ``"rf"``.
             output_dir: Directory the mesh and solver files land in.
             freq_hz: Frequency recorded in the boundary-mode block.
             num_modes: Number of Modes the block asks for.
@@ -143,7 +147,7 @@ class StaircaseStage(Stage):
 
         sim = BoundaryModeSim()
         sim.set_output_dir(output_dir)
-        sim.set_stack(staircase.stack(kind))
+        sim.set_stack(staircase.stack(self.stack_kind))
         sim.set_geometry(staircase.component)
         sim.set_airbox(**self.airbox)
         sim.set_cross_section(

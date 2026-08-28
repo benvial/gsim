@@ -138,7 +138,8 @@ def pn_phase_shifter(
             one wherever the optical Stage needs a Staircase at all —
             which the Palace Route does and the femwell Route does not.
             The RF Staircase spans the whole doped slab, so raise this on
-            a device whose pads are much wider than its rib.
+            a device whose pads are much wider than its rib — the RF
+            Stage warns when the Strips stop resolving the rib.
         length_um: Length of the Traveling-wave electrode (um).
         n_group: Optical group index the Velocity mismatch is measured
             against; the line Stage stands the phase index in, and warns,
