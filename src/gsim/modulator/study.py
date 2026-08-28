@@ -22,6 +22,7 @@ from gsim.modulator.carriers import CarriersStage
 from gsim.modulator.charge import ChargeStage
 from gsim.modulator.device import Device
 from gsim.modulator.layout import DeviceLayout, derive_layout
+from gsim.modulator.line import LineStage
 from gsim.modulator.optical import OpticalStage
 from gsim.modulator.rf import RFStage
 
@@ -29,18 +30,21 @@ if TYPE_CHECKING:
     import gdsfactory as gf
 
     from gsim.common.stack.extractor import LayerStack
+    from gsim.common.twmzm_report import TWMZMReport
     from gsim.modulator.stage import Stage
 
 __all__ = ["Study"]
 
 #: Each Stage and the Stages whose results it consumes. A Stage's result
 #: is cleared by any change upstream of it, and only by those: the two EM
-#: Stages both read the carriers Stage, and neither reads the other.
+#: Stages both read the carriers Stage, and neither reads the other, and
+#: the line Stage reads them both.
 STAGE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "charge": (),
     "carriers": ("charge",),
     "optical": ("carriers",),
     "rf": ("carriers",),
+    "line": ("optical", "rf"),
 }
 
 #: Stage order, upstream first — the order a Study reports its Stages in.
@@ -99,6 +103,7 @@ class Study:
         carriers: The carrier-coupling Stage section.
         optical: The optical-Mode Stage section.
         rf: The RF line-parameter Stage section.
+        line: The whole-device figures-of-merit Stage section.
     """
 
     def __init__(
@@ -136,6 +141,7 @@ class Study:
         self.carriers = CarriersStage()
         self.optical = OpticalStage()
         self.rf = RFStage()
+        self.line = LineStage()
         self._wire_stages()
 
     # ------------------------------------------------------------------
@@ -213,6 +219,28 @@ class Study:
                 value=value,
             )
         return self._layout
+
+    # ------------------------------------------------------------------
+    # Report
+    # ------------------------------------------------------------------
+
+    def report(self, *, force: bool = False) -> TWMZMReport:
+        """The whole-device figures of merit, running what has not run.
+
+        The report is the line Stage's result, so asking for it runs the
+        optical and RF Stages first where they hold no result, and costs
+        nothing where they do.
+
+        Args:
+            force: Re-combine even when a report is already held. The
+                Stages upstream keep their results; force one of those to
+                re-solve through its own ``run(force=True)``.
+
+        Returns:
+            The assembled device report.
+        """
+        report: TWMZMReport = self.line.run(force=force)
+        return report
 
     # ------------------------------------------------------------------
     # Output

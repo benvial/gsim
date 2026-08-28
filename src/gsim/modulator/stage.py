@@ -168,12 +168,16 @@ class Stage(BaseModel):
 
         Args:
             force: Solve again even when a cached result is available.
+                Every downstream Stage's result is dropped first: they
+                read what this Stage is about to replace.
 
         Returns:
             The Stage's result.
         """
         if self._has_run and not force:
             return self._result
+        for stage in self._downstream:
+            stage.invalidate()
         verbose = self._is_verbose()
         if verbose:
             print(f"[{self.stage_name}] start")  # noqa: T201

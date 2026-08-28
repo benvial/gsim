@@ -2,10 +2,11 @@
 
 One device description drives every Stage of a traveling-wave modulator
 Study: charge transport through the Phase shifter, the carrier coupling
-those Bias points imply, the optical and RF Modes, and (as they land) the
-line figures of merit. Each Stage is configured through its own
-callable section, derives its own Cross-section Window where it meshes at
-all, and caches its result until something upstream of it changes.
+those Bias points imply, the optical and RF Modes, and the whole-device
+figures of merit the line Stage combines them into. Each Stage is
+configured through its own callable section, derives its own
+Cross-section Window where it meshes at all, and caches its result until
+something upstream of it changes.
 
 Backends are optional installs: importing this package never requires
 them. The full workflow installs with ``pip install 'gsim[modulator]'``.
@@ -28,7 +29,9 @@ Example::
     study.optical(wavelength_um=1.55)
     modes = study.optical.run()
     study.rf(frequencies_hz=[10e9, 40e9], n_strips=5)
-    line = study.rf.run()
+    line_params = study.rf.run()
+    study.line(length_um=3000.0, n_group=3.8)
+    report = study.report()
 """
 
 from gsim.modulator.carriers import (
@@ -46,6 +49,7 @@ from gsim.modulator.layout import (
     Span,
     derive_layout,
 )
+from gsim.modulator.line import LineStage
 from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
 from gsim.modulator.rf import RFStage
 from gsim.modulator.route import (
@@ -67,6 +71,7 @@ __all__ = [
     "DeviceLayout",
     "EMRoute",
     "Interface",
+    "LineStage",
     "MaterialResponse",
     "OpticalMode",
     "OpticalStage",

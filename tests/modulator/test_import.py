@@ -29,6 +29,7 @@ def test_imports_without_devsim_or_femwell(monkeypatch):
     assert modulator.CarriersStage is not None
     assert modulator.OpticalStage is not None
     assert modulator.RFStage is not None
+    assert modulator.LineStage is not None
     # The Route seam is importable without either backend: picking a
     # Route is a configuration choice, not a dependency.
     assert modulator.PalaceMode is not None

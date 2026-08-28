@@ -126,5 +126,5 @@ class TestInvalidation:
         assert study.optical in study.carriers._downstream
         assert study.optical in study.charge._downstream
 
-    def test_the_optical_stage_is_last_for_now(self, study):
-        assert study.optical._downstream == []
+    def test_the_optical_stage_feeds_the_line_stage(self, study):
+        assert study.optical._downstream == [study.line]

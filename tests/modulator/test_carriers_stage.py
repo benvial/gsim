@@ -266,6 +266,9 @@ class TestInvalidation:
             # the other, so re-configuring one leaves the other alone.
             "optical": {"charge", "carriers"},
             "rf": {"charge", "carriers"},
+            # The line stage reads both EM stages, so everything upstream
+            # of either clears the device report.
+            "line": {"charge", "carriers", "optical", "rf"},
         }
 
     def test_the_charge_stage_carries_carriers_as_downstream(self, study):

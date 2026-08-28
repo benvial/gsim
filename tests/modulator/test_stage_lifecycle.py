@@ -125,3 +125,14 @@ class TestVerbose:
         assert "counting" in out[0]
         assert "counting" in out[1]
         assert "s" in out[1]
+
+
+class TestForcedRerun:
+    def test_forcing_a_re_solve_drops_what_read_the_old_result(self):
+        upstream, downstream = wired_stages()
+        upstream.run()
+        downstream.run()
+
+        upstream.run(force=True)
+
+        assert downstream.has_run is False
