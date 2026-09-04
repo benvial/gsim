@@ -233,18 +233,23 @@ class TestLoadingASavedMode:
         assert field.points_um.shape == (6, 2)
         assert field.attribute.tolist() == [7]
 
-    def test_the_transverse_components_come_back_swapped(self, tmp_path):
-        """Palace writes them in the opposite order to its points."""
+    def test_the_transverse_components_come_back_as_written(self, tmp_path):
+        """Palace writes them in the same order as its point coordinates.
+
+        An earlier reader swapped them; the fields that swap was
+        diagnosed on came from meshes whose electrode outlines had lost
+        their perfect-conductor groups, so what looked like a swapped
+        write was a correct read of a wrongly conditioned solve.
+        """
         pytest.importorskip("vtk")
         write_saved_mode(tmp_path, cycle=1, arrays=saved_mode_arrays())
 
         field = load_boundary_mode_field(tmp_path, mode_id=1)
 
-        # File order is (1, 2) + (0.5, 0.25)j; the mesh order is the reverse.
-        assert np.allclose(field.e_t[:, 0], complex(2.0, 0.25))
-        assert np.allclose(field.e_t[:, 1], complex(1.0, 0.5))
-        assert np.allclose(field.h_t[:, 0], 20.0 / MU0)
-        assert np.allclose(field.h_t[:, 1], 10.0 / MU0)
+        assert np.allclose(field.e_t[:, 0], complex(1.0, 0.5))
+        assert np.allclose(field.e_t[:, 1], complex(2.0, 0.25))
+        assert np.allclose(field.h_t[:, 0], 10.0 / MU0)
+        assert np.allclose(field.h_t[:, 1], 20.0 / MU0)
 
     def test_the_longitudinal_components_are_not_swapped(self, tmp_path):
         pytest.importorskip("vtk")

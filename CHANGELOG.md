@@ -15,10 +15,34 @@
 - `gsim.femwell.adapter.z0_power_current` accepts `current_facets`: the signal current of a perfect conductor, which
   carries no volume current, as Ampere's contour integral around it. Validated against the analytic PEC-coax impedance.
 
-- The modulator RF Stage's Palace Route says that it cannot shield its Window. `metallic_boundaries` puts a perfect
-  conductor on the Window's outer wall, femwell honours it, and nothing in the Palace pipeline expresses it — Palace's
-  default for that wall is PMC, the opposite condition — so the two Routes are not solving the same boundary-value
-  problem and their modes do not agree. Warned about rather than left in the numbers.
+- Both Routes put the same condition on the outer wall of an RF Window, so the cross-Route gate now covers the RF Stage
+  as well as the optical one. `metallic_boundaries` puts a perfect conductor there; femwell has always honoured it and
+  nothing in the Palace pipeline expressed it, leaving Palace to apply its own default of PMC — the opposite wall — so
+  the two Routes solved different boundary-value problems on the identical mesh. `BoundaryModeSim.metallic_boundaries`
+  now emits the domain's outer-boundary group under `Boundaries.PEC`, and the RF Stage threads its own setting onto the
+  simulation it builds. On the shipped demo Cross-section the two Routes land on one line Mode's effective index to 1%
+  and on its characteristic impedance to 5%, held by `tests/modulator/test_palace_route_runtime.py`.
+
+- Fix: the native-2D mesher dropped every perfect-conductor and conductivity curve it found. It keeps a conductor's
+  outline curve only when an adjacent surface carries a volume physical group, and read that adjacency out of the wrong
+  half of gmsh's `getAdjacencies` result — the curve's end points rather than its adjacent surfaces — so the test never
+  matched and the group came out empty. A `"pec"` Staircase's electrodes were therefore meshed as unconditioned slots
+  rather than as conductors.
+
+- Fix: `gsim.palace.mode_fields` reads a saved boundary Mode's two transverse components in the order Palace writes
+  them. The reader swapped them, on the diagnosis that a mode's `E` came out tangential to a perfect conductor and its
+  `H` normal to it; those fields came from meshes whose electrode outlines had lost their perfect-conductor groups to
+  the bug above, so the swap was correcting a wrongly conditioned solve rather than a wrongly ordered file. Its
+  power-current impedance also flips a Mode the solver chose to propagate against the plane normal, whose Poynting flux
+  — and so whose reported `Z0` — came out negative.
+
+- The Palace Route uses a crashed run's mode table when the table is complete. Palace 0.17 intermittently corrupts its
+  heap while shutting down a `BoundaryMode` solve (`free(): corrupted unsorted chunks`), after the solve has finished
+  and written its results; the Route clears the output directory before each run so what it reads back is that run's,
+  warns, and re-raises when the table is short or missing.
+
+- Fix: `make_pn_junction_profile` measured its default 0.22 um layer thickness from zero rather than from `zmin`, so a
+  junction placed above the substrate got a thickness of `0.22 - zmin` instead.
 
 - `gsim.common.modes.select_line_mode` takes a `max_loss_ratio` bound on `|Im(n_eff)| / Re(n_eff)`, and the RF Stage
   tightens it to 0.5: a transmission line advances several radians of phase per radian of loss, and the Modes sitting

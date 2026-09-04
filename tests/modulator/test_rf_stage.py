@@ -185,6 +185,29 @@ class TestPerfectElectrodesNeedTheWall:
         biased.rf(conductor_model="volume", metallic_boundaries=False)
         assert biased.rf.effective_conductor_model() == "volume"
 
+    def test_the_refusal_comes_before_anything_is_meshed(self, study, monkeypatch):
+        """Settings the Route cannot honour cost no charge solve and no mesh."""
+
+        def fail(*_args, **_kwargs):
+            raise AssertionError("the charge stage must not run")
+
+        monkeypatch.setattr("gsim.modulator.charge.ChargeStage._solve", fail)
+        study.rf(route="femwell", conductor_model="pec", metallic_boundaries=False)
+        with pytest.raises(ValueError, match="open slots"):
+            study.rf.run()
+
+
+class TestMetallicWall:
+    """Both Routes put the same condition on the Window's outer wall."""
+
+    def test_the_simulation_carries_the_wall_by_default(self, biased):
+        assert biased.rf.metallic_boundaries is True
+        assert biased.rf.simulation().metallic_boundaries is True
+
+    def test_turning_the_wall_off_reaches_the_simulation(self, biased):
+        biased.rf(conductor_model="volume", metallic_boundaries=False)
+        assert biased.rf.simulation().metallic_boundaries is False
+
 
 class TestContourOrder:
     """A perfect conductor's current is read off the field around it."""

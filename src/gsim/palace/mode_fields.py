@@ -15,15 +15,18 @@ integrals here therefore land in the same scale the femwell adapter's do
 (:func:`gsim.femwell.adapter.z0_power_current`), which is what lets the
 two Routes be compared as numbers rather than as pictures.
 
-One thing has to be undone on the way in. Palace writes the two
-transverse components of a boundary Mode in the opposite order to the
-coordinates of the points it writes them at, so a field read straight
-out of the file comes out mirrored. That is not a matter of taste: on a
-perfect conductor the electric field is normal to the surface and the
-magnetic field tangential to it, and the raw arrays have both the wrong
-way round on every face. :func:`load_boundary_mode_field` swaps them
-back, and the boundary conditions come out right on faces of either
-orientation.
+Nothing has to be undone on the way in. Palace writes the two transverse
+components of a boundary Mode in the same order as the coordinates of
+the points it writes them at, and an earlier version of this reader
+swapped them: on the fields it was diagnosed against, the electric field
+came out tangential to a perfect conductor and the magnetic field normal
+to it, which is the wrong way round on both counts. Those fields came
+from meshes whose electrode outlines had lost their perfect-conductor
+groups (the native-2D mesher read gmsh's ``getAdjacencies`` result
+backwards), so what looked like a swapped write was a faithful read of a
+wrongly conditioned solve. On a correctly conditioned one the components
+as written put the boundary conditions the right way round on faces of
+either orientation.
 
 The sign convention is ``exp(+i omega t)``, matching the rest of gsim.
 
@@ -124,10 +127,16 @@ def _transverse(grid: Any, name: str) -> NDArray[np.complex128]:
     """One transverse field, in the order of the points it sits on.
 
     Palace writes a boundary Mode's two transverse components in the
-    opposite order to the coordinates of its points, so the file's first
-    component belongs to the second coordinate. Reading them as written
-    puts the electric field along a perfect conductor and the magnetic
-    field through it, which is the wrong way round on both counts.
+    same order as the coordinates of its points. An earlier version of
+    this reader swapped them, compensating for what looked like a
+    swapped write — but the fields it was diagnosed on came from meshes
+    whose electrode outlines had lost their perfect-conductor groups
+    (the ``getAdjacencies`` result was read backwards), so the "wrong
+    way round" fields were a correct read of a wrongly conditioned
+    solve. On a correctly conditioned solve the components as written
+    put the electric field normal to a perfect conductor and the
+    magnetic field along it, which is the right way round on both
+    counts.
     """
     values = _complex_array(grid, name)
     if values.ndim != 2 or values.shape[1] != 2:
@@ -135,7 +144,7 @@ def _transverse(grid: Any, name: str) -> NDArray[np.complex128]:
             f"The saved mode's {name} field has shape {values.shape}, not the "
             "two transverse components of a boundary mode."
         )
-    return np.asarray(values[:, ::-1], dtype=np.complex128)
+    return np.asarray(values, dtype=np.complex128)
 
 
 def load_boundary_mode_field(
@@ -383,7 +392,8 @@ def z0_power_current(
         tol_um: Perimeter tolerance passed to :func:`contour_current`.
 
     Returns:
-        The complex characteristic impedance in ohms.
+        The complex characteristic impedance in ohms, its real part
+        positive.
 
     Raises:
         ValueError: When the contour integral comes out zero, which
@@ -395,7 +405,12 @@ def z0_power_current(
             "The saved mode carries no current around the signal conductor, so "
             "it has no power-current impedance."
         )
-    return complex(2.0 * power_flux(field) / (abs(current) ** 2))
+    z0 = complex(2.0 * power_flux(field) / (abs(current) ** 2))
+    # An eigenmode's propagation direction is the solver's to choose, and
+    # the Poynting flux changes sign with it while |I|^2 does not. The
+    # line's impedance does not depend on which way the solver looked, so
+    # a mode saved travelling against the plane normal is flipped back.
+    return -z0 if z0.real < 0.0 else z0
 
 
 def field_index_ratio(field: BoundaryModeField) -> float:

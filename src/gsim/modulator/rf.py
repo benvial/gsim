@@ -147,11 +147,11 @@ class RFStage(EMStage):
             carries the line's return field, so some field there is the
             structure rather than a clipped tail.
         metallic_boundaries: Enforce PEC on the outer boundary — the
-            usual condition for a shielded line solve. A femwell-Route
-            setting: nothing in the Palace pipeline expresses it, and
-            Palace's own default for the outer boundary is the opposite
-            condition, so the Palace Route says so rather than pretending
-            the Window is shielded.
+            usual condition for a shielded line solve. Both Routes
+            express it identically: femwell applies its perfect-conductor
+            condition to the domain boundary, and the Palace config puts
+            the outer wall under ``Boundaries.PEC`` — which is what lets
+            the cross-Route gate compare their answers at all.
         order: Finite-element order of the mode solve. Under the
             ``"pec"`` conductor model the impedance is read off the field
             around the electrode rather than out of it, and femwell
@@ -374,12 +374,19 @@ class RFStage(EMStage):
         # re-solves it per frequency without reading the boundary-mode
         # block, which records the first frequency so the sim is a
         # complete description.
-        return self.build_staircase_simulation(
+        sim = self.build_staircase_simulation(
             stair,
             output_dir=study.stage_dir(self.stage_name),
             freq_hz=float(self.frequencies_hz[0]),
             num_modes=self.num_modes,
         )
+        # Both Routes put the same condition on the Window's outer wall:
+        # femwell reads this setting directly, and the Palace config puts
+        # the wall under Boundaries.PEC — without it Palace defaults the
+        # unconditioned wall to PMC, the opposite condition, and the two
+        # Routes solve different boundary-value problems.
+        sim.metallic_boundaries = self.metallic_boundaries
+        return sim
 
     # ------------------------------------------------------------------
     # Results
@@ -572,8 +579,6 @@ class RFStage(EMStage):
         signal = self.signal_electrode()
         on_contour = self.effective_conductor_model() == "pec"
         if on_contour:
-            self._require_metallic_boundaries()
-            self._check_contour_order()
             h_span, v_span = staircase.electrode_extent(signal)
             signal_elements = None
         else:
@@ -635,15 +640,12 @@ class RFStage(EMStage):
         """
         from gsim.modulator.route import (
             containment_unmeasurable,
-            metallic_boundary_unexpressed,
             palace_binary,
             palace_line_impedance,
             solve_palace_modes,
         )
 
         warnings.warn(containment_unmeasurable(self.stage_name), stacklevel=2)
-        if self.metallic_boundaries:
-            warnings.warn(metallic_boundary_unexpressed(self.stage_name), stacklevel=2)
         executable = palace_binary(binary, stage_name=self.stage_name)
         verbose = self._is_verbose()
         h_span, v_span = staircase.electrode_extent(self.signal_electrode())
@@ -681,8 +683,12 @@ class RFStage(EMStage):
         from gsim.common.twmzm_report import line_params_from_neff
 
         # Before the charge solve and before meshing: a user whose Route
-        # cannot run should pay nothing to find that out.
+        # cannot run, or whose settings the Route cannot honour, should
+        # pay nothing to find that out. Both checks read settings only.
         binary = require_route(self.route, stage_name=self.stage_name)
+        if self.route == "femwell" and self.effective_conductor_model() == "pec":
+            self._require_metallic_boundaries()
+            self._check_contour_order()
 
         point = self.bias_point()
         staircase = self.staircase()

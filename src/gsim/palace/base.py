@@ -1738,6 +1738,8 @@ class PalaceSimMixin:
         hints = dict(self._hints)
         if self._impedance_boundaries:
             hints["_impedance_boundaries"] = self._impedance_boundaries
+        if getattr(self, "metallic_boundaries", False):
+            hints["_metallic_boundaries"] = True
 
         config_path = gen_write_config(
             mesh_result=self._last_mesh_result,

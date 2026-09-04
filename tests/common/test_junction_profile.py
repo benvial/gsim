@@ -192,6 +192,15 @@ class TestValidation:
         with pytest.raises(ValueError):
             _build(_thin_junction(), zmax=-1.0)
 
+    def test_default_zmax_is_thickness_above_zmin(self):
+        """A non-zero zmin with no zmax keeps the documented 0.22 um thickness."""
+        _comp, res = _build(_thin_junction(), zmin=1.5, zmax=None)
+        for spec in res["layer_specs"].values():
+            assert spec.zmin == pytest.approx(1.5)
+            assert spec.zmax == pytest.approx(1.72)
+        _comp0, res0 = _build(_thin_junction(), zmin=0.0, zmax=None)
+        assert res["junction"]["c_f"] == pytest.approx(res0["junction"]["c_f"])
+
     def test_accepts_dict_junction_config(self):
         _comp, res = _build(
             {"na_cm3": 1e18, "nd_cm3": 1e18, "v_reverse": 1.0},

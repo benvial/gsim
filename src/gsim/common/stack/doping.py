@@ -271,7 +271,7 @@ def make_pn_junction_profile(
     p_name, p_layer, p_sigma = p_region
     n_name, n_layer, n_sigma = n_region
 
-    ztop = 0.22 if zmax is None else zmax
+    ztop = zmin + 0.22 if zmax is None else zmax
     if ztop <= zmin:
         raise ValueError("zmax must exceed zmin.")
     if length <= 0:

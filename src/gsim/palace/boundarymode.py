@@ -60,6 +60,10 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     materials: dict[str, MaterialConfig] = Field(default_factory=dict)
     numerical: NumericalConfig = Field(default_factory=NumericalConfig)
     absorbing_boundary: bool = False
+    #: Put a perfect-conductor condition on the outer wall of the meshed
+    #: domain, making the mode solve a shielded one. Off, Palace's own
+    #: default for an unconditioned outer boundary applies, which is PMC.
+    metallic_boundaries: bool = False
 
     # Stack configuration (stored as kwargs until resolved)
     _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)

@@ -21,13 +21,14 @@ selects a Route pays for neither.
 from __future__ import annotations
 
 import math
+import shutil
+import subprocess
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from gsim.palace import BoundaryModeSim
 
 __all__ = [
@@ -36,7 +37,6 @@ __all__ = [
     "EMRoute",
     "PalaceMode",
     "containment_unmeasurable",
-    "metallic_boundary_unexpressed",
     "mode_boundary_ratio",
     "palace_binary",
     "palace_line_impedance",
@@ -209,8 +209,18 @@ def solve_palace_modes(
         save=int(save),
     )
     sim.write_config(photonic=True)
-    results: Any = sim.run_local(palace_executable=binary, verbose=verbose)
-    text = results if hasattr(results, "modes") else load_text_results(results)
+    # A previous frequency's results must not survive into this run:
+    # should Palace crash, the salvage below reads this directory back,
+    # and a stale mode table would be mistaken for this frequency's.
+    if sim.output_dir is not None:
+        shutil.rmtree(Path(sim.output_dir) / "output" / "palace", ignore_errors=True)
+    try:
+        results: Any = sim.run_local(palace_executable=binary, verbose=verbose)
+        text = results if hasattr(results, "modes") else load_text_results(results)
+    except (RuntimeError, subprocess.CalledProcessError) as err:
+        text = _salvage_mode_table(sim, err, freq_hz=freq_hz, num_modes=num_modes)
+        if text is None:
+            raise
     modes = getattr(text, "modes", {})
     if not modes:
         raise RuntimeError(
@@ -221,6 +231,51 @@ def solve_palace_modes(
         PalaceMode(n_eff=complex(modes[mode_id]["n_eff"]), mode_id=int(mode_id))
         for mode_id in sorted(modes)
     ]
+
+
+def _salvage_mode_table(
+    sim: BoundaryModeSim, err: Exception, *, freq_hz: float, num_modes: int
+) -> Any | None:
+    """Read a crashed Palace run's mode table back, if it is complete.
+
+    Palace 0.17 intermittently corrupts its heap while shutting down a
+    ``BoundaryMode`` solve (``free(): corrupted unsorted chunks``), after
+    the solve itself has finished and its results are on disk. The crash
+    is non-deterministic on an identical mesh and config, so a run that
+    exits abnormally may still have answered the question it was asked —
+    and the answer on disk is used rather than thrown away, which is what
+    lets a gate depend on a live solve at all. The output directory was
+    cleared before the run, so anything readable now is this run's.
+
+    Args:
+        sim: The simulation that was run.
+        err: What ``run_local`` raised, named in the warning.
+        freq_hz: The frequency, named in the warning.
+        num_modes: Modes the solve was asked for; a table with fewer is
+            a truncated write, not an answer.
+
+    Returns:
+        The parsed text results when the table is complete, else ``None``
+        so the caller re-raises.
+    """
+    from gsim.palace.results import load_text_results
+
+    if sim.output_dir is None:
+        return None
+    try:
+        text = load_text_results(Path(sim.output_dir))
+    except Exception:
+        return None
+    if len(getattr(text, "modes", {})) < num_modes:
+        return None
+    warnings.warn(
+        f"Palace exited abnormally at f = {freq_hz:g} Hz but its complete "
+        f"mode table was on disk, so the run's answer is used ({err}). "
+        "Palace 0.17 is known to corrupt its heap on shutdown of a "
+        "boundary-mode solve.",
+        stacklevel=3,
+    )
+    return text
 
 
 def containment_unmeasurable(stage_name: str) -> str:
@@ -246,38 +301,6 @@ def containment_unmeasurable(stage_name: str) -> str:
         "indices, so boundary_field_ratio is NaN and a mode clipped by its "
         "window will not announce itself (ADR 0002). Re-solve with "
         f"study.{stage_name}(route='femwell') to have the window checked."
-    )
-
-
-def metallic_boundary_unexpressed(stage_name: str) -> str:
-    """Why the Palace Route does not shield its Window.
-
-    ``metallic_boundaries`` puts a perfect conductor on the outer edge of
-    a Stage's Window, which is what makes a line solve a *shielded* line
-    solve. Nothing in the Palace pipeline expresses it: the native-2D
-    mesher tags a conductor's own outline, never the domain wall, and
-    Palace's own default for a boundary attribute it was given no
-    condition for is PMC — the magnetic wall, the opposite one. So the
-    two Routes do not solve the same boundary-value problem, and their
-    Modes cannot be expected to match.
-
-    Args:
-        stage_name: Stage the message names.
-
-    Returns:
-        The warning text.
-    """
-    return (
-        f"The {stage_name} stage's palace route cannot put a metallic wall "
-        "around its window: nothing in the palace pipeline expresses "
-        "metallic_boundaries, and palace's own default for the outer "
-        "boundary is PMC rather than PEC. The femwell route shields the "
-        "same window, so the two routes are solving different problems and "
-        "their modes will not agree. Widen the window with "
-        f"study.{stage_name}(window=..., window_z=...) until the wall stops "
-        "mattering, which is the only way to bring them together today: "
-        "turning the femwell route's wall off instead would leave its "
-        "perfect electrodes as open slots rather than as conductors."
     )
 
 
@@ -382,8 +405,7 @@ def palace_line_impedance(
         if output_dir is None:
             raise RuntimeError("the simulation has no output directory.")  # noqa: TRY301
         field = load_boundary_mode_field(output_dir, mode_id=mode.mode_id)
-        _check_field_is_the_mode(field, mode, stage_name=stage_name)
-        return palace_z0(field, h_span=h_span, v_span=v_span)
+        z0 = palace_z0(field, h_span=h_span, v_span=v_span)
     except Exception as err:
         warnings.warn(
             f"The {stage_name} stage's palace route could not read mode "
@@ -392,3 +414,9 @@ def palace_line_impedance(
             stacklevel=2,
         )
         return complex(math.nan, math.nan)
+    # Outside the guard above: the check warns rather than raises, and a
+    # caller running with warnings as errors must see the wrong-Mode
+    # diagnostic rather than have it caught here and reported as an
+    # unreadable file.
+    _check_field_is_the_mode(field, mode, stage_name=stage_name)
+    return z0

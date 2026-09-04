@@ -1,10 +1,12 @@
 """The Palace Route on the real pipeline, and its agreement with femwell.
 
-The cross-Route gate the modulator API owes the originating spec: both
-first-class Routes solve the identical Staircase on the identical mesh,
-and must land on the same effective index to solver tolerance. It ships
-here as a runtime-gated test rather than as a one-off script, so the
-agreement is re-checked whenever either Route moves.
+The cross-Route gate the modulator API owes the originating spec, on both
+EM Stages: both first-class Routes solve the identical Staircase on the
+identical mesh under the identical outer-wall condition, and must land on
+the same effective index — and, on the RF Stage, the same characteristic
+impedance — to solver tolerance. It ships here as a runtime-gated test
+rather than as a one-off script, so the agreement is re-checked whenever
+either Route moves.
 
 Gated on gmsh, the femwell runtime and a Palace binary; deselected by
 default, run with ``pytest -m palace_local``. The Carrier maps are
@@ -189,18 +191,7 @@ def rf_line(study, **settings):
 
 
 class TestRFElectrodeModel:
-    """What the Palace Route can express of the electrode metal (ADR 0003).
-
-    The RF Stage's cross-Route numeric gate is not here, and ticket 17
-    carries it: the RF Stage's ``metallic_boundaries`` puts a perfect
-    conductor on the Window's outer wall, femwell honours it and nothing
-    in the Palace pipeline expresses it, so the two Routes are solving
-    different boundary-value problems. Palace also crashes on the
-    perfect-electrode solve about half the time in this version
-    (``free(): corrupted unsorted chunks``), which is why nothing here
-    asserts on a live one. What is settled, and what this holds, is which
-    model of the metal Palace can solve at all.
-    """
+    """What the Palace Route can express of the electrode metal (ADR 0003)."""
 
     def test_a_metal_region_leaves_palace_no_line_mode_to_find(self, tmp_path):
         """A region with ``|Im(eps)| ~ 1e7`` returns its own modes.
@@ -213,13 +204,50 @@ class TestRFElectrodeModel:
         with pytest.raises(NoLineModeError, match="No propagating line mode"):
             rf_line(study, route="palace", conductor_model="volume")
 
-    def test_the_route_says_it_cannot_shield_the_window(self, tmp_path):
-        """The mismatch is announced rather than left in the numbers."""
-        from gsim.modulator.route import metallic_boundary_unexpressed
 
-        study = study_at(tmp_path)
-        assert study.rf.metallic_boundaries is True
-        assert "cannot put a metallic wall" in metallic_boundary_unexpressed("rf")
+# The Marks-Williams integral is exact to 0.4% on the analytic PEC coax,
+# but here it is run on two different discretizations of the fields — an
+# order-2 Nedelec solve read back off ParaView nodes against an order-2
+# Lagrange curl — so the impedance gate is looser than the index one.
+Z0_RTOL = 0.05
+
+
+@pytest.fixture(scope="module")
+def rf_gate(tmp_path_factory):
+    """One Staircase, one mesh spec, both Routes, one line Mode each.
+
+    Both Routes express the identical Cross-section: perfect-conductor
+    electrodes (ADR 0003) inside a metallic Window, femwell applying its
+    boundary condition and Palace putting the same wall under
+    ``Boundaries.PEC``. One solve of each Route is shared across the
+    gate's assertions, because Palace takes tens of seconds per
+    frequency.
+    """
+    study = study_at(tmp_path_factory.mktemp("rf_gate"))
+    femwell = rf_line(study, route="femwell", conductor_model="pec", order=2)
+    palace = rf_line(study, route="palace")
+    return femwell, palace
+
+
+class TestRFCrossRouteAgreement:
+    """The RF Stage's cross-Route numeric gate (ticket 17)."""
+
+    def test_both_routes_land_on_the_same_line_mode(self, rf_gate):
+        femwell, palace = rf_gate
+        n_femwell = float(femwell.n_rf[0])
+        n_palace = float(palace.n_rf[0])
+        # Both must see the line mode of the loaded staircase, not a
+        # cladding or box resonance.
+        assert n_femwell > 1.5
+        assert n_palace > 1.5
+        assert abs(n_palace - n_femwell) < N_EFF_RTOL * n_femwell
+
+    def test_both_routes_land_on_the_same_impedance(self, rf_gate):
+        femwell, palace = rf_gate
+        z_femwell = complex(femwell.z0_ohm[0])
+        z_palace = complex(palace.z0_ohm[0])
+        assert np.isfinite(z_palace.real)
+        assert abs(z_palace.real - z_femwell.real) < Z0_RTOL * abs(z_femwell.real)
 
 
 class TestStripCountConvergence:

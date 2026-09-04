@@ -602,6 +602,9 @@ def _generate_native_boundarymode_groups(
             # segfault in MFEM's GetBdrElementFace.  Filter them out by
             # checking gmsh adjacencies: keep a curve only if at least one
             # adjacent surface actually has a volume physical group.
+            # getAdjacencies returns (upward, downward): the adjacent
+            # surfaces are the first element, the curve's end points the
+            # second.
             filtered_curves: set[int] = set()
             n_internal = 0
             for ctag in pec_curves:
@@ -610,7 +613,7 @@ def _generate_native_boundarymode_groups(
                 except Exception:
                     filtered_curves.add(ctag)
                     continue
-                adj_surfaces = set(adj[1]) if len(adj) > 1 else set()
+                adj_surfaces = set(adj[0]) if len(adj) > 0 else set()
                 if not adj_surfaces:
                     filtered_curves.add(ctag)
                     continue

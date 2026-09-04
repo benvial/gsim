@@ -203,3 +203,108 @@ class TestSavedFieldsAreTheSelectedMode:
             _check_field_is_the_mode(
                 field, PalaceMode(n_eff=complex(2.5), mode_id=1), stage_name="rf"
             )
+
+
+class TestCrashedRunSalvage:
+    """Palace 0.17 can corrupt its heap on shutdown, after answering.
+
+    A run that exits abnormally with its complete mode table on disk is
+    an answer, not a failure; a truncated or absent table stays one.
+    """
+
+    class _Sim:
+        def __init__(self, output_dir):
+            self.output_dir = output_dir
+
+    @staticmethod
+    def _write_mode_table(output_dir, n_modes: int) -> None:
+        palace_dir = output_dir / "output" / "palace"
+        palace_dir.mkdir(parents=True)
+        rows = ["m, Re{kn} (1/m), Im{kn} (1/m), Re{n_eff}, Im{n_eff}"]
+        rows += [
+            f"{m}, {4.2e7 + m:.6e}, -1.0e2, {2.0 + 0.1 * m:.6e}, -1.0e-5"
+            for m in range(1, n_modes + 1)
+        ]
+        (palace_dir / "mode-kn.csv").write_text("\n".join(rows) + "\n")
+
+    def test_a_complete_table_is_used_and_the_crash_reported(self, tmp_path):
+        from gsim.modulator.route import _salvage_mode_table
+
+        self._write_mode_table(tmp_path, 4)
+        with pytest.warns(UserWarning, match="exited abnormally"):
+            text = _salvage_mode_table(
+                self._Sim(tmp_path),
+                RuntimeError("free(): corrupted unsorted chunks"),
+                freq_hz=10e9,
+                num_modes=4,
+            )
+        assert text is not None
+        assert len(text.modes) == 4
+        assert text.modes[1]["n_eff"].real == pytest.approx(2.1)
+
+    def test_a_truncated_table_is_not_an_answer(self, tmp_path):
+        from gsim.modulator.route import _salvage_mode_table
+
+        self._write_mode_table(tmp_path, 2)
+        assert (
+            _salvage_mode_table(
+                self._Sim(tmp_path), RuntimeError("boom"), freq_hz=10e9, num_modes=4
+            )
+            is None
+        )
+
+    def test_no_output_at_all_is_not_an_answer(self, tmp_path):
+        from gsim.modulator.route import _salvage_mode_table
+
+        assert (
+            _salvage_mode_table(
+                self._Sim(tmp_path), RuntimeError("boom"), freq_hz=10e9, num_modes=4
+            )
+            is None
+        )
+
+
+class TestSolvingThroughACrash:
+    """What ``solve_palace_modes`` does around a run that exits abnormally."""
+
+    class _CrashingSim:
+        """A sim whose run writes a mode table and then fails."""
+
+        def __init__(self, output_dir, n_modes: int | None):
+            self.output_dir = output_dir
+            self._n_modes = n_modes
+
+        def set_boundary_mode(self, **_kwargs):
+            pass
+
+        def write_config(self, **_kwargs):
+            pass
+
+        def run_local(self, **_kwargs):
+            if self._n_modes is not None:
+                TestCrashedRunSalvage._write_mode_table(self.output_dir, self._n_modes)
+            raise RuntimeError("free(): corrupted unsorted chunks")
+
+    def _solve(self, sim, num_modes: int = 4):
+        from gsim.modulator.route import solve_palace_modes
+
+        return solve_palace_modes(
+            sim, freq_hz=10e9, num_modes=num_modes, target=2.0, save=1, binary="palace"
+        )
+
+    def test_a_crash_that_still_answered_is_an_answer(self, tmp_path):
+        with pytest.warns(UserWarning, match="exited abnormally"):
+            modes = self._solve(self._CrashingSim(tmp_path, 4))
+
+        assert [mode.mode_id for mode in modes] == [1, 2, 3, 4]
+
+    def test_a_crash_that_answered_nothing_is_raised(self, tmp_path):
+        with pytest.raises(RuntimeError, match="corrupted unsorted chunks"):
+            self._solve(self._CrashingSim(tmp_path, None))
+
+    def test_a_previous_runs_table_is_not_salvaged_as_this_ones(self, tmp_path):
+        """The output directory is cleared before the run, not after it."""
+        TestCrashedRunSalvage._write_mode_table(tmp_path, 4)
+
+        with pytest.raises(RuntimeError, match="corrupted unsorted chunks"):
+            self._solve(self._CrashingSim(tmp_path, None))

@@ -114,6 +114,50 @@ class TestStaircaseDomains:
         assert sigma[0] > sigma[-1]  # mu_n > mu_p: n-side more conductive
 
 
+class TestMetallicWindow:
+    """``metallic_boundaries`` puts the outer wall under ``Boundaries.PEC``.
+
+    femwell's ``metallic_boundaries`` shields the whole domain boundary;
+    without this, nothing in the Palace pipeline expressed the same
+    condition and Palace defaulted the unconditioned wall to PMC — the
+    opposite one — so the two solvers answered different boundary-value
+    problems on the identical mesh.
+    """
+
+    @staticmethod
+    def _outer_attrs(sim) -> list[int]:
+        pg = sim.mesh_groups["boundary_surfaces"]["absorbing"]["phys_group"]
+        return pg if isinstance(pg, list) else [pg]
+
+    def test_the_outer_wall_is_unconditioned_by_default(self, staircase_sim):
+        sim, config, _staircase = staircase_sim
+        pec = config.get("Boundaries", {}).get("PEC", {}).get("Attributes", [])
+        assert not set(self._outer_attrs(sim)) & set(pec)
+
+    def test_the_outer_wall_lands_under_pec_when_asked(self, staircase_sim):
+        sim, _config, _staircase = staircase_sim
+        sim.metallic_boundaries = True
+        try:
+            sim.write_config()
+            shielded = json.loads((Path(sim.output_dir) / "config.json").read_text())
+        finally:
+            sim.metallic_boundaries = False
+        pec = shielded["Boundaries"]["PEC"]["Attributes"]
+        assert set(self._outer_attrs(sim)) <= set(pec)
+        assert "Absorbing" not in shielded["Boundaries"]
+
+    def test_claiming_the_wall_twice_is_refused(self, staircase_sim):
+        sim, _config, _staircase = staircase_sim
+        sim.metallic_boundaries = True
+        sim.absorbing_boundary = True
+        try:
+            with pytest.raises(ValueError, match="both claim the outer wall"):
+                sim.write_config()
+        finally:
+            sim.metallic_boundaries = False
+            sim.absorbing_boundary = False
+
+
 class TestConvergenceInStripCount:
     def test_material_profile_converges_with_n(self):
         y, electrons, _holes = _synthetic_carriers()
