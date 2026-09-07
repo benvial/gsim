@@ -10,7 +10,12 @@ import meshio
 import numpy as np
 import pytest
 
-from gsim.tcad import ChargeTransportSim, StepDoping
+from gsim.tcad import (
+    CallableDoping,
+    ChargeTransportSim,
+    StepDoping,
+    TableDoping,
+)
 from gsim.tcad.mesh import UM_TO_CM
 
 from .conftest import build_pn_device
@@ -152,6 +157,48 @@ class TestDeviceSetup:
         )
         np.testing.assert_allclose(
             devsim.node_values[("n_rib", "Donors")], [1e18] * n_nodes
+        )
+
+    def test_a_table_and_a_function_reach_the_node_values(
+        self, meshed_sim, fake_devsim
+    ):
+        """Every union member goes through the same validated seam.
+
+        ``ChargeTransportSim.doping`` is a discriminated union under
+        ``validate_assignment``, so a shape that is not a member never
+        reaches DEVSIM at all.
+        """
+        devsim, _sp = fake_devsim
+        sim = meshed_sim.model_copy()
+        sim.doping = []
+        sim.add_doping(
+            TableDoping(
+                region="p_rib",
+                dopant_type="acceptor",
+                y_um=[-10.0, 10.0],
+                values_cm3=[2e17, 2e17],
+            )
+        )
+        sim.add_doping(
+            CallableDoping(
+                region="n_rib",
+                dopant_type="donor",
+                function=lambda x, y: 6e17,
+            )
+        )
+        assert [type(p).__name__ for p in sim.doping] == [
+            "TableDoping",
+            "CallableDoping",
+        ]
+
+        sim.setup_device("pn")
+
+        n_nodes = len(devsim.node_coords["x"])
+        np.testing.assert_allclose(
+            devsim.node_values[("p_rib", "Acceptors")], [2e17] * n_nodes
+        )
+        np.testing.assert_allclose(
+            devsim.node_values[("n_rib", "Donors")], [6e17] * n_nodes
         )
 
     @pytest.mark.usefixtures("fake_devsim")

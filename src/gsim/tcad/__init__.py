@@ -27,10 +27,12 @@ Example::
 """
 
 from gsim.tcad.doping import (
+    CallableDoping,
     DopingProfile,
     GaussianDoping,
     ImplantDoping,
     StepDoping,
+    TableDoping,
     acceptor_donor_concentrations,
     net_doping_cm3,
 )
@@ -49,6 +51,7 @@ __all__ = [
     "UM_TO_CM",
     "BiasPoint",
     "BiasSweepResult",
+    "CallableDoping",
     "CapacitanceComparison",
     "CarrierMap",
     "ChargeTransportSim",
@@ -56,6 +59,7 @@ __all__ = [
     "GaussianDoping",
     "ImplantDoping",
     "StepDoping",
+    "TableDoping",
     "acceptor_donor_concentrations",
     "analytic_capacitance_f_per_cm",
     "compare_capacitance",
