@@ -11,6 +11,7 @@ The Routes actually agreeing on a number is the runtime-gated
 
 from __future__ import annotations
 
+import subprocess
 import sys
 
 import numpy as np
@@ -318,3 +319,96 @@ class TestSolvingThroughACrash:
 
         with pytest.raises(RuntimeError, match="corrupted unsorted chunks"):
             self._solve(self._CrashingSim(tmp_path, None))
+
+
+class TestAbortedBinaryIsReported:
+    """A Palace binary that aborts is reported as a runtime failure.
+
+    A broken Palace runtime — typically a bundled MPI that cannot start —
+    kills the binary before it writes any solver output, and the raw
+    ``CalledProcessError`` that surfaces carries an exit status and
+    nothing a user can act on. The Route turns that into a report naming
+    the binary that ran and saying that an abort with no solver output
+    means the runtime rather than the model.
+    """
+
+    class _AbortingSim:
+        """A sim whose binary dies without writing anything."""
+
+        def __init__(self, output_dir, *, returncode: int, stderr: str = ""):
+            self.output_dir = output_dir
+            self._returncode = returncode
+            self._stderr = stderr
+
+        def set_boundary_mode(self, **_kwargs):
+            pass
+
+        def write_config(self, **_kwargs):
+            pass
+
+        def run_local(self, *, palace_executable, **_kwargs):
+            raise subprocess.CalledProcessError(
+                self._returncode,
+                [str(palace_executable), "-np", "1", "config.json"],
+                output="",
+                stderr=self._stderr,
+            )
+
+    def _solve(self, sim):
+        from gsim.modulator.route import solve_palace_modes
+
+        return solve_palace_modes(
+            sim,
+            freq_hz=10e9,
+            num_modes=4,
+            target=2.0,
+            binary="/opt/somewhere/palace",
+        )
+
+    def test_the_report_names_the_binary_and_blames_the_runtime(self, tmp_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            self._solve(self._AbortingSim(tmp_path, returncode=134))
+        message = str(excinfo.value)
+        assert "/opt/somewhere/palace" in message
+        assert "exit status 134" in message
+        assert "SIGABRT" in message
+        assert "no solver output" in message
+        assert "runtime" in message
+        assert "PALACE_BIN" in message
+        assert "route='femwell'" in message
+
+    def test_the_raw_error_is_chained_not_lost(self, tmp_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            self._solve(self._AbortingSim(tmp_path, returncode=134))
+        assert isinstance(excinfo.value.__cause__, subprocess.CalledProcessError)
+        assert excinfo.value.__cause__.returncode == 134
+
+    def test_a_segfault_is_named_as_one(self, tmp_path):
+        with pytest.raises(RuntimeError, match="SIGSEGV"):
+            self._solve(self._AbortingSim(tmp_path, returncode=139))
+
+    def test_the_last_worded_stderr_line_is_quoted(self, tmp_path):
+        """MPI ends its error blocks with a dashed rule; quote past it."""
+        with pytest.raises(RuntimeError, match="opal_shmem_base_select failed"):
+            self._solve(
+                self._AbortingSim(
+                    tmp_path,
+                    returncode=134,
+                    stderr="noise\nopal_shmem_base_select failed\n" + "-" * 40 + "\n",
+                )
+            )
+
+    def test_partial_output_is_not_blamed_on_the_runtime(self, tmp_path):
+        """A truncated table means the solver ran; the runtime did start."""
+
+        class _PartialSim(self._AbortingSim):
+            def run_local(self, *, palace_executable, **_kwargs):
+                TestCrashedRunSalvage._write_mode_table(self.output_dir, 2)
+                super().run_local(palace_executable=palace_executable)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            self._solve(_PartialSim(tmp_path, returncode=134))
+        message = str(excinfo.value)
+        assert "no solver output" not in message
+        assert "exit status 134" in message
+        assert str(tmp_path) in message

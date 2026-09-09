@@ -220,6 +220,10 @@ def solve_palace_modes(
     except (RuntimeError, subprocess.CalledProcessError) as err:
         text = _salvage_mode_table(sim, err, freq_hz=freq_hz, num_modes=num_modes)
         if text is None:
+            if isinstance(err, subprocess.CalledProcessError):
+                raise RuntimeError(
+                    _abort_report(err, sim=sim, binary=binary, freq_hz=freq_hz)
+                ) from err
             raise
     modes = getattr(text, "modes", {})
     if not modes:
@@ -231,6 +235,74 @@ def solve_palace_modes(
         PalaceMode(n_eff=complex(modes[mode_id]["n_eff"]), mode_id=int(mode_id))
         for mode_id in sorted(modes)
     ]
+
+
+#: Signal names worth spelling out when a Palace binary dies on one.
+_SIGNAL_NAMES: dict[int, str] = {6: "SIGABRT", 9: "SIGKILL", 11: "SIGSEGV"}
+
+
+def _abort_report(
+    err: subprocess.CalledProcessError,
+    *,
+    sim: BoundaryModeSim,
+    binary: Path | str,
+    freq_hz: float,
+) -> str:
+    """Turn a dead Palace binary's exit status into something actionable.
+
+    A broken Palace runtime — typically a bundled MPI that cannot start —
+    aborts the binary before the solver writes anything, and the bare
+    ``CalledProcessError`` carries an exit status and nothing else. What
+    a user can act on is which binary ran and whether the solver got as
+    far as producing output: an abort with none means the runtime, not
+    the model, and the fix is a different binary rather than a different
+    Cross-section.
+
+    Args:
+        err: What ``run_local`` raised.
+        sim: The simulation that was run, holding its output directory.
+        binary: The Palace executable that ran.
+        freq_hz: The frequency being solved, named in the report.
+
+    Returns:
+        The report text.
+    """
+    code = err.returncode
+    signum = code - 128 if code > 128 else -code if code < 0 else None
+    signal_note = f" ({_SIGNAL_NAMES[signum]})" if signum in _SIGNAL_NAMES else ""
+
+    output_dir = getattr(sim, "output_dir", None)
+    palace_dir = Path(output_dir) / "output" / "palace" if output_dir else None
+    wrote_output = palace_dir is not None and any(palace_dir.glob("*"))
+
+    # MPI closes its error blocks with a line of dashes, so the last
+    # *worded* line is the one that says anything.
+    stderr_note = ""
+    stderr = err.stderr if isinstance(err.stderr, str) else ""
+    if lines := [
+        line for line in stderr.splitlines() if any(c.isalnum() for c in line)
+    ]:
+        stderr_note = f" Its last stderr line: {lines[-1].strip()!r}."
+
+    if wrote_output:
+        diagnosis = (
+            f"It got far enough to write partial solver output (in "
+            f"{output_dir}), so the runtime did start; the solve itself "
+            "died before finishing."
+        )
+    else:
+        diagnosis = (
+            "It wrote no solver output at all, which means the Palace "
+            "runtime — typically its bundled MPI — failed before the "
+            "solver started, not that the model is wrong."
+        )
+    return (
+        f"Palace aborted at f = {freq_hz:g} Hz with exit status "
+        f"{code}{signal_note}. The binary that ran is {binary}. "
+        f"{diagnosis}{stderr_note} Point PALACE_BIN at a Palace whose "
+        "runtime works here, or re-solve on the default route with "
+        "route='femwell'."
+    )
 
 
 def _salvage_mode_table(
