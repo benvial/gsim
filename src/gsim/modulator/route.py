@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import shutil
+import signal
 import subprocess
 import warnings
 from dataclasses import dataclass
@@ -198,7 +199,10 @@ def solve_palace_modes(
         The solved Modes, in Palace's own mode order.
 
     Raises:
-        RuntimeError: When Palace returns no mode table.
+        RuntimeError: When Palace returns no mode table, or when the
+            binary exits abnormally with nothing to salvage — reported
+            through :func:`_abort_report` rather than as the raw exit
+            status.
     """
     from gsim.palace.results import load_text_results
 
@@ -213,7 +217,7 @@ def solve_palace_modes(
     # should Palace crash, the salvage below reads this directory back,
     # and a stale mode table would be mistaken for this frequency's.
     if sim.output_dir is not None:
-        shutil.rmtree(Path(sim.output_dir) / "output" / "palace", ignore_errors=True)
+        shutil.rmtree(_palace_output_dir(sim.output_dir), ignore_errors=True)
     try:
         results: Any = sim.run_local(palace_executable=binary, verbose=verbose)
         text = results if hasattr(results, "modes") else load_text_results(results)
@@ -237,8 +241,27 @@ def solve_palace_modes(
     ]
 
 
-#: Signal names worth spelling out when a Palace binary dies on one.
-_SIGNAL_NAMES: dict[int, str] = {6: "SIGABRT", 9: "SIGKILL", 11: "SIGSEGV"}
+def _palace_output_dir(output_dir: Path | str) -> Path:
+    """Where a run's Palace solver output lands under *output_dir*."""
+    return Path(output_dir) / "output" / "palace"
+
+
+def _death_signal(returncode: int) -> int | None:
+    """The signal a process died on, if its return code says it did.
+
+    Args:
+        returncode: What the process exited with — negative when
+            ``subprocess`` saw the signal itself, 128 + signum when a
+            shell in between reported it.
+
+    Returns:
+        The signal number, or ``None`` for a plain exit code.
+    """
+    if returncode < 0:
+        return -returncode
+    if returncode > 128:
+        return returncode - 128
+    return None
 
 
 def _abort_report(
@@ -251,12 +274,14 @@ def _abort_report(
     """Turn a dead Palace binary's exit status into something actionable.
 
     A broken Palace runtime — typically a bundled MPI that cannot start —
-    aborts the binary before the solver writes anything, and the bare
+    kills the binary before the solver writes anything, and the bare
     ``CalledProcessError`` carries an exit status and nothing else. What
     a user can act on is which binary ran and whether the solver got as
-    far as producing output: an abort with none means the runtime, not
-    the model, and the fix is a different binary rather than a different
-    Cross-section.
+    far as producing output: a signal death with none means the runtime,
+    not the model, and the fix is a different binary rather than a
+    different Cross-section. A plain nonzero exit is Palace refusing the
+    run on its own terms, so that one is left to say why through its
+    stderr rather than blamed on the runtime.
 
     Args:
         err: What ``run_local`` raised.
@@ -268,12 +293,18 @@ def _abort_report(
         The report text.
     """
     code = err.returncode
-    signum = code - 128 if code > 128 else -code if code < 0 else None
-    signal_note = f" ({_SIGNAL_NAMES[signum]})" if signum in _SIGNAL_NAMES else ""
+    signum = _death_signal(code)
+    signal_note = ""
+    if signum is not None:
+        try:
+            signal_note = f" ({signal.Signals(signum).name})"
+        except ValueError:
+            signal_note = f" (signal {signum})"
 
-    output_dir = getattr(sim, "output_dir", None)
-    palace_dir = Path(output_dir) / "output" / "palace" if output_dir else None
-    wrote_output = palace_dir is not None and any(palace_dir.glob("*"))
+    output_dir = sim.output_dir
+    wrote_output = output_dir is not None and any(
+        _palace_output_dir(output_dir).glob("*")
+    )
 
     # MPI closes its error blocks with a line of dashes, so the last
     # *worded* line is the one that says anything.
@@ -290,11 +321,16 @@ def _abort_report(
             f"{output_dir}), so the runtime did start; the solve itself "
             "died before finishing."
         )
+    elif signum is not None:
+        diagnosis = (
+            "It was killed before writing any solver output, which means "
+            "the Palace runtime — typically its bundled MPI — failed "
+            "before the solver started, not that the model is wrong."
+        )
     else:
         diagnosis = (
-            "It wrote no solver output at all, which means the Palace "
-            "runtime — typically its bundled MPI — failed before the "
-            "solver started, not that the model is wrong."
+            "It exited before writing any solver output; its stderr "
+            "should say why it refused the run."
         )
     return (
         f"Palace aborted at f = {freq_hz:g} Hz with exit status "

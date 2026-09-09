@@ -372,10 +372,23 @@ class TestAbortedBinaryIsReported:
         assert "/opt/somewhere/palace" in message
         assert "exit status 134" in message
         assert "SIGABRT" in message
-        assert "no solver output" in message
+        assert "any solver output" in message
         assert "runtime" in message
         assert "PALACE_BIN" in message
         assert "route='femwell'" in message
+
+    def test_a_plain_exit_is_not_blamed_on_the_runtime(self, tmp_path):
+        """Exit 1 is Palace refusing the run itself; its stderr says why."""
+        with pytest.raises(RuntimeError) as excinfo:
+            self._solve(
+                self._AbortingSim(
+                    tmp_path, returncode=1, stderr="Invalid configuration\n"
+                )
+            )
+        message = str(excinfo.value)
+        assert "exit status 1." in message
+        assert "runtime" not in message.split("Point PALACE_BIN", maxsplit=1)[0]
+        assert "Invalid configuration" in message
 
     def test_the_raw_error_is_chained_not_lost(self, tmp_path):
         with pytest.raises(RuntimeError) as excinfo:
@@ -409,6 +422,7 @@ class TestAbortedBinaryIsReported:
         with pytest.raises(RuntimeError) as excinfo:
             self._solve(_PartialSim(tmp_path, returncode=134))
         message = str(excinfo.value)
-        assert "no solver output" not in message
+        assert "any solver output" not in message
+        assert "partial solver output" in message
         assert "exit status 134" in message
         assert str(tmp_path) in message
