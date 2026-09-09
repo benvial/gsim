@@ -301,7 +301,10 @@ class RFStage(EMStage):
         metallurgical boundary separates — unless ``strip_span`` widens
         them, and take the plasma-dispersion coefficients and mobilities
         of the carriers Stage, so the RF conductivity is the same
-        coupling the optical Stage reads.
+        coupling the optical Stage reads. Unlike the optical Staircase,
+        this one draws its own flanking electrodes and none of the device
+        around them (ADR 0004): the question is the Traveling-wave line,
+        which the Cross-section of a Phase shifter does not draw.
 
         The Strip materials are valid up to the highest requested
         frequency, which is what the solve asks of them, and the
@@ -310,10 +313,15 @@ class RFStage(EMStage):
         Returns:
             The Staircase Cross-section, drawn on its own component.
         """
-        self._check_strip_resolution()
+        carriers = self.bias_point().carriers
+        # Resolved once: the check and the Strips have to agree on which
+        # extent is real, and resolving it twice would warn twice.
+        span = self.strip_extent(carriers)
+        self._check_strip_resolution(span)
         return self.build_staircase(
-            self.bias_point().carriers,
+            carriers,
             n_strips=self.n_strips,
+            span=span,
             electrodes=replace(
                 self.electrodes, conductor_model=self.effective_conductor_model()
             ),
@@ -321,7 +329,7 @@ class RFStage(EMStage):
             fmax=max(self.frequencies_hz),
         )
 
-    def _check_strip_resolution(self) -> None:
+    def _check_strip_resolution(self, extent: tuple[float, float]) -> None:
         """Warn when the Strips are too wide to resolve the Junction.
 
         Strips are of equal width, so tiling an extent wider than the rib
@@ -330,9 +338,11 @@ class RFStage(EMStage):
         resolution where the carriers actually move. Below two Strips
         across the rib the depletion edge is inside a single Strip and the
         Staircase has stopped resolving what it exists for.
+
+        Args:
+            extent: The extent the Strips will actually tile (um).
         """
         span = self._require_study().layout.junction_span
-        extent = self.strip_span if self.strip_span is not None else span.h
         strip_width = (extent[1] - extent[0]) / self.n_strips
         rib_width = span.h[1] - span.h[0]
         if strip_width * MIN_STRIPS_ACROSS_RIB <= rib_width:

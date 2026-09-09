@@ -69,24 +69,34 @@ class TestOpticalStaircase:
         biased.optical(route="palace", n_strips=4)
         return biased.optical.staircase(biased.carriers.run().points[-1])
 
-    def test_it_tiles_the_junction_extent_with_the_asked_for_strips(
-        self, biased, staircase
-    ):
-        span = biased.layout.junction_span
+    def test_it_tiles_the_doped_slab_with_the_asked_for_strips(self, biased, staircase):
+        span = biased.layout.doped_span
         assert len(staircase.strip_names) == 4
         edges = staircase.strips["edges_um"]
-        assert edges[0] == pytest.approx(span.h[0])
-        assert edges[-1] == pytest.approx(span.h[1])
+        assert edges[0] == pytest.approx(span[0])
+        assert edges[-1] == pytest.approx(span[1])
 
-    def test_it_draws_no_electrodes(self, staircase):
-        """The optical window is a box around the rib; the metal is outside it."""
+    def test_it_invents_no_flanking_electrodes(self, staircase):
+        """The drawn metal arrives as a surrounding region, not as a flank."""
         assert staircase.electrode_names == ()
+        assert "cathode_metal" in {region.name for region in staircase.surroundings}
 
-    def test_its_strips_carry_the_carrier_perturbed_permittivity(self, staircase):
+    def test_it_redraws_the_device_around_the_strips(self, biased, staircase):
+        """The staircase is the drawn guide with its doped silicon binned."""
+        drawn = {rect.layer_name for rect in biased.section}
+        redrawn = {region.name.rsplit("_", 1)[0] for region in staircase.surroundings}
+        # The doped regions are what the strips replace; everything else
+        # the plane crosses is redrawn beside them.
+        assert "slab90" in redrawn
+        assert not drawn & {"n_rib", "p_rib"} & redrawn
+
+    def test_its_strips_carry_the_carrier_perturbed_permittivity(
+        self, biased, staircase
+    ):
         eps = staircase.strips["eps_complex"]
         assert eps.size == 4
         # Free carriers lower the index and add loss (exp(+i omega t)).
-        assert np.all(eps.real < OpticalStage().strip_index ** 2)
+        assert np.all(eps.real < biased.optical.unperturbed_index() ** 2)
         assert np.all(eps.imag <= 0.0)
 
     def test_it_resolves_to_a_meshable_optical_stack(self, staircase):

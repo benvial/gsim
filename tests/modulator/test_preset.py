@@ -104,11 +104,12 @@ class TestPresetConfiguresEveryStage:
         assert study.rf.strip_span[0] < study.layout.junction_span.h[0]
         assert study.rf.strip_span[1] > study.layout.junction_span.h[1]
 
-    def test_the_optical_staircase_stays_on_the_rib(self, demo):
-        """The optical window is a box around the rib, pads outside it."""
+    def test_the_optical_staircase_states_its_extent_too(self, demo):
+        """Both EM stages declare their strip extent in the same place."""
         study = _study_over(demo, route="palace", n_strips=3)
 
-        assert study.optical.strip_span is None
+        assert study.optical.strip_span == pytest.approx(study.layout.doped_span)
+        assert study.optical.strip_span == pytest.approx(study.rf.strip_span)
 
     def test_the_route_reaches_both_em_stages(self, demo):
         study = _study_over(demo, route="palace", n_strips=3)

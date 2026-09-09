@@ -67,6 +67,7 @@ class TestBiasPoint:
 
 class TestStaircase:
     def test_the_strips_tile_the_junction_extent(self, biased):
+        """The RF staircase stands on its own, so the rib is its default."""
         biased.rf(n_strips=4)
 
         staircase = biased.rf.staircase()
@@ -115,7 +116,7 @@ class TestStaircase:
 
         assert np.all(fast > slow)
 
-    def test_the_electrodes_flank_the_junction_extent(self, biased):
+    def test_the_electrodes_flank_the_strip_extent(self, biased):
         biased.rf(electrodes=ElectrodeSpec(width_um=3.0, gap_um=0.5))
 
         staircase = biased.rf.staircase()

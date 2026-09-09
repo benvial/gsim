@@ -8,6 +8,12 @@ impedance — to solver tolerance. It ships here as a runtime-gated test
 rather than as a one-off script, so the agreement is re-checked whenever
 either Route moves.
 
+What it does not cover: both Routes are handed the *same* Staircase, so
+the geometry is identical by construction and the agreement asserted here
+says nothing about whether that Staircase is the drawn device. That is
+``tests/modulator/test_representation_gate.py``, which compares the
+Staircase against the drawn device solved with a continuous ``eps(x, y)``.
+
 Gated on gmsh, the femwell runtime and a Palace binary; deselected by
 default, run with ``pytest -m palace_local``. The Carrier maps are
 synthetic, so nothing here needs DEVSIM.
@@ -73,8 +79,8 @@ def depletion_carriers(bias_v: float) -> CarrierMap:
     )
 
 
-def graded_carriers(bias_v: float = 0.0) -> CarrierMap:  # noqa: ARG001
-    """A smoothly graded Carrier map, for measuring staircase error.
+def graded_carriers(bias_v: float = 0.0) -> CarrierMap:
+    """A depletion region that widens smoothly with reverse bias.
 
     A step-like junction is either resolved by a strip edge or not, so the
     staircase error jumps rather than shrinking; a profile that varies
@@ -86,13 +92,15 @@ def graded_carriers(bias_v: float = 0.0) -> CarrierMap:  # noqa: ARG001
     yy, zz = np.meshgrid(y, z, indexing="ij")
     yy, zz = yy.ravel(), zz.ravel()
 
-    p_fraction = 1.0 / (1.0 + np.exp(-(yy - CENTER_Y) / 0.25))
+    width = 0.06 * np.sqrt(1.0 + abs(bias_v))
+    depletion = 1.0 / (1.0 + np.exp(-(np.abs(yy - CENTER_Y) - width) / 0.04))
+    n_side = yy < CENTER_Y
     return CarrierMap(
         x_um=yy,
         y_um=zz,
-        region=["n_rib" if side else "p_rib" for side in yy < CENTER_Y],
-        electrons_cm3=DOPING_CM3 * (1.0 - p_fraction) + DEPLETED_CM3,
-        holes_cm3=DOPING_CM3 * p_fraction + DEPLETED_CM3,
+        region=["n_rib" if side else "p_rib" for side in n_side],
+        electrons_cm3=DEPLETED_CM3 + DOPING_CM3 * depletion * n_side,
+        holes_cm3=DEPLETED_CM3 + DOPING_CM3 * depletion * ~n_side,
         potential_v=np.zeros(yy.size),
         net_doping_cm3=np.zeros(yy.size),
     )
@@ -125,12 +133,17 @@ def study_at(tmp_path, *, biases=(0.0,), carriers=depletion_carriers) -> Study:
 def optical_n_eff(
     study, *, route: str, n_strips: int, wavelength_um: float = 1.55
 ) -> complex:
-    """Solve the optical Staircase on one Route and return its index."""
+    """Solve the optical Staircase on one Route and return its index.
+
+    No index guess: each Backend's own default tracks the largest
+    permittivity of the Cross-section, which is the guided mode on both.
+    A fixed guess picks whichever branch happens to sit nearest it, and
+    the two Routes then land on different modes and are compared anyway.
+    """
     study.optical(
         route=route,
         n_strips=n_strips,
         num_modes=1,
-        n_guess=2.5,
         wavelength_um=wavelength_um,
     )
     return complex(study.optical.run().n_eff[0])
@@ -251,20 +264,32 @@ class TestRFCrossRouteAgreement:
 
 
 class TestStripCountConvergence:
-    def test_the_palace_index_converges_in_strip_count(self, tmp_path):
+    def test_the_palace_index_shift_converges_in_strip_count(self, tmp_path):
         """Refining the Staircase moves the answer less and less.
 
-        Measured against the finest Staircase solved here: each coarser
-        strip count must sit further from it than the next one down, which
-        is what makes a strip count a knob a user can trade accuracy
-        against mesh size with.
+        Measured on the index shift across a bias pair, not on the index
+        itself. Since the Staircase became the drawn Cross-section with
+        its doped silicon binned (ADR 0004), the index is a whole guide's
+        worth of material and barely moves with the strip count — the
+        residual sits at the level of the mesh noise between one strip
+        count and the next. The shift is a sliver's worth, it is what
+        ``VpiL`` is computed from, and it is where the binning still
+        shows.
+
+        Palace against Palace, so a Staircase converging on the wrong
+        answer converges just as neatly. What it converges *to* is
+        ``tests/modulator/test_representation_gate.py``'s question.
         """
-        study = study_at(tmp_path, carriers=graded_carriers)
-        indices = {
-            n: optical_n_eff(study, route="palace", n_strips=n) for n in (1, 2, 4, 8)
-        }
-        reference = indices[8].real
-        errors = [abs(indices[n].real - reference) for n in (1, 2, 4)]
+        study = study_at(tmp_path, biases=(0.0, 4.0), carriers=graded_carriers)
+
+        def shift(n_strips: int) -> float:
+            study.optical(route="palace", n_strips=n_strips, num_modes=1)
+            return float(study.optical.run().index_shift[-1])
+
+        shifts = {n: shift(n) for n in (1, 2, 4, 8)}
+        reference = shifts[8]
+        errors = [abs(shifts[n] - reference) for n in (1, 2, 4)]
+        assert reference > 0.0
         assert errors[1] < errors[0]
         assert errors[2] < errors[1]
         # And settling, not merely ordered: four strips land several times

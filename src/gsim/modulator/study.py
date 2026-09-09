@@ -29,6 +29,7 @@ from gsim.modulator.rf import RFStage
 if TYPE_CHECKING:
     import gdsfactory as gf
 
+    from gsim.common.cross_section import PolygonXY2D, Rect2D, RectYZ2D
     from gsim.common.stack.extractor import LayerStack
     from gsim.common.twmzm_report import TWMZMReport
     from gsim.modulator.stage import Stage
@@ -137,6 +138,7 @@ class Study:
         self.verbose = verbose
         self._output_dir = Path(output_dir) if output_dir is not None else None
         self._layout: DeviceLayout | None = None
+        self._section: list[Rect2D] | list[RectYZ2D] | list[PolygonXY2D] | None = None
 
         self.charge = ChargeStage()
         self.carriers = CarriersStage()
@@ -167,6 +169,7 @@ class Study:
     def invalidate(self) -> None:
         """Drop the derived layout and every Stage's result."""
         self._layout = None
+        self._section = None
         for stage in self.stages.values():
             stage.invalidate()
 
@@ -242,6 +245,24 @@ class Study:
                 value=value,
             )
         return self._layout
+
+    @property
+    def section(self) -> list[Rect2D] | list[RectYZ2D] | list[PolygonXY2D]:
+        """The drawn Cross-section's Regions, as rectangles.
+
+        Every Region the drawn device puts on the plane, with its
+        material and its extent — what a Stage needs to redraw the device
+        around something of its own (a Staircase, say) rather than solve
+        that something in isolation. Derived once and cached.
+        """
+        if self._section is None:
+            from gsim.common.cross_section import extract_plane_section
+
+            axis, value = _parse_plane(self.plane)
+            self._section = extract_plane_section(
+                self.component.copy(), self.stack, axis=axis, value=value
+            )
+        return self._section
 
     # ------------------------------------------------------------------
     # Report

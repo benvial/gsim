@@ -137,3 +137,73 @@ class TestBoundaryFieldRatio:
         )
 
         assert boundary_field_ratio(modes[0]) > 1e-2
+
+
+class TestFieldFractionOutside:
+    """How much of a Mode sits off a region that carries the physics.
+
+    A Staircase carries its carrier response only where the strips are,
+    so the fraction of the mode outside them is what says whether the
+    strip extent was chosen for this mode or for the geometry alone.
+    """
+
+    def test_an_interval_holding_the_core_holds_most_of_the_mode(self, strip_mesh):
+        from gsim.femwell.adapter import field_fraction_outside
+
+        modes = solve_modes(
+            strip_mesh,
+            epsilon={"core": 3.48**2 + 0j, "clad": 1.444**2 + 0j},
+            wavelength_um=1.55,
+        )
+
+        # The core spans -0.25..0.25; a micron either side of it holds the
+        # evanescent tails too.
+        assert field_fraction_outside(modes[0], (-1.0, 1.0)) < 0.05
+
+    def test_an_interval_beside_the_core_holds_almost_none_of_it(self, strip_mesh):
+        from gsim.femwell.adapter import field_fraction_outside
+
+        modes = solve_modes(
+            strip_mesh,
+            epsilon={"core": 3.48**2 + 0j, "clad": 1.444**2 + 0j},
+            wavelength_um=1.55,
+        )
+
+        assert field_fraction_outside(modes[0], (1.0, 1.4)) > 0.9
+
+    def test_narrowing_the_interval_can_only_raise_the_fraction(self, strip_mesh):
+        from gsim.femwell.adapter import field_fraction_outside
+
+        modes = solve_modes(
+            strip_mesh,
+            epsilon={"core": 3.48**2 + 0j, "clad": 1.444**2 + 0j},
+            wavelength_um=1.55,
+        )
+
+        wide = field_fraction_outside(modes[0], (-1.0, 1.0))
+        narrow = field_fraction_outside(modes[0], (-0.25, 0.25))
+        assert narrow > wide
+
+    def test_the_vertical_axis_is_selectable(self, strip_mesh):
+        from gsim.femwell.adapter import field_fraction_outside
+
+        modes = solve_modes(
+            strip_mesh,
+            epsilon={"core": 3.48**2 + 0j, "clad": 1.444**2 + 0j},
+            wavelength_um=1.55,
+        )
+
+        # The core spans z = 0..0.22 and the mode is bound to it.
+        assert field_fraction_outside(modes[0], (-1.0, 1.0), axis=1) < 0.05
+
+    def test_a_descending_interval_is_reported(self, strip_mesh):
+        from gsim.femwell.adapter import field_fraction_outside
+
+        modes = solve_modes(
+            strip_mesh,
+            epsilon={"core": 3.48**2 + 0j, "clad": 1.444**2 + 0j},
+            wavelength_um=1.55,
+        )
+
+        with pytest.raises(ValueError, match="ascending"):
+            field_fraction_outside(modes[0], (1.0, -1.0))

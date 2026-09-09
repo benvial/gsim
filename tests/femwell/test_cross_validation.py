@@ -14,6 +14,10 @@ the shared mesh at the optical domain scale: native-2D meshes represent
 electrodes as boundary curves, not volumes, so a true metal CPW cannot be
 expressed identically in both solvers — the piecewise-constant material
 contract is what is validated here.
+
+What it does not cover: both solvers are handed the same mesh and the
+same materials, so the agreement is between the two solvers and not
+between either of them and the drawn device.
 """
 
 from __future__ import annotations

@@ -109,9 +109,10 @@ class DeviceLayout:
     def junction_span(self) -> Span:
         """Extent of the two Regions the metallurgical Junction separates.
 
-        The rib the Junction sits in, in other words: the band a
-        Staircase tiles with Strips, measured from the device description
-        rather than declared alongside it.
+        The rib the Junction sits in, in other words: where the carriers
+        actually move, and the band a Staircase's Strips have to resolve
+        however much wider than it they tile. Measured from the device
+        description rather than declared alongside it.
         """
         left, right = (self.region_spans[name] for name in self.junction.regions)
         return Span(
@@ -123,9 +124,11 @@ class DeviceLayout:
     def doped_span(self) -> tuple[float, float]:
         """Extent of every doped Region along the junction axis (um).
 
-        The doped slab, pads included: the band an RF Staircase tiles to
-        carry the pads' series resistance into the line, as against
-        :attr:`junction_span`, which is the rib alone.
+        The doped slab, pads included: what the charge solve covers, the
+        guide's core, and the band the optical Staircase tiles by
+        default. The RF Staircase tiles it too wherever the preset
+        configures one, to carry the pads' series resistance into the
+        line. As against :attr:`junction_span`, which is the rib alone.
         """
         spans = [self.region_spans[name].h for name in self.doped_regions]
         return (min(span[0] for span in spans), max(span[1] for span in spans))

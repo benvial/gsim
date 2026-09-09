@@ -9,7 +9,9 @@ The real solve lives in ``test_optical_stage_runtime.py``.
 from __future__ import annotations
 
 import sys
+import warnings
 
+import numpy as np
 import pytest
 
 from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT
@@ -130,6 +132,179 @@ class TestInvalidation:
         assert study.optical._downstream == [study.line]
 
 
+class TestStripExtent:
+    """What the Strips tile, and what happens when they cannot reach it."""
+
+    def test_the_default_is_the_doped_slab_not_the_rib(self, biased):
+        """Ticket 19: strips on the rib alone solve the wrong waveguide."""
+        extent = biased.optical.strip_extent()
+
+        assert extent == pytest.approx(biased.layout.doped_span)
+        assert extent[0] < biased.layout.junction_span.h[0]
+        assert extent[1] > biased.layout.junction_span.h[1]
+
+    def test_a_chosen_span_is_taken_as_given(self, biased):
+        biased.optical(strip_span=(CENTER_Y - 0.1, CENTER_Y + 0.1))
+
+        assert biased.optical.strip_extent() == pytest.approx(
+            (CENTER_Y - 0.1, CENTER_Y + 0.1)
+        )
+
+    def test_a_chosen_span_is_narrowed_by_the_map_too(self, biased):
+        """The preset chooses the span, so the clamp has to reach it."""
+        biased.optical(strip_span=biased.layout.doped_span)
+        carriers = biased.charge.result.points[0].carriers
+        carriers.x_um = np.clip(carriers.x_um, CENTER_Y - 0.2, CENTER_Y + 0.2)
+
+        with pytest.warns(UserWarning, match="the extent asked for"):
+            extent = biased.optical.strip_extent(carriers)
+
+        assert extent == pytest.approx((CENTER_Y - 0.2, CENTER_Y + 0.2))
+
+    def test_a_carrier_map_narrower_than_the_slab_narrows_the_default(self, biased):
+        """Strips cannot outrun the map they average, and say so."""
+        carriers = biased.charge.result.points[0].carriers
+        carriers.x_um = np.clip(carriers.x_um, CENTER_Y - 0.2, CENTER_Y + 0.2)
+
+        with pytest.warns(UserWarning, match="derived for this stage"):
+            extent = biased.optical.strip_extent(carriers)
+
+        assert extent == pytest.approx((CENTER_Y - 0.2, CENTER_Y + 0.2))
+
+    def test_a_map_covering_the_slab_narrows_nothing_and_says_nothing(self, biased):
+        carriers = biased.charge.result.points[0].carriers
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            extent = biased.optical.strip_extent(carriers)
+
+        assert extent == pytest.approx(biased.layout.doped_span)
+
+
+class TestUnperturbedIndex:
+    """What the Strips are before the carriers move them."""
+
+    def test_it_is_the_drawn_junction_material_not_a_textbook_value(self, study):
+        """The continuous route perturbs this index; so must the strips."""
+        from gsim.common.stack.staircase import DEFAULT_SI_INDEX
+
+        index = study.optical.unperturbed_index()
+
+        # The demo draws its doped silicon at eps = 11.9, which is not the
+        # database's silicon at 1.55 um.
+        assert index == pytest.approx(11.9**0.5)
+        assert index != pytest.approx(DEFAULT_SI_INDEX)
+
+    def test_a_chosen_index_is_taken_as_given(self, study):
+        study.optical(strip_index=3.5)
+
+        assert study.optical.unperturbed_index() == 3.5
+
+
+class TestSurroundings:
+    """The drawn device, redrawn around the Strips."""
+
+    def test_the_drawn_slab_reaches_the_staircase(self, biased):
+        names = {region.name for region in biased.optical.surroundings()}
+
+        assert any(name.startswith("slab90") for name in names)
+
+    def test_the_drawn_metal_reaches_it_as_a_conductor(self, biased):
+        """The electrodes are what omitting cost 0.18 on this device."""
+        regions = {region.name: region for region in biased.optical.surroundings()}
+
+        assert regions["cathode_metal"].layer_type == "conductor"
+        assert regions["anode_metal"].layer_type == "conductor"
+
+    def test_the_doped_silicon_the_strips_replace_does_not(self, biased):
+        names = {region.name for region in biased.optical.surroundings()}
+
+        assert not names & {"n_pad", "n_rib", "p_rib", "p_pad"}
+
+    def test_strips_on_the_rib_leave_the_pads_as_drawn_silicon(self, biased):
+        """Narrow the strips and the pads come back, unperturbed."""
+        biased.optical(strip_span=(CENTER_Y - HALF_WIDTH, CENTER_Y + HALF_WIDTH))
+
+        names = {region.name for region in biased.optical.surroundings()}
+
+        assert "n_pad" in names
+        assert "p_pad" in names
+
+
+class TestConductorClearance:
+    """What the Palace Route cannot mesh, refused rather than crashed.
+
+    A drawn conductor is meshed as an outline with its interior left out
+    of the domain (ADR 0003). When the Window cuts one, that outline runs
+    along the Window's own wall and the Palace binary aborts with no
+    message at all — deterministically, on this geometry.
+    """
+
+    @staticmethod
+    def _metal(h, z):
+        from gsim.common.stack.staircase import SurroundingRegion
+
+        return SurroundingRegion(
+            name="pad_metal", h=h, z=z, material="aluminum", layer_type="conductor"
+        )
+
+    def test_a_conductor_inside_the_window_is_fine(self, study):
+        study.optical(window=(CENTER_Y - 2.0, CENTER_Y + 2.0), window_z=(-1.0, 1.0))
+
+        study.optical._check_conductor_clearance(
+            [self._metal((-20.6, -20.3), (0.22, 0.72))]
+        )
+
+    def test_a_conductor_outside_it_is_fine_too(self, study):
+        study.optical(window=(CENTER_Y - 2.0, CENTER_Y + 2.0), window_z=(-1.0, 1.0))
+
+        study.optical._check_conductor_clearance(
+            [self._metal((-20.6, -20.3), (1.1, 1.8))]
+        )
+
+    def test_a_conductor_the_vertical_window_cuts_is_refused(self, study):
+        study.optical(window=(CENTER_Y - 2.0, CENTER_Y + 2.0), window_z=(-1.0, 1.0))
+
+        with pytest.raises(ValueError, match=r"window_z.*cuts through|pad_metal"):
+            study.optical._check_conductor_clearance(
+                [self._metal((-20.6, -20.3), (0.5, 1.5))]
+            )
+
+    def test_a_conductor_the_in_plane_window_cuts_is_refused(self, study):
+        study.optical(window=(CENTER_Y - 0.5, CENTER_Y + 0.5), window_z=(-1.0, 1.0))
+
+        with pytest.raises(ValueError, match="pad_metal"):
+            study.optical._check_conductor_clearance(
+                [self._metal((-21.0, -20.3), (0.22, 0.72))]
+            )
+
+    def test_a_dielectric_the_window_cuts_is_not_its_business(self, study):
+        from gsim.common.stack.staircase import SurroundingRegion
+
+        study.optical(window=(CENTER_Y - 2.0, CENTER_Y + 2.0), window_z=(-1.0, 1.0))
+
+        study.optical._check_conductor_clearance(
+            [
+                SurroundingRegion(
+                    name="slab", h=(-30.0, -10.0), z=(0.0, 0.09), material="si"
+                )
+            ]
+        )
+
+
+class TestBoundaryCondition:
+    """Both Routes have to read the drawn metal the same way."""
+
+    def test_the_domain_boundary_is_metallic_by_default(self, study):
+        assert study.optical.metallic_boundaries is True
+        assert study.optical.simulation().metallic_boundaries is True
+
+    def test_turning_it_off_reaches_the_simulation(self, study):
+        study.optical(metallic_boundaries=False)
+
+        assert study.optical.simulation().metallic_boundaries is False
+
+
 class TestStaircaseWavelength:
     """The Staircase and the continuous profile solve the one problem.
 
@@ -182,7 +357,7 @@ class TestStaircaseWavelength:
 
         for i, eps in enumerate(strips["eps_complex"]):
             expected = permittivity_perturbation(
-                n0=study.optical.strip_index,
+                n0=study.optical.unperturbed_index(),
                 dn=float(strips["dn"][i]),
                 dalpha_cm=float(strips["dalpha_cm"][i]),
                 wavelength_um=wavelength_um,

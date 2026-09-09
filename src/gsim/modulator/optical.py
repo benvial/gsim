@@ -15,10 +15,12 @@ Either Backend can answer, and the choice changes how the carriers reach
 the solver. femwell — the default Route — carries a continuous
 ``eps(x, y)`` projected onto the mesh elements of the drawn device.
 Palace takes piecewise-constant materials per Region and nothing else, so
-selecting it moves the Stage onto a Staircase: the Carrier map reduced to
-Strips tiling the Junction extent, drawn as its own Cross-section. Asking
-for a strip count puts the femwell Route on that same Staircase too,
-which is what makes the two Routes comparable at all.
+selecting it moves the Stage onto a Staircase: the doped silicon replaced
+by Strips tiling it, and the rest of the drawn Cross-section — the slab,
+the metal on the pads, whatever else the plane crosses — redrawn around
+them, in the same Window. Asking for a strip count puts the femwell Route
+on that same Staircase too, which is what makes the two Routes comparable
+at all: they differ then in their materials and in nothing else.
 
 The selected Route's runtime is checked before the Stage meshes, so a
 missing extra or a missing binary costs nothing but the error message.
@@ -43,7 +45,10 @@ if TYPE_CHECKING:
 
     import meshio
 
-    from gsim.common.stack.staircase import StaircaseCrossSection
+    from gsim.common.stack.staircase import (
+        StaircaseCrossSection,
+        SurroundingRegion,
+    )
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import CarrierMap
@@ -117,6 +122,18 @@ class OpticalSweep(BaseModel):
 class OpticalStage(EMStage):
     """The carrier-perturbed optical Mode, bias point by bias point.
 
+    The two representations are not interchangeable, and what the
+    Staircase costs is a strip count. On the demo Phase shifter at
+    1.55 um, against the drawn device solved with a continuous
+    ``eps(x, y)``: two Strips land within 0.3% on ``Re n_eff`` but 59% on
+    the index shift, sixteen Strips within 0.01% and 2%. The index shift
+    is the quantity ``VpiL`` is computed from and by far the slower of
+    the two to converge — the index is a whole guide's worth of material
+    and the shift is a sliver's — so a Staircase chosen for ``VpiL``
+    wants many more Strips than one chosen for the index. Both errors
+    shrink with the strip count, which is the whole claim, and what
+    ``tests/modulator/test_representation_gate.py`` holds the Route to.
+
     Attributes:
         route: Backend answering this Stage — ``"femwell"`` (the default)
             or ``"palace"``. The Palace Route cannot express a continuous
@@ -131,22 +148,24 @@ class OpticalStage(EMStage):
             Setting a count puts either Route on the Staircase, so the
             two solve the identical problem.
         strip_span: ``(min, max)`` extent the Strips tile along the
-            junction axis (um); the Junction extent — the rib — when
-            unset. Unused when the continuous profile is solved.
+            junction axis (um); the doped slab — every doped Region, pads
+            included — when unset, which is both the guide's core and the
+            widest extent the Carrier map covers. Unused when the
+            continuous profile is solved.
         strip_index: Unperturbed refractive index of the Strips, which
-            the plasma dispersion perturbs. Unused when the continuous
-            profile is solved, which reads each Region's index from
-            the stack.
+            the plasma dispersion perturbs. ``None`` — the default —
+            reads it off the drawn Junction's own material at
+            ``wavelength_um``, which is what the continuous profile
+            perturbs, so the two representations start from one index.
+            Unused when the continuous profile is solved.
         substrate_thickness_um: Substrate below the Staircase (um).
             Unused when the continuous profile is solved.
         wavelength_um: Vacuum wavelength of the solve (um).
         num_modes: Number of Modes to solve at each Bias point; the
             slowest propagating one is reported.
         window: In-plane optical Window (um); derived as a box around the
-            rib when unset. On a Staircase the derived Window does not
-            apply — the Staircase is drawn to the Junction extent and the
-            airbox sizes the cladding — so it is the full extent unless
-            set.
+            rib when unset. A Staircase is clipped to the same Window as
+            the continuous profile, so the two Routes mesh one domain.
         window_z: Vertical Window (um); derived from the guiding layer
             when unset.
         mode_margin_um: Half-width of the derived Window either side of
@@ -161,6 +180,22 @@ class OpticalStage(EMStage):
             Modes.
         boundary_field_tol: Warn above this boundary-field ratio, the sign
             of a Window too small for the Mode.
+        metallic_boundaries: Enforce a perfect conductor on the domain
+            boundary. On by default because the drawn metal inside an
+            optical Window is part of that boundary: a conductor is
+            meshed as an outline with its interior left out (ADR 0003),
+            and femwell applies this one condition to every facet at
+            once, so turning it off leaves the electrodes as open slots
+            while the Palace Route still reads them as perfect
+            conductors — the two Routes would solve different
+            boundary-value problems. The outer wall takes the same
+            condition, which a contained Mode does not notice; the
+            containment check is what says whether it is contained.
+        strip_field_tol: Warn above this fraction of the Mode's power
+            falling outside the Strip extent — the sign of Strips too
+            narrow to carry the carrier response where the Mode actually
+            is. Measured only on the femwell Route, Palace's results
+            carrying no mode fields.
         order: Finite-element order of the mode solve.
         n_guess: Effective-index guess centering the eigenvalue search.
     """
@@ -169,7 +204,7 @@ class OpticalStage(EMStage):
     stack_kind: ClassVar[Literal["rf", "optical"]] = "optical"
 
     n_strips: int | None = Field(default=None, ge=1)
-    strip_index: float = Field(default=DEFAULT_SI_INDEX, gt=0.0)
+    strip_index: float | None = Field(default=None, gt=0.0)
     wavelength_um: float = Field(default=1.55, gt=0.0)
     num_modes: int = Field(default=1, ge=1)
     mode_margin_um: float = Field(default=2.0, gt=0.0)
@@ -178,12 +213,55 @@ class OpticalStage(EMStage):
     perturbed_regions: list[str] | None = None
     min_index: float = Field(default=1.0, ge=0.0)
     boundary_field_tol: float = Field(default=0.01, gt=0.0)
+    strip_field_tol: float = Field(default=0.5, gt=0.0, le=1.0)
+    metallic_boundaries: bool = True
     order: int = Field(default=1, ge=1)
     n_guess: float | None = None
 
     # ------------------------------------------------------------------
     # Derivation
     # ------------------------------------------------------------------
+
+    def default_strip_span(self) -> tuple[float, float]:
+        """The doped slab — every doped Region, pads included.
+
+        This Staircase is drawn inside the device's own Cross-section
+        (ADR 0004), so its Strips stand for the doped silicon and nothing
+        else. Tiling the rib alone would leave the pads as unperturbed
+        drawn silicon in the middle of the guide, and the doped slab is
+        both the guide's core and the widest extent the Carrier map
+        covers.
+
+        Returns:
+            ``(min, max)`` along the junction axis (um).
+        """
+        return self._require_study().layout.doped_span
+
+    def mode_window(self) -> tuple[float, float]:
+        """The in-plane Window a Mode of this Stage is solved in (um).
+
+        Returns:
+            The configured ``window``, or a box around the Junction
+            ``mode_margin_um`` wide either side (ADR 0002).
+        """
+        if self.window is not None:
+            return self.window
+        return self._require_study().layout.window_around_junction(
+            margin_um=self.mode_margin_um
+        )
+
+    def mode_window_z(self) -> tuple[float, float]:
+        """The vertical Window a Mode of this Stage is solved in (um).
+
+        Returns:
+            The configured ``window_z``, or the guiding layer cleared by
+            ``z_above_um`` and ``z_below_um``.
+        """
+        if self.window_z is not None:
+            return self.window_z
+        return self._require_study().layout.window_z_around_guide(
+            above_um=self.z_above_um, below_um=self.z_below_um
+        )
 
     def perturbed_region_names(self) -> list[str]:
         """Regions the Carrier maps perturb.
@@ -247,16 +325,100 @@ class OpticalStage(EMStage):
             return int(self.n_strips)
         return DEFAULT_PALACE_STRIPS if self.route == "palace" else None
 
+    def unperturbed_index(self) -> float:
+        """Refractive index the Strips carry before the carriers move it.
+
+        The continuous profile perturbs each drawn Region's own index; a
+        Staircase that starts from a textbook silicon index instead
+        differs from it by a constant offset at every bias — small, but
+        it is the whole of what separates the two representations once
+        the geometry matches.
+
+        Returns:
+            The configured ``strip_index``, or the index of the drawn
+            Junction's material at this Stage's wavelength.
+            :data:`~gsim.common.stack.staircase.DEFAULT_SI_INDEX` stands
+            in for a material the stack cannot resolve.
+        """
+        if self.strip_index is not None:
+            return float(self.strip_index)
+
+        from gsim.common.stack.materials import (
+            MaterialProperties,
+            resolve_material_at_wavelength,
+        )
+
+        study = self._require_study()
+        # Either side of the metallurgical boundary answers: the two are
+        # the same silicon, differing in dopant and not in host index.
+        region = study.layout.junction.regions[0]
+        layer = study.stack.layers.get(region)
+        if layer is None:
+            return DEFAULT_SI_INDEX
+        overrides = {
+            name: (
+                props
+                if isinstance(props, MaterialProperties)
+                else MaterialProperties.model_validate(props)
+            )
+            for name, props in (study.stack.materials or {}).items()
+        }
+        resolved = resolve_material_at_wavelength(
+            layer.material, self.wavelength_um, overrides=overrides
+        )
+        if resolved is None or resolved.permittivity_scalar is None:
+            return DEFAULT_SI_INDEX
+        return float(np.sqrt(float(resolved.permittivity_scalar)))
+
+    def surroundings(
+        self, span: tuple[float, float] | None = None
+    ) -> tuple[SurroundingRegion, ...]:
+        """The drawn device redrawn around the Strips.
+
+        The Strips carry the Carrier map and nothing else, so a Staircase
+        made of Strips alone is a silicon wire in the background medium —
+        not the drawn guide. Every other Region on the drawn
+        Cross-section is cut against the Strip footprint and redrawn
+        beside them: the undoped slab the rib sits on, the Traveling-wave
+        metal landing on the pads, and whatever else the plane crosses.
+
+        The drawn conductors matter most. Metal inside the optical Window
+        is meshed as a perfect conductor either Route honours, and
+        omitting it moved this device's index by 0.18 — six times what
+        the strip count moves it.
+
+        Args:
+            span: The Strip extent the Regions are cut against;
+                :meth:`strip_extent` decides when omitted.
+
+        Returns:
+            The surrounding Regions, empty when the drawn Cross-section
+            has nothing on it but the doped silicon the Strips replace.
+        """
+        from gsim.common.stack.staircase import surroundings_from_section
+
+        study = self._require_study()
+        junction = study.layout.junction_span
+        return surroundings_from_section(
+            study.section,
+            strip_span=span if span is not None else self.strip_extent(),
+            strip_z=junction.z,
+            stack=study.stack,
+        )
+
     def staircase(self, point: CarrierResponse) -> StaircaseCrossSection:
         """Reduce one Bias point's Carrier map to a meshable Staircase.
 
-        The Strips tile the Junction extent unless ``strip_span`` widens
-        them, and take the plasma-dispersion coefficients of the carriers
-        Stage — the same coupling the continuous profile reads, evaluated on
-        strip averages instead of on mesh elements, and at this Stage's
-        own ``wavelength_um``, so both paths carry the same loss. No
-        electrodes are drawn: the optical Window is a box around the rib,
-        and the Traveling-wave metal is outside it.
+        The Strips tile :meth:`strip_extent` — the doped slab unless
+        ``strip_span`` says otherwise — and take the plasma-dispersion
+        coefficients of the carriers Stage: the same coupling the
+        continuous profile reads, evaluated on strip averages instead of
+        on mesh elements, and at this Stage's own ``wavelength_um``, so
+        both paths carry the same loss. Around the Strips the Staircase
+        redraws the device itself (see :meth:`surroundings`), so the two
+        representations differ in their materials and not in their
+        geometry. No flanking electrodes are invented: the drawn ones are
+        already among the surrounding Regions.
 
         Args:
             point: The Bias point to staircase.
@@ -275,15 +437,18 @@ class OpticalStage(EMStage):
                 "permittivity, so it builds no staircase. Ask for one with "
                 f"study.{self.stage_name}(n_strips=...)."
             )
+        span = self.strip_extent(point.carriers)
         return self.build_staircase(
             point.carriers,
             n_strips=n_strips,
             electrodes=None,
+            span=span,
+            surroundings=self.surroundings(span),
             # The coefficients are the carriers Stage's, but the
             # wavelength they are read at is this Stage's: the model's own
             # is where it was fitted, not where the Mode is solved.
             wavelength_um=self.wavelength_um,
-            n0=self.strip_index,
+            n0=self.unperturbed_index(),
         )
 
     def staircase_simulation(
@@ -292,9 +457,11 @@ class OpticalStage(EMStage):
         """Assemble the Staircase cross-section this Stage meshes.
 
         The Staircase is a component of its own, so the plane cuts through
-        the middle of it rather than through the drawn device, and the
-        airbox — not the derived Window — is what puts cladding around
-        the Strips.
+        the middle of it rather than through the drawn device. It is
+        clipped to the same Window the continuous profile is solved in,
+        because the Staircase now carries the same Regions: two Routes
+        meshing different domains would not be comparable whatever their
+        materials agreed on.
 
         Args:
             staircase: The Staircase to mesh.
@@ -307,13 +474,17 @@ class OpticalStage(EMStage):
         """
         from scipy.constants import speed_of_light as c0
 
-        return self.build_staircase_simulation(
+        sim = self.build_staircase_simulation(
             staircase,
             output_dir=output_dir,
             freq_hz=c0 / (self.wavelength_um * 1e-6),
             num_modes=self.num_modes,
             target=self.n_guess if self.n_guess is not None else 0.0,
+            window=self.mode_window(),
+            window_z=self.mode_window_z(),
         )
+        sim.metallic_boundaries = self.metallic_boundaries
+        return sim
 
     def simulation(self) -> BoundaryModeSim:
         """Assemble the cross-section this Stage meshes.
@@ -330,7 +501,6 @@ class OpticalStage(EMStage):
         from gsim.palace import BoundaryModeSim
 
         study = self._require_study()
-        layout = study.layout
 
         sim = BoundaryModeSim()
         sim.set_output_dir(study.stage_dir(self.stage_name))
@@ -339,22 +509,13 @@ class OpticalStage(EMStage):
         sim.set_airbox(**self.airbox)
         sim.set_cross_section(
             study.plane,
-            window=(
-                self.window
-                if self.window is not None
-                else layout.window_around_junction(margin_um=self.mode_margin_um)
-            ),
-            window_z=(
-                self.window_z
-                if self.window_z is not None
-                else layout.window_z_around_guide(
-                    above_um=self.z_above_um, below_um=self.z_below_um
-                )
-            ),
+            window=self.mode_window(),
+            window_z=self.mode_window_z(),
         )
         sim.set_boundary_mode(
             freq=c0 / (self.wavelength_um * 1e-6), num_modes=self.num_modes
         )
+        sim.metallic_boundaries = self.metallic_boundaries
         return sim
 
     # ------------------------------------------------------------------
@@ -407,6 +568,80 @@ class OpticalStage(EMStage):
                 wavelength_um=self.wavelength_um,
             )
         return epsilon
+
+    def _check_strip_coverage(
+        self, mode: Any, bias_v: float, span: tuple[float, float]
+    ) -> None:
+        """Warn when the Mode mostly sits off the carrier-bearing Strips.
+
+        The Strips are the only Regions of a Staircase the Carrier map
+        reaches. A Mode whose power is largely outside them is answered
+        by the surrounding Regions, which carry the drawn materials and
+        no carriers at all — so the index shift the bias sweep reports is
+        the shift of whatever fraction of the Mode the Strips do hold.
+        """
+        from gsim.femwell.adapter import field_fraction_outside
+
+        fraction = field_fraction_outside(mode, span)
+        if fraction <= self.strip_field_tol:
+            return
+        warnings.warn(
+            f"The {self.stage_name} stage's staircase at V = {bias_v:g} "
+            f"carries {fraction:.1%} of the mode's power outside the strip "
+            f"extent {span[0]:.3g}..{span[1]:.3g} um (tolerance "
+            f"{self.strip_field_tol:.1%}); only the strips carry the carrier "
+            "response, so the index shift is that of the fraction inside "
+            f"them. Widen the strips with study.{self.stage_name}"
+            "(strip_span=...) — up to what the carrier map covers — and "
+            "widen the charge window with study.charge(window=...) to make "
+            "a wider span legal.",
+            stacklevel=2,
+        )
+
+    def _check_conductor_clearance(
+        self, surroundings: Sequence[SurroundingRegion]
+    ) -> None:
+        """Refuse a Staircase whose metal is sliced by the Window.
+
+        A drawn conductor is meshed as an outline with its interior left
+        out of the domain (ADR 0003). When the Window cuts through one,
+        that outline runs along the Window's own outer wall, and the
+        Palace Route's meshing does not survive it — the solver aborts
+        rather than reporting anything. The femwell Route meshes it, so
+        this is a Route limitation and not a modelling one, which is why
+        it is checked here and not in the Staircase.
+
+        Args:
+            surroundings: The Regions redrawn around the Strips.
+
+        Raises:
+            ValueError: When a conductor crosses the Window boundary on
+                either axis.
+        """
+        window, window_z = self.mode_window(), self.mode_window_z()
+        for region in surroundings:
+            if region.layer_type not in ("conductor", "via"):
+                continue
+            for extent, bounds, axis in (
+                (region.h, window, "window"),
+                (region.z, window_z, "window_z"),
+            ):
+                inside = extent[0] >= bounds[0] and extent[1] <= bounds[1]
+                outside = extent[1] <= bounds[0] or extent[0] >= bounds[1]
+                if inside or outside:
+                    continue
+                raise ValueError(
+                    f"The {self.stage_name} stage's palace route cannot "
+                    f"solve this staircase: the drawn conductor "
+                    f"'{region.name}' spans {extent[0]:.4g}..{extent[1]:.4g} "
+                    f"um, which the {axis} {bounds[0]:.4g}..{bounds[1]:.4g} "
+                    "um cuts through, so its perfect-conductor outline "
+                    "would run along the window's own wall. Widen the "
+                    f"window to contain it (study.{self.stage_name}"
+                    f"({axis}=...)) or narrow it to leave the conductor "
+                    f"out, or solve with study.{self.stage_name}"
+                    "(route='femwell'), which meshes it."
+                )
 
     def _check_containment(self, ratio: float, bias_v: float) -> None:
         """Warn when a solved Mode still has field at the Window boundary."""
@@ -507,6 +742,7 @@ class OpticalStage(EMStage):
                 wavelength_um=self.wavelength_um,
                 num_modes=self.num_modes,
                 order=self.order,
+                metallic_boundaries=self.metallic_boundaries,
                 n_guess=self.n_guess,
             )
             mode = select_line_mode(modes, min_index=self.min_index)
@@ -565,6 +801,7 @@ class OpticalStage(EMStage):
             wavelength_um=self.wavelength_um,
             num_modes=self.num_modes,
             order=self.order,
+            metallic_boundaries=self.metallic_boundaries,
             n_guess=self.n_guess,
         )
         return modes
@@ -602,10 +839,21 @@ class OpticalStage(EMStage):
                     stacklevel=2,
                 )
             warnings.warn(containment_unmeasurable(self.stage_name), stacklevel=2)
+            warnings.warn(
+                f"The {self.stage_name} stage's palace route cannot check "
+                "how much of the mode sits outside the strip extent either, "
+                "for the same reason: no mode fields come back. Re-solve "
+                f"with study.{self.stage_name}(route='femwell') at the same "
+                "strip count to have both checks run on the identical "
+                "staircase.",
+                stacklevel=2,
+            )
 
         solved: list[tuple[float, complex, float]] = []
         for index, point in enumerate(responses.points):
             staircase = self.staircase(point)
+            if self.route == "palace":
+                self._check_conductor_clearance(staircase.surroundings)
             point_dir = stage_dir / f"bias_{index:02d}"
             point_dir.mkdir(parents=True, exist_ok=True)
             sim = self.staircase_simulation(staircase, output_dir=point_dir)
@@ -617,6 +865,8 @@ class OpticalStage(EMStage):
             mode = select_line_mode(modes, min_index=self.min_index)
             ratio = mode_boundary_ratio(mode)
             self._check_containment(ratio, point.bias_v)
+            if self.route != "palace":
+                self._check_strip_coverage(mode, point.bias_v, staircase.strip_span)
             solved.append((point.bias_v, complex(mode.n_eff), ratio))
         return self._sweep_from(responses.contact, solved)
 

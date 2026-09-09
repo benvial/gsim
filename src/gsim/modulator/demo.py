@@ -59,6 +59,18 @@ ELECTRODE_NAMES: dict[str, str] = {
     "p_pad": "anode_metal",
 }
 
+#: ``(layer, datatype)`` the doped Regions are drawn on, Region ``i``
+#: taking ``datatype + i``.
+DOPING_LAYER: tuple[int, int] = (30, 0)
+
+#: ``(layer, datatype)`` the electrodes are drawn on. Outside the generic
+#: PDK's own layers, like :data:`DOPING_LAYER`: an electrode drawn on the
+#: PDK's ``metal1`` layer is read twice — once as the electrode this
+#: builder declares, at the rib's own height, and once as ``metal1``, a
+#: micron higher — so one drawn rectangle becomes two stacked conductors
+#: and the Cross-section grows a metal ceiling nobody asked for.
+ELECTRODE_LAYER: tuple[int, int] = (46, 0)
+
 
 @dataclass(frozen=True)
 class DemoPhaseShifter:
@@ -166,7 +178,7 @@ def demo_phase_shifter(
     layer_specs: dict[str, Layer] = {}
     for index, name in enumerate(REGION_NAMES):
         low, high = spans[name]
-        gds_layer = (30, index)
+        gds_layer = (DOPING_LAYER[0], DOPING_LAYER[1] + index)
         rect = component << gf.c.rectangle((length_um, high - low), layer=gds_layer)
         rect.y = 0.5 * (low + high)
         layer_specs[name] = Layer(
@@ -181,7 +193,7 @@ def demo_phase_shifter(
         )
     for index, (pad, electrode) in enumerate(ELECTRODE_NAMES.items()):
         low, high = spans[pad]
-        gds_layer = (41, index)
+        gds_layer = (ELECTRODE_LAYER[0], ELECTRODE_LAYER[1] + index)
         rect = component << gf.c.rectangle((length_um, high - low), layer=gds_layer)
         rect.y = 0.5 * (low + high)
         layer_specs[electrode] = Layer(

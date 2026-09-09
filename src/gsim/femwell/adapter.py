@@ -47,6 +47,7 @@ __all__ = [
     "boundary_field_ratio",
     "elementwise_epsilon",
     "epsilon_by_region",
+    "field_fraction_outside",
     "region_elements",
     "region_material_map",
     "solve_modes",
@@ -453,6 +454,54 @@ def boundary_field_ratio(mode: Any) -> float:
         raise ValueError("The mode carries no field; nothing to compare.")
     elements = np.unique(mesh.f2t[0, facets[on_window]])
     return float(np.sqrt(float(magnitude[elements].max()) / peak))
+
+
+def field_fraction_outside(
+    mode: Any,
+    span: tuple[float, float],
+    *,
+    axis: int = 0,
+) -> float:
+    """How much of a solved Mode's power sits outside an interval.
+
+    A Staircase carries the carrier response only where its Strips are;
+    a Mode that mostly lives elsewhere is being solved on a
+    representation that cannot answer for it, however finely the Strips
+    are binned. The fraction here is the Mode's power — ``|E|^2``
+    integrated over the elements — outside *span* along one axis, over
+    the power everywhere.
+
+    Args:
+        mode: A femwell ``Mode`` from :func:`solve_modes`.
+        span: ``(min, max)`` interval in mesh units (um).
+        axis: Mesh axis the interval is on; ``0`` is the in-plane one on
+            a cross-section mesh, ``1`` the vertical one.
+
+    Returns:
+        The fraction in ``[0, 1]``; ``0`` when every element centroid
+        falls inside the interval.
+
+    Raises:
+        ValueError: When the interval is not ascending, or the Mode
+            carries no field.
+    """
+    require_skfem()
+    low, high = float(span[0]), float(span[1])
+    if high <= low:
+        raise ValueError(f"span must be an ascending (min, max) interval, got {span}.")
+
+    basis = mode.basis
+    (e_x, e_y), e_z = basis.interpolate(mode.E)
+    intensity = np.abs(e_x) ** 2 + np.abs(e_y) ** 2 + np.abs(e_z) ** 2
+    power = np.asarray((intensity * basis.dx).sum(axis=1), dtype=np.float64)
+    total = float(power.sum())
+    if total <= 0.0:
+        raise ValueError("The mode carries no field; nothing to compare.")
+
+    mesh = basis.mesh
+    centroids = mesh.p[axis, mesh.t].mean(axis=0)
+    outside = (centroids < low) | (centroids > high)
+    return float(power[outside].sum() / total)
 
 
 def boundary_facets_on_rect(

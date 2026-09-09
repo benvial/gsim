@@ -137,7 +137,7 @@ def pn_phase_shifter(
         n_strips: Strips the RF Staircase is built with, and the optical
             one wherever the optical Stage needs a Staircase at all —
             which the Palace Route does and the femwell Route does not.
-            The RF Staircase spans the whole doped slab, so raise this on
+            Both Staircases span the whole doped slab, so raise this on
             a device whose pads are much wider than its rib — the RF
             Stage warns when the Strips stop resolving the rib.
         length_um: Length of the Traveling-wave electrode (um).
@@ -189,10 +189,16 @@ def pn_phase_shifter(
         if dispersion is not None
         else _dispersion_for(wavelength_um)
     )
+    # Both EM Stages state their Strip extent here, in one place. The
+    # optical Staircase tiles the doped slab because that is what the
+    # Carrier map covers and what the guide's core is made of; tiling the
+    # rib alone leaves the pads to the surrounding Regions, which carry
+    # the drawn material and no carriers.
     study.optical(
         route=route,
         wavelength_um=wavelength_um,
         n_strips=n_strips if route == "palace" else None,
+        strip_span=layout.doped_span,
     )
     # The RF Staircase tiles the doped slab rather than the rib alone:
     # the pads are part of the line the drive sees, and a Staircase that

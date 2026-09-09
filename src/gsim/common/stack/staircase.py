@@ -18,6 +18,12 @@ native ``BoundaryMode`` solver.
   Carrier map, a strip count and the Junction extent in, a meshable
   Staircase cross-section out — the strip Regions, their material
   response for *both* EM Stages, and the flanking electrodes.
+- :func:`surroundings_from_section` supplies what the Strips are *not*:
+  every other Region of the drawn Cross-section, cut against the Strip
+  footprint, so the Staircase is the drawn waveguide with its doped
+  silicon replaced by Strips rather than a bare silicon wire in the
+  background medium. A Staircase built without them answers for a
+  different guide, and the difference does not shrink with strip count.
 
 ``n_strips=1`` recovers the uniform-strip model: one rectangle spanning
 the window carrying the profile average.
@@ -25,6 +31,7 @@ the window carrying the profile average.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -52,13 +59,17 @@ __all__ = [
     "COLUMN_TOL_FRACTION",
     "DEFAULT_ELECTRODES",
     "DEFAULT_STRIP_LAYER",
+    "DEFAULT_SURROUND_LAYER",
     "STRIP_LENGTH_UM",
     "ConductorModel",
     "ElectrodeSpec",
     "StaircaseCrossSection",
+    "SurroundingRegion",
     "build_staircase_cross_section",
+    "carrier_map_extent",
     "make_staircase_profile",
     "strip_averages_from_nodes",
+    "surroundings_from_section",
 ]
 
 #: Unperturbed silicon refractive index near 1.55 um.
@@ -70,6 +81,16 @@ DEFAULT_SI_INDEX: float = 3.4757
 #: that conductor, which a solver reading the stack (Palace) then honours
 #: and one reading only the mesh regions (femwell) does not.
 DEFAULT_STRIP_LAYER: tuple[int, int] = (300, 0)
+
+#: ``(layer, datatype)`` the first surrounding Region is drawn on, the
+#: next taking ``datatype + 1``. Outside the generic PDK's own layers for
+#: the same reason :data:`DEFAULT_STRIP_LAYER` is, and distinct from it so
+#: a Strip and a surrounding Region never share a GDS layer.
+DEFAULT_SURROUND_LAYER: tuple[int, int] = (310, 0)
+
+#: Extents closer than this count as coincident when a surrounding
+#: Region is cut against the Strip footprint (um).
+SURROUND_TOL_UM: float = 1e-9
 
 #: Fraction of the sampled extent within which two nodes count as one
 #: column of the mesh, when no explicit tolerance is given. Node columns
@@ -502,6 +523,9 @@ class StaircaseCrossSection:
             Staircase was built without them).
         electrode_spans: ``(min, max)`` extent of each electrode along the
             junction axis (um), in the same order as the names.
+        strip_span: ``(min, max)`` extent the Strips tile (um).
+        surroundings: The drawn device's own Regions redrawn around the
+            Strips (empty on a Staircase built without them).
     """
 
     component: gf.Component
@@ -509,6 +533,7 @@ class StaircaseCrossSection:
     strip_names: list[str]
     electrode_names: tuple[str, ...]
     electrode_spans: tuple[tuple[float, float], ...]
+    surroundings: tuple[SurroundingRegion, ...]
     _layer_specs: dict[str, Layer]
     _centres: dict[str, float]
     _electrodes: ElectrodeSpec | None
@@ -518,6 +543,12 @@ class StaircaseCrossSection:
     _permittivity: float
     _fmax: float
     _stacks: dict[str, LayerStack] = field(default_factory=dict)
+
+    @property
+    def strip_span(self) -> tuple[float, float]:
+        """``(min, max)`` extent the Strips actually tile (um)."""
+        edges = np.asarray(self.strips["edges_um"], dtype=np.float64).ravel()
+        return (float(edges[0]), float(edges[-1]))
 
     @property
     def conductor_model(self) -> ConductorModel | None:
@@ -579,9 +610,17 @@ class StaircaseCrossSection:
                 )
             )
         materials.update(self._electrode_materials(target))
+        surrounding: dict[str, Any] = {
+            region.material: region.properties
+            for region in self.surroundings
+            if region.properties is not None
+        }
         return {
             "layer_specs": dict(self._layer_specs),
-            "materials": materials,
+            # The drawn stack's own material entries first, so a Strip or
+            # an electrode sharing a name still wins: the Staircase is
+            # what the Carrier map speaks for.
+            "materials": surrounding | materials,
             "centres": dict(self._centres),
         }
 
@@ -730,6 +769,226 @@ def _electrode_layers(
     return layer_specs, centres, spans
 
 
+def carrier_map_extent(
+    carriers: Any, band: tuple[float, float] | None = None
+) -> tuple[float, float]:
+    """The extent a Carrier map covers along the junction axis (um).
+
+    Strips average the Carrier map, so they cannot reach past it: the
+    extent here is the widest one
+    :func:`build_staircase_cross_section` will accept.
+
+    Args:
+        carriers: The Carrier map (anything exposing ``x_um`` and
+            ``y_um``).
+        band: ``(min, max)`` vertical band of samples to measure across;
+            the whole map when omitted.
+
+    Returns:
+        ``(min, max)`` along the junction axis.
+
+    Raises:
+        ValueError: When the band holds no sample of the map.
+    """
+    h_um = np.asarray(carriers.x_um, dtype=np.float64).ravel()
+    v_um = np.asarray(carriers.y_um, dtype=np.float64).ravel()
+    if band is None:
+        inside = np.ones(v_um.shape, dtype=bool)
+    else:
+        inside = (v_um >= band[0]) & (v_um <= band[1])
+    if not np.any(inside):
+        raise ValueError(
+            f"No carrier samples inside the vertical band {band}; "
+            f"the map spans z in [{v_um.min():.3g}, {v_um.max():.3g}] um."
+        )
+    return (float(h_um[inside].min()), float(h_um[inside].max()))
+
+
+@dataclass(frozen=True)
+class SurroundingRegion:
+    """A Region of the drawn device redrawn beside the Strips.
+
+    The Strips carry the Carrier map, and nothing else. Everything the
+    drawn Cross-section has around them — the undoped silicon the guide
+    slab is made of, the Traveling-wave metal landing on the pads, an
+    implant the charge solve never covered — guides the Mode just as much,
+    and a Staircase that omits it solves a different waveguide. Each such
+    Region reaches the Staircase as one of these, cut against the Strip
+    footprint so the two never overlap.
+
+    Attributes:
+        name: Region name on the meshed Cross-section.
+        h: ``(min, max)`` extent along the junction axis (um).
+        z: ``(min, max)`` vertical extent (um).
+        material: Material name, as the drawn stack names it.
+        layer_type: How the mesher expresses it — ``"dielectric"`` for a
+            meshed domain, ``"conductor"`` for metal meshed as an outline
+            (ADR 0003).
+        properties: The material's own entry from the drawn stack, for a
+            material the base materials database does not already carry
+            (a doped-silicon material, say). ``None`` leaves the lookup to
+            the database.
+        mesh_resolution: Mesh resolution assigned to the Region.
+    """
+
+    name: str
+    h: tuple[float, float]
+    z: tuple[float, float]
+    material: str
+    layer_type: Literal["conductor", "via", "dielectric", "substrate"] = "dielectric"
+    properties: Any | None = None
+    mesh_resolution: str | float = "fine"
+
+
+def _cut_against(
+    h: tuple[float, float],
+    z: tuple[float, float],
+    *,
+    box_h: tuple[float, float],
+    box_z: tuple[float, float],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """The parts of one axis-aligned rectangle outside another.
+
+    Args:
+        h: ``(min, max)`` in-plane extent of the rectangle (um).
+        z: ``(min, max)`` vertical extent of the rectangle (um).
+        box_h: In-plane extent of the rectangle cut out of it.
+        box_z: Vertical extent of the rectangle cut out of it.
+
+    Returns:
+        Up to four disjoint rectangles covering exactly the part of the
+        first that the second does not; the rectangle itself when the two
+        do not overlap, and nothing when it is entirely inside.
+    """
+    overlap_h = (max(h[0], box_h[0]), min(h[1], box_h[1]))
+    overlap_z = (max(z[0], box_z[0]), min(z[1], box_z[1]))
+    if (
+        overlap_h[1] - overlap_h[0] <= SURROUND_TOL_UM
+        or overlap_z[1] - overlap_z[0] <= SURROUND_TOL_UM
+    ):
+        return [(h, z)]
+
+    pieces: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    if overlap_h[0] - h[0] > SURROUND_TOL_UM:
+        pieces.append(((h[0], overlap_h[0]), z))
+    if h[1] - overlap_h[1] > SURROUND_TOL_UM:
+        pieces.append(((overlap_h[1], h[1]), z))
+    if overlap_z[0] - z[0] > SURROUND_TOL_UM:
+        pieces.append((overlap_h, (z[0], overlap_z[0])))
+    if z[1] - overlap_z[1] > SURROUND_TOL_UM:
+        pieces.append((overlap_h, (overlap_z[1], z[1])))
+    return pieces
+
+
+def surroundings_from_section(
+    section: Iterable[Any],
+    *,
+    strip_span: tuple[float, float],
+    strip_z: tuple[float, float],
+    stack: LayerStack | None = None,
+) -> tuple[SurroundingRegion, ...]:
+    """Everything a drawn Cross-section has around the Strips.
+
+    Each rectangle of the drawn section is cut against the Strip
+    footprint: the part the Strips replace is dropped, and the rest
+    becomes a :class:`SurroundingRegion` carrying the drawn material.
+    That is one rule for every Region. The doped silicon the Carrier map
+    speaks for disappears wherever the Strips cover it and survives
+    wherever they do not, so a Strip extent narrower than the doped slab
+    leaves unperturbed silicon rather than a hole.
+
+    Args:
+        section: Rectangles of the drawn Cross-section, each exposing
+            ``layer_name``, ``material``, ``y0``, ``y1``, ``zmin`` and
+            ``zmax`` (the output of
+            :func:`gsim.common.cross_section.extract_plane_section` on a
+            vertical plane).
+        strip_span: ``(min, max)`` extent the Strips tile (um).
+        strip_z: ``(min, max)`` vertical extent of the Strips (um).
+        stack: The drawn layer stack, read for two things the section
+            rectangles do not carry: how each Region is meshed
+            (``"conductor"`` metal becomes an outline rather than a
+            domain, ADR 0003), and the material entry of a material the
+            base database does not know.
+
+    Returns:
+        The surrounding Regions, in section order, each named after the
+        Region it came from (suffixed when one rectangle cuts into
+        several pieces).
+    """
+    material_map = dict(stack.materials) if stack is not None else {}
+    layers = dict(stack.layers) if stack is not None else {}
+    regions: list[SurroundingRegion] = []
+    for rect in section:
+        name = str(rect.layer_name)
+        h = (float(rect.y0), float(rect.y1))
+        z = (float(rect.zmin), float(rect.zmax))
+        if h[1] - h[0] <= SURROUND_TOL_UM or z[1] - z[0] <= SURROUND_TOL_UM:
+            continue
+        pieces = _cut_against(h, z, box_h=strip_span, box_z=strip_z)
+        layer = layers.get(name)
+        layer_type = layer.layer_type if layer is not None else "dielectric"
+        for index, (piece_h, piece_z) in enumerate(pieces):
+            regions.append(
+                SurroundingRegion(
+                    name=name if len(pieces) == 1 else f"{name}_{index}",
+                    h=piece_h,
+                    z=piece_z,
+                    material=str(rect.material),
+                    layer_type=layer_type,
+                    properties=material_map.get(str(rect.material)),
+                )
+            )
+    return tuple(regions)
+
+
+def _surrounding_layers(
+    comp: gf.Component,
+    surroundings: Sequence[SurroundingRegion],
+    *,
+    length: float,
+    base_layer: tuple[int, int],
+) -> tuple[dict[str, Layer], dict[str, float]]:
+    """Draw the surrounding Regions and build their layer specs."""
+    from gsim.common.stack.extractor import Layer
+
+    layer_specs: dict[str, Layer] = {}
+    centres: dict[str, float] = {}
+    for index, region in enumerate(surroundings):
+        if region.h[1] <= region.h[0]:
+            raise ValueError(
+                f"Surrounding region '{region.name}' has a non-ascending "
+                f"in-plane extent {region.h}."
+            )
+        if region.z[1] <= region.z[0]:
+            raise ValueError(
+                f"Surrounding region '{region.name}' has a non-ascending "
+                f"vertical extent {region.z}."
+            )
+        if region.name in layer_specs:
+            raise ValueError(
+                f"Two surrounding regions are both named '{region.name}'; "
+                "region names have to be unique on the cross-section."
+            )
+        gds_layer = (base_layer[0], base_layer[1] + index)
+        y0, y1 = region.h
+        comp.add_polygon(
+            [(0.0, y0), (length, y0), (length, y1), (0.0, y1)], layer=gds_layer
+        )
+        centres[region.name] = 0.5 * (y0 + y1)
+        layer_specs[region.name] = Layer(
+            name=region.name,
+            gds_layer=gds_layer,
+            zmin=region.z[0],
+            zmax=region.z[1],
+            thickness=region.z[1] - region.z[0],
+            material=region.material,
+            layer_type=region.layer_type,
+            mesh_resolution=region.mesh_resolution,
+        )
+    return layer_specs, centres
+
+
 def build_staircase_cross_section(
     carriers: Any,
     *,
@@ -740,6 +999,7 @@ def build_staircase_cross_section(
     band: tuple[float, float] | None = None,
     length: float = STRIP_LENGTH_UM,
     electrodes: ElectrodeSpec | None = DEFAULT_ELECTRODES,
+    surroundings: Sequence[SurroundingRegion] = (),
     dispersion: PlasmaDispersionModel | None = None,
     wavelength_um: float | None = None,
     n0: float = DEFAULT_SI_INDEX,
@@ -748,6 +1008,7 @@ def build_staircase_cross_section(
     mu_p_cm2: float = DEFAULT_MU_P_CM2,
     fmax: float = 200e9,
     base_layer: tuple[int, int] = DEFAULT_STRIP_LAYER,
+    surround_layer: tuple[int, int] = DEFAULT_SURROUND_LAYER,
     name_prefix: str = "strip_",
     mesh_resolution: str | float = "fine",
     axis: Literal["x", "y", "z"] = "x",
@@ -780,6 +1041,11 @@ def build_staircase_cross_section(
             into the Strips; defaults to ``(zmin, zmax)``.
         length: Drawn length along the propagation direction (um).
         electrodes: Flanking electrodes; ``None`` draws none.
+        surroundings: The drawn device's own Regions to redraw around the
+            Strips — see :func:`surroundings_from_section`. Empty leaves
+            the Staircase as Strips alone in the background medium, which
+            is the right Cross-section only when the drawn device has
+            nothing else inside the meshed Window.
         dispersion: Plasma-dispersion coefficients for the optical
             response; defaults to the 1.55 um fit.
         wavelength_um: Vacuum wavelength the optical Stage solves at (um).
@@ -796,6 +1062,8 @@ def build_staircase_cross_section(
         base_layer: ``(layer, datatype)`` of Strip 0; defaults to
             :data:`DEFAULT_STRIP_LAYER`, outside the generic PDK's
             own layers.
+        surround_layer: ``(layer, datatype)`` of the first surrounding
+            Region; defaults to :data:`DEFAULT_SURROUND_LAYER`.
         name_prefix: Region-name prefix of the Strips.
         mesh_resolution: Mesh resolution assigned to the Strip layers.
         axis: Cross-section normal axis of the resolved stack.
@@ -819,13 +1087,7 @@ def build_staircase_cross_section(
 
     h_um = np.asarray(carriers.x_um, dtype=np.float64).ravel()
     v_um = np.asarray(carriers.y_um, dtype=np.float64).ravel()
-    inside = (v_um >= band_range[0]) & (v_um <= band_range[1])
-    if not np.any(inside):
-        raise ValueError(
-            f"No carrier samples inside the vertical band {band_range}; "
-            f"the map spans z in [{v_um.min():.3g}, {v_um.max():.3g}] um."
-        )
-    covered = (float(h_um[inside].min()), float(h_um[inside].max()))
+    covered = carrier_map_extent(carriers, band_range)
     if h_min < covered[0] or h_max > covered[1]:
         raise ValueError(
             f"Junction extent {junction} reaches outside the carrier map, "
@@ -896,12 +1158,30 @@ def build_staircase_cross_section(
         centres.update(electrode_centres)
         electrode_names = tuple(specs)
 
+    if surroundings:
+        clashes = [region.name for region in surroundings if region.name in layer_specs]
+        if clashes:
+            raise ValueError(
+                f"Surrounding region(s) {clashes} share a name with a strip "
+                "or an electrode of this staircase; rename them so every "
+                "region on the cross-section is distinct."
+            )
+        specs, surround_centres = _surrounding_layers(
+            comp,
+            tuple(surroundings),
+            length=length,
+            base_layer=surround_layer,
+        )
+        layer_specs.update(specs)
+        centres.update(surround_centres)
+
     return StaircaseCrossSection(
         component=comp,
         strips=cast("dict[str, Any]", profile["strips"]),
         strip_names=strip_names,
         electrode_names=electrode_names,
         electrode_spans=electrode_spans,
+        surroundings=tuple(surroundings),
         _layer_specs=layer_specs,
         _centres=centres,
         _electrodes=electrodes,
