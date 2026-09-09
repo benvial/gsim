@@ -380,7 +380,9 @@ class TestTwoPortExport:
         expected = line_smatrix(
             rf.gamma_per_m, rf.z0_ohm, length_m=solved.line.length_m
         )
-        header, first = path.read_text().splitlines()[-len(RF_FREQS) - 1 :][:2]
+        lines = path.read_text().splitlines()
+        header = next(line for line in lines if line.startswith("#"))
+        first = lines[lines.index(header) + 1]
         assert header == "# Hz S RI R 50"
         values = np.asarray(first.split(), dtype=np.float64)
         assert values[0] == pytest.approx(RF_FREQS[0])

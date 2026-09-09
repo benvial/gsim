@@ -342,7 +342,7 @@ class TestEndToEnd:
 
 
 class TestTwoPortExport:
-    """The solved Study hands the electrode over without hand-carried arrays."""
+    """The Study hands the Traveling-wave electrode over, no hand-carried arrays."""
 
     def test_the_touchstone_export_reads_back_as_the_solved_line(self, solved):
         skrf = pytest.importorskip("skrf")

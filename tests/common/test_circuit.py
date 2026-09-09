@@ -135,6 +135,13 @@ class TestTouchstone:
                 tmp_path / "line.s2p", freq_hz=FREQ_HZ, s=s, z_ref_ohm=50.0 + 1j
             )
 
+    def test_a_descending_frequency_axis_is_refused(self, tmp_path):
+        gamma, z0 = lossy_line()
+        s = line_smatrix(gamma, z0, length_m=LENGTH_M)
+
+        with pytest.raises(ValueError, match="ascending"):
+            write_touchstone(tmp_path / "line.s2p", freq_hz=FREQ_HZ[::-1], s=s)
+
     def test_comment_lines_carry_the_provenance(self, tmp_path):
         gamma, z0 = lossy_line()
         s = line_smatrix(gamma, z0, length_m=LENGTH_M)
@@ -186,6 +193,14 @@ class TestSaxLineModel:
         sdict = model(f=10e9)
 
         assert np.shape(sdict[("o2", "o1")]) == ()
+
+    def test_a_descending_solved_axis_is_refused(self):
+        # np.interp on a descending axis returns silently wrong values,
+        # so the model refuses to be built on one.
+        gamma, z0 = lossy_line()
+
+        with pytest.raises(ValueError, match="ascending"):
+            sax_line_model(FREQ_HZ[::-1], gamma, z0, length_m=LENGTH_M)
 
     def test_the_callable_carries_no_solver_state(self):
         # The SAX convention is a plain function over numpy arrays: the

@@ -49,6 +49,41 @@ class SaxLineModel(Protocol):
         ...
 
 
+def _require_positive_length(length_m: float) -> None:
+    """Refuse a line of zero or negative length."""
+    if length_m <= 0.0:
+        raise ValueError("length_m must be a positive line length in meters.")
+
+
+def _require_ascending(freq_hz: NDArray[np.float64], where: str) -> None:
+    """Refuse a frequency axis ``np.interp`` (or Touchstone) would misread.
+
+    Args:
+        freq_hz: The frequency axis (1D).
+        where: Argument name for the error message.
+    """
+    if freq_hz.ndim != 1 or freq_hz.size == 0:
+        raise ValueError(f"{where} must be a non-empty 1D array.")
+    if np.any(np.diff(freq_hz) <= 0.0):
+        raise ValueError(
+            f"{where} must be strictly ascending: a descending or repeated "
+            "frequency axis interpolates and reads back silently wrong."
+        )
+
+
+def _interp_complex(
+    grid: NDArray[np.float64],
+    freq_hz: NDArray[np.float64],
+    values: NDArray[np.complex128],
+) -> NDArray[np.complex128]:
+    """Linear interpolation of a complex array, ends held."""
+    return np.asarray(
+        np.interp(grid, freq_hz, values.real)
+        + 1j * np.interp(grid, freq_hz, values.imag),
+        dtype=np.complex128,
+    )
+
+
 def line_smatrix(
     gamma_per_m: ArrayLike,
     z0_ohm: ArrayLike,
@@ -73,8 +108,7 @@ def line_smatrix(
         ValueError: When the length is not positive, or the two line
             parameter arrays do not broadcast against each other.
     """
-    if length_m <= 0.0:
-        raise ValueError("length_m must be a positive line length in meters.")
+    _require_positive_length(length_m)
     gamma = np.asarray(gamma_per_m, dtype=np.complex128)
     z_c = np.asarray(z0_ohm, dtype=np.complex128)
     try:
@@ -105,7 +139,7 @@ def write_touchstone(
     *,
     freq_hz: ArrayLike,
     s: ArrayLike,
-    z_ref_ohm: complex = 50.0,
+    z_ref_ohm: float = 50.0,
     comments: list[str] | None = None,
 ) -> Path:
     """Write a two-port S-matrix as a Touchstone v1 ``.s2p`` file.
@@ -128,9 +162,11 @@ def write_touchstone(
         The written path.
 
     Raises:
-        ValueError: On a complex reference impedance or mismatched
-            array shapes.
+        ValueError: On a complex reference impedance, a non-ascending
+            frequency axis, or mismatched array shapes.
     """
+    # complex() rather than trusting the annotation: a complex reference
+    # passed at runtime must be refused, not truncated.
     z_r = complex(z_ref_ohm)
     if z_r.imag != 0.0 or z_r.real <= 0.0:
         raise ValueError(
@@ -138,8 +174,9 @@ def write_touchstone(
             f"{z_r}. Renormalize the S-matrix to a real reference instead."
         )
     freq = np.asarray(freq_hz, dtype=np.float64)
+    _require_ascending(freq, "freq_hz")
     matrix = np.asarray(s, dtype=np.complex128)
-    if freq.ndim != 1 or matrix.shape != (freq.size, 2, 2):
+    if matrix.shape != (freq.size, 2, 2):
         raise ValueError(
             f"s (shape {matrix.shape}) must be (len(freq_hz), 2, 2) with "
             f"freq_hz 1D (shape {freq.shape})."
@@ -195,28 +232,24 @@ def sax_line_model(
         The model callable.
 
     Raises:
-        ValueError: When the length is not positive or the arrays do not
-            share the frequency axis.
+        ValueError: When the length is not positive, the frequency axis
+            is not ascending, or the arrays do not share it.
     """
-    if length_m <= 0.0:
-        raise ValueError("length_m must be a positive line length in meters.")
+    _require_positive_length(length_m)
     freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64)).copy()
+    _require_ascending(freq, "freq_hz")
     gamma = np.broadcast_to(
         np.asarray(gamma_per_m, dtype=np.complex128), freq.shape
     ).copy()
     z_c = np.broadcast_to(np.asarray(z0_ohm, dtype=np.complex128), freq.shape).copy()
-    if freq.ndim != 1 or freq.size == 0:
-        raise ValueError("freq_hz must be a non-empty 1D array.")
 
     def model(
         *, f: ArrayLike | None = None
     ) -> dict[tuple[str, str], NDArray[np.complex128]]:
         """The line's S-matrix entries at frequencies ``f`` (Hz)."""
         grid = freq if f is None else np.asarray(f, dtype=np.float64)
-        gamma_f = np.interp(grid, freq, gamma.real) + 1j * np.interp(
-            grid, freq, gamma.imag
-        )
-        z0_f = np.interp(grid, freq, z_c.real) + 1j * np.interp(grid, freq, z_c.imag)
+        gamma_f = _interp_complex(grid, freq, gamma)
+        z0_f = _interp_complex(grid, freq, z_c)
         s = line_smatrix(gamma_f, z0_f, length_m=length_m, z_ref_ohm=z_ref_ohm)
         return {
             ("o1", "o1"): s[..., 0, 0],
