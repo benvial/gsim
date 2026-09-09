@@ -25,6 +25,7 @@ and the line parameters are interpolated onto it.
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
@@ -33,6 +34,7 @@ from pydantic import Field, field_validator
 from gsim.modulator.stage import Stage
 
 if TYPE_CHECKING:
+    from gsim.common.circuit import SaxLineModel
     from gsim.common.twmzm_report import (
         OpticalPhaseSweep,
         RFLineParams,
@@ -227,6 +229,103 @@ class LineStage(Stage):
                 + 1j * np.interp(grid, solved_freq, solved.z0_ohm.imag),
                 dtype=np.complex128,
             ),
+        )
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def _solved_line(self) -> RFLineParams:
+        """The RF Stage's result, running it first when it has not run.
+
+        Exports carry the solved frequencies rather than the response
+        grid: the grid is this Stage's own interpolation, and the
+        consumer of an export interpolates for itself.
+
+        Returns:
+            The RF line parameters on the solved frequencies.
+        """
+        rf: RFLineParams = self._require_study().rf.run()
+        return rf
+
+    def _export_provenance(self) -> list[str]:
+        """Comment lines recording what the exported two-port is."""
+        study = self._require_study()
+        lines = [
+            f"length_m = {self.length_m:g}",
+            f"signal contact: {study.rf.signal_contact_name()}",
+        ]
+        bias = study.rf.solved_bias_v
+        if bias is not None:
+            lines.append(f"bias_v = {bias:g}")
+        return lines
+
+    def export_touchstone(
+        self, path: str | Path | None = None, *, z_ref_ohm: float = 50.0
+    ) -> Path:
+        """Write the Traveling-wave electrode as a Touchstone two-port.
+
+        The solved ``gamma(f)`` and ``Z0(f)`` and this Stage's length
+        become the uniform line's S-matrix on the RF Stage's solved
+        frequencies, written as a ``.s2p`` file any circuit simulator
+        reads — gsim's half of the compact-model handoff to circulax.
+        Runs the RF Stage first when it holds no result.
+
+        Args:
+            path: Output file; ``electrode.s2p`` in the line Stage's
+                output directory when omitted.
+            z_ref_ohm: Port reference impedance of the S-parameters
+                (ohm, real — the Touchstone convention).
+
+        Returns:
+            The written path.
+        """
+        from gsim.common.circuit import line_smatrix, write_touchstone
+
+        rf = self._solved_line()
+        target = (
+            Path(path)
+            if path is not None
+            else self._require_study().stage_dir(self.stage_name) / "electrode.s2p"
+        )
+        return write_touchstone(
+            target,
+            freq_hz=rf.freq_hz,
+            s=line_smatrix(
+                rf.gamma_per_m,
+                rf.z0_ohm,
+                length_m=self.length_m,
+                z_ref_ohm=z_ref_ohm,
+            ),
+            z_ref_ohm=z_ref_ohm,
+            comments=self._export_provenance(),
+        )
+
+    def sax_model(self, *, z_ref_ohm: complex = 50.0) -> SaxLineModel:
+        """The Traveling-wave electrode as a SAX-convention callable.
+
+        A plain function over numpy arrays — no sax import anywhere —
+        returning the dict of S-matrix entries at the frequencies it is
+        called with (the solved ones by default), for circulax or any
+        sdict consumer to compose into a circuit. Runs the RF Stage
+        first when it holds no result.
+
+        Args:
+            z_ref_ohm: Port reference impedance of the S-parameters
+                (ohm).
+
+        Returns:
+            The model callable.
+        """
+        from gsim.common.circuit import sax_line_model
+
+        rf = self._solved_line()
+        return sax_line_model(
+            rf.freq_hz,
+            rf.gamma_per_m,
+            rf.z0_ohm,
+            length_m=self.length_m,
+            z_ref_ohm=z_ref_ohm,
         )
 
     # ------------------------------------------------------------------

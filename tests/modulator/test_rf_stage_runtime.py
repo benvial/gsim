@@ -339,3 +339,31 @@ class TestEndToEnd:
         assert line.freq_hz == pytest.approx(FREQS_HZ)
         assert np.all(line.n_rf > 1.0)
         assert study.rf.solved_bias_v == 2.0
+
+
+class TestTwoPortExport:
+    """The solved Study hands the electrode over without hand-carried arrays."""
+
+    def test_the_touchstone_export_reads_back_as_the_solved_line(self, solved):
+        skrf = pytest.importorskip("skrf")
+        study, line = solved
+
+        path = study.line.export_touchstone()
+        network = skrf.Network(str(path))
+
+        assert path == study.stage_dir("line") / "electrode.s2p"
+        np.testing.assert_allclose(network.f, line.freq_hz)
+        # A passive line referenced to a real impedance transmits at most
+        # what it is fed.
+        assert np.all(np.isfinite(network.s))
+        assert np.all(np.abs(network.s[:, 1, 0]) <= 1.0 + 1e-9)
+
+    def test_the_sax_model_is_evaluated_off_the_study(self, solved):
+        study, _ = solved
+
+        sdict = study.line.sax_model()(f=np.linspace(10e9, 40e9, 7))
+
+        s21 = sdict[("o2", "o1")]
+        assert s21.shape == (7,)
+        assert np.all(np.isfinite(s21))
+        assert np.all(np.abs(s21) <= 1.0 + 1e-9)

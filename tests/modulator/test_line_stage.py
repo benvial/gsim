@@ -366,3 +366,60 @@ class TestLifecycle:
     def test_the_line_is_the_last_stage_of_the_study(self, study):
         assert list(study.stages) == ["charge", "carriers", "optical", "rf", "line"]
         assert study.stages["line"] is study.line
+
+
+class TestTwoPortExport:
+    """The solved line leaves the Study as a circuit-simulator two-port."""
+
+    def test_the_touchstone_file_carries_the_solved_line(self, solved, tmp_path):
+        from gsim.common.circuit import line_smatrix
+
+        path = solved.line.export_touchstone(tmp_path / "electrode.s2p")
+
+        rf = rf_params()
+        expected = line_smatrix(
+            rf.gamma_per_m, rf.z0_ohm, length_m=solved.line.length_m
+        )
+        header, first = path.read_text().splitlines()[-len(RF_FREQS) - 1 :][:2]
+        assert header == "# Hz S RI R 50"
+        values = np.asarray(first.split(), dtype=np.float64)
+        assert values[0] == pytest.approx(RF_FREQS[0])
+        assert values[1] + 1j * values[2] == pytest.approx(expected[0, 0, 0])
+        assert values[3] + 1j * values[4] == pytest.approx(expected[0, 1, 0])
+
+    def test_without_a_path_it_lands_in_the_line_stage_directory(self, solved):
+        path = solved.line.export_touchstone()
+
+        assert path == solved.stage_dir("line") / "electrode.s2p"
+        assert path.exists()
+
+    def test_the_export_runs_the_rf_stage_first(self, solved, tmp_path):
+        assert solved.rf.has_run is False
+
+        solved.line.export_touchstone(tmp_path / "line.s2p")
+
+        assert solved.rf.has_run is True
+        assert solved.solves == {"optical": 0, "rf": 1}
+
+    def test_the_sax_model_reproduces_the_solved_matrix(self, solved):
+        from gsim.common.circuit import line_smatrix
+
+        model = solved.line.sax_model(z_ref_ohm=75.0)
+        sdict = model()
+
+        rf = rf_params()
+        expected = line_smatrix(
+            rf.gamma_per_m,
+            rf.z0_ohm,
+            length_m=solved.line.length_m,
+            z_ref_ohm=75.0,
+        )
+        np.testing.assert_allclose(sdict[("o2", "o1")], expected[:, 1, 0])
+        np.testing.assert_allclose(sdict[("o1", "o1")], expected[:, 0, 0])
+
+    def test_the_export_reports_the_solved_length(self, solved, tmp_path):
+        solved.line(length_um=5000.0)
+
+        path = solved.line.export_touchstone(tmp_path / "line.s2p")
+
+        assert "! length_m = 0.005" in path.read_text().splitlines()
