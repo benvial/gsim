@@ -337,3 +337,21 @@ class TestMissingExtra:
         monkeypatch.setattr("gsim.modulator.charge.ChargeStage._solve", fail)
         with pytest.raises(ImportError):
             study.rf.run()
+
+
+class TestUnloadedStaircase:
+    def test_the_carriers_are_switched_off(self, biased):
+        staircase = biased.rf.unloaded_staircase()
+
+        sigma = np.asarray(staircase.strips["sigma_s_per_m"], dtype=float)
+        assert np.all(sigma == 0.0)
+
+    def test_the_geometry_is_the_loaded_solves(self, biased):
+        loaded = biased.rf.staircase()
+        unloaded = biased.rf.unloaded_staircase()
+
+        assert unloaded.strip_names == loaded.strip_names
+        assert unloaded.electrode_spans == loaded.electrode_spans
+        assert np.asarray(unloaded.strips["edges_um"], dtype=float) == pytest.approx(
+            np.asarray(loaded.strips["edges_um"], dtype=float)
+        )

@@ -117,3 +117,13 @@ class TestFiguresOfMerit:
         assert report.vpi_l_vcm.shape == optical.voltages_v.shape
         assert set(report.rlgc) == {"R", "L", "G", "C"}
         assert report.z_load_ohm == 50.0 + 0j
+
+
+class TestUnloadedFlag:
+    def test_line_params_are_loaded_unless_said_otherwise(self):
+        rf = line_params_from_neff(FREQ, 2.5 + 0j, z0_ohm=50.0)
+        assert rf.unloaded is False
+
+    def test_an_unloaded_solve_is_flagged(self):
+        rf = line_params_from_neff(FREQ, 2.5 + 0j, z0_ohm=50.0, unloaded=True)
+        assert rf.unloaded is True

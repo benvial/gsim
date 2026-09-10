@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from gsim.common.twmzm_report import RFLineParams
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
     from gsim.palace import BoundaryModeSim
+    from gsim.tcad.results import CarrierMap
 
 __all__ = ["RFStage"]
 
@@ -180,6 +181,9 @@ class RFStage(EMStage):
     #: Bias the cached result was solved at, read through
     #: :attr:`solved_bias_v`.
     _solved_bias_v: float | None = PrivateAttr(default=None)
+
+    #: The unloaded solve's cached result, dropped with the loaded one.
+    _unloaded_result: RFLineParams | None = PrivateAttr(default=None)
 
     frequencies_hz: list[float] = Field(
         default_factory=lambda: [10e9, 40e9], min_length=1
@@ -313,7 +317,30 @@ class RFStage(EMStage):
         Returns:
             The Staircase Cross-section, drawn on its own component.
         """
+        return self._staircase_for(self.bias_point().carriers)
+
+    def unloaded_staircase(self) -> StaircaseCrossSection:
+        """The loaded solve's Staircase with the carriers switched off.
+
+        Same Bias point's Carrier map, same Strips, same electrodes and
+        the same Window — every electron and hole concentration set to
+        zero, so the Strips carry no Drude conductivity and the solve
+        answers for the bare Traveling-wave electrode.
+
+        Returns:
+            The Staircase Cross-section, drawn on its own component.
+        """
         carriers = self.bias_point().carriers
+        zeroed = carriers.model_copy(
+            update={
+                "electrons_cm3": np.zeros_like(carriers.electrons_cm3),
+                "holes_cm3": np.zeros_like(carriers.holes_cm3),
+            }
+        )
+        return self._staircase_for(zeroed)
+
+    def _staircase_for(self, carriers: CarrierMap) -> StaircaseCrossSection:
+        """The Staircase this Stage meshes, built from one Carrier map."""
         # Resolved once: the check and the Strips have to agree on which
         # extent is real, and resolving it twice would warn twice.
         span = self.strip_extent(carriers)
@@ -362,7 +389,10 @@ class RFStage(EMStage):
         )
 
     def simulation(
-        self, staircase: StaircaseCrossSection | None = None
+        self,
+        staircase: StaircaseCrossSection | None = None,
+        *,
+        output_dir: Path | None = None,
     ) -> BoundaryModeSim:
         """Assemble the cross-section this Stage meshes.
 
@@ -374,6 +404,8 @@ class RFStage(EMStage):
         Args:
             staircase: The Staircase to mesh; built from the Bias point
                 when omitted.
+            output_dir: Directory the mesh and solver files land in; the
+                Stage's own when omitted.
 
         Returns:
             The configured (unmeshed) ``BoundaryModeSim``.
@@ -386,7 +418,11 @@ class RFStage(EMStage):
         # complete description.
         sim = self.build_staircase_simulation(
             stair,
-            output_dir=study.stage_dir(self.stage_name),
+            output_dir=(
+                output_dir
+                if output_dir is not None
+                else study.stage_dir(self.stage_name)
+            ),
             freq_hz=float(self.frequencies_hz[0]),
             num_modes=self.num_modes,
         )
@@ -688,21 +724,34 @@ class RFStage(EMStage):
             )
         return n_eff, z0_ohm
 
-    def _solve(self) -> RFLineParams:
-        """Mesh the Staircase and solve the line Mode at every frequency."""
-        from gsim.common.twmzm_report import line_params_from_neff
+    def _check_settings(self) -> Path | None:
+        """Refuse settings the selected Route cannot honour, cheaply.
 
-        # Before the charge solve and before meshing: a user whose Route
-        # cannot run, or whose settings the Route cannot honour, should
-        # pay nothing to find that out. Both checks read settings only.
+        Before the charge solve and before meshing: a user whose Route
+        cannot run, or whose settings the Route cannot honour, should
+        pay nothing to find that out. Every check reads settings only.
+
+        Returns:
+            The Palace binary when that Route is selected, else ``None``.
+        """
         binary = require_route(self.route, stage_name=self.stage_name)
         if self.route == "femwell" and self.effective_conductor_model() == "pec":
             self._require_metallic_boundaries()
             self._check_contour_order()
+        return binary
 
-        point = self.bias_point()
-        staircase = self.staircase()
-        sim = self.simulation(staircase)
+    def _solve_staircase(
+        self,
+        staircase: StaircaseCrossSection,
+        binary: Path | None,
+        *,
+        output_dir: Path | None = None,
+        unloaded: bool = False,
+    ) -> RFLineParams:
+        """Mesh one Staircase and solve the line Mode at every frequency."""
+        from gsim.common.twmzm_report import line_params_from_neff
+
+        sim = self.simulation(staircase, output_dir=output_dir)
         sim.mesh(**self.mesh)
 
         if self.route == "femwell":
@@ -711,9 +760,53 @@ class RFStage(EMStage):
             n_eff, z0_ohm = self._solve_palace(sim, staircase, binary)
         self._check_continuity(n_eff)
 
-        self._solved_bias_v = point.bias_v
         return line_params_from_neff(
             np.asarray(self.frequencies_hz, dtype=np.float64),
             n_eff,
             z0_ohm=z0_ohm,
+            unloaded=unloaded,
         )
+
+    def run_unloaded(self, *, force: bool = False) -> RFLineParams:
+        """The bare electrode's line parameters: same Staircase, carriers off.
+
+        The "EM solve of the bare electrode" half of the classic
+        loaded-line workflow: the Bias point's Staircase with every Strip
+        at zero electron and hole concentration, geometry, electrodes,
+        Window and conductor model unchanged (ADR 0003). The result is
+        flagged ``unloaded`` so it cannot be mistaken for a Bias point's
+        answer, and is cached alongside the loaded one — re-configuring
+        the Stage drops both.
+
+        Args:
+            force: Solve again even when a cached result is available.
+
+        Returns:
+            The unloaded line parameters.
+        """
+        if self._unloaded_result is not None and not force:
+            return self._unloaded_result
+        binary = self._check_settings()
+        output_dir = self._require_study().stage_dir(self.stage_name) / "unloaded"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        line = self._solve_staircase(
+            self.unloaded_staircase(),
+            binary,
+            output_dir=output_dir,
+            unloaded=True,
+        )
+        self._unloaded_result = line
+        return line
+
+    def invalidate(self) -> None:
+        """Drop the loaded and the unloaded result, and downstream ones."""
+        self._unloaded_result = None
+        super().invalidate()
+
+    def _solve(self) -> RFLineParams:
+        """Mesh the Staircase and solve the line Mode at every frequency."""
+        binary = self._check_settings()
+        point = self.bias_point()
+        line = self._solve_staircase(self.staircase(), binary)
+        self._solved_bias_v = point.bias_v
+        return line

@@ -48,6 +48,9 @@ class RFLineParams(BaseModel):
         n_rf: RF effective (phase) index per frequency.
         alpha_rf_np_m: RF amplitude loss in Np/m per frequency.
         z0_ohm: Complex characteristic impedance in ohms per frequency.
+        unloaded: Whether these are the bare electrode's parameters —
+            the cross-section solved with every carrier switched off —
+            rather than a Bias point's answer.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -56,6 +59,7 @@ class RFLineParams(BaseModel):
     n_rf: NDArray[np.float64]
     alpha_rf_np_m: NDArray[np.float64]
     z0_ohm: NDArray[np.complex128]
+    unloaded: bool = False
 
     @model_validator(mode="after")
     def validate_shapes(self) -> Self:
@@ -91,6 +95,7 @@ def line_params_from_neff(
     n_eff: ArrayLike,
     *,
     z0_ohm: ArrayLike,
+    unloaded: bool = False,
 ) -> RFLineParams:
     """Build :class:`RFLineParams` from complex mode effective indices.
 
@@ -107,6 +112,8 @@ def line_params_from_neff(
         z0_ohm: Characteristic impedance per frequency (complex allowed),
             e.g. from Palace's impedance postprocessing or a
             Marks-Williams extraction.
+        unloaded: Flag the result as the bare electrode's — solved with
+            the carriers switched off — rather than a Bias point's.
 
     Returns:
         The RF line parameters.
@@ -124,6 +131,7 @@ def line_params_from_neff(
         n_rf=np.asarray(n_arr.real, dtype=np.float64),
         alpha_rf_np_m=np.asarray(np.abs(n_arr.imag) * omega / C0, dtype=np.float64),
         z0_ohm=np.asarray(z0, dtype=np.complex128),
+        unloaded=unloaded,
     )
 
 

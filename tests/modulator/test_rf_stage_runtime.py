@@ -367,3 +367,47 @@ class TestTwoPortExport:
         assert s21.shape == (7,)
         assert np.all(np.isfinite(s21))
         assert np.all(np.abs(s21) <= 1.0 + 1e-9)
+
+
+@pytest.fixture(scope="module")
+def unloaded(tmp_path_factory):
+    """The unloaded solve on the same Study, carriers switched off."""
+    study = build_study(tmp_path_factory.mktemp("modulator-rf-unloaded"))
+    study.rf(frequencies_hz=FREQS_HZ, n_strips=3)
+    return study, study.rf.run_unloaded()
+
+
+class TestUnloadedSolve:
+    def test_the_result_is_flagged_unloaded(self, unloaded):
+        _, line = unloaded
+
+        assert isinstance(line, RFLineParams)
+        assert line.unloaded is True
+        assert line.freq_hz == pytest.approx(FREQS_HZ)
+
+    def test_the_bare_line_sits_between_air_and_the_strip_dielectric(self, unloaded):
+        study, line = unloaded
+
+        # No carriers: the mode disperses between the air/oxide side and
+        # the strips' relative permittivity, nowhere near the slow-wave
+        # index a loaded junction produces.
+        assert np.all(line.n_rf > 1.0)
+        assert np.all(line.n_rf < np.sqrt(study.rf.strip_permittivity))
+
+    def test_the_impedance_is_in_the_tens_of_ohms(self, unloaded):
+        _, line = unloaded
+
+        assert np.all(line.z0_ohm.real > 10.0)
+        assert np.all(line.z0_ohm.real < 300.0)
+
+    def test_the_unloaded_solve_is_cached_and_invalidated(self, unloaded):
+        study, line = unloaded
+
+        assert study.rf.run_unloaded() is line
+        study.rf(n_strips=4)
+        assert study.rf._unloaded_result is None
+
+    def test_the_loaded_result_is_untouched(self, unloaded):
+        study, _ = unloaded
+
+        assert study.rf.has_run is False
