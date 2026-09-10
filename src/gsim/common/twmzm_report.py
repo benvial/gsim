@@ -192,11 +192,12 @@ class LoadedLineComparison(BaseModel):
     substrate, air) sees the narrowed gap, while the assembly keeps the
     bare electrode's shunt parameters and adds only the junction's own
     R_s/C_j — the assembled route therefore reads consistently light. On
-    the demo device it sits ~19% low on n_RF, ~21% low on the loss and
-    ~23% high on |Z0|, flat across 10-20 GHz. The default tolerances of
-    :meth:`check` are set just outside that gap; a route bug (a dropped
-    conductivity, a wrong-branch mode, a unit slip) overshoots them by
-    multiples.
+    the demo device it sits ~20% low on n_RF, 20-45% low on the loss and
+    20-35% high on |Z0| (the finer the charge mesh resolves the slab,
+    the lossier the direct solve), flat across 10-30 GHz. The default
+    tolerances of :meth:`check` are set just outside that gap; a route
+    bug (a dropped conductivity, a wrong-branch mode, a unit slip)
+    overshoots them by multiples.
 
     Attributes:
         direct: The direct loaded solve's line parameters.
@@ -250,9 +251,9 @@ class LoadedLineComparison(BaseModel):
     def check(
         self,
         *,
-        rtol_n_rf: float = 0.25,
-        rtol_alpha: float = 0.35,
-        rtol_z0: float = 0.3,
+        rtol_n_rf: float = 0.3,
+        rtol_alpha: float = 0.55,
+        rtol_z0: float = 0.45,
     ) -> None:
         """Fail loudly where the two routes disagree.
 

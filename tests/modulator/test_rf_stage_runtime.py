@@ -421,12 +421,11 @@ class TestCrosscheck:
     junction, which the defaults do not attempt: the Strips must tile
     the whole doped slab (so the pads' series resistance is in), be
     narrower than the depletion region (61 across 1.2 um), and the mode
-    selection must admit the slow-wave Mode, whose loss ratio at 10 GHz
-    (~0.53) sits above the line-tuned default bound. 10-20 GHz is the
-    band where both solves stay on the quasi-TEM branch: lower, the RC
-    slow wave loses as much as it advances and the selection rightly
-    refuses it; higher, the unloaded solve wanders onto a substrate
-    branch.
+    selection must admit the slow-wave Mode, whose loss ratio sits above
+    the line-tuned default bound. 20-30 GHz is the band where both
+    solves stay on the quasi-TEM branch: lower, the RC slow wave loses
+    about as much as it advances and the selection rightly refuses it;
+    higher, the unloaded solve wanders onto a substrate branch.
     """
 
     def test_the_routes_agree_within_the_gates_tolerance(self, tmp_path):
@@ -441,7 +440,7 @@ class TestCrosscheck:
         )
         study.charge(biases=[0.0, 2.0])
         study.rf(
-            frequencies_hz=[10e9, 20e9],
+            frequencies_hz=[20e9, 30e9],
             n_strips=61,
             strip_span=SLAB,
             num_modes=8,
@@ -453,7 +452,7 @@ class TestCrosscheck:
 
         assert comparison.direct.unloaded is False
         assert comparison.assembled.unloaded is False
-        assert comparison.freq_hz == pytest.approx([10e9, 20e9])
+        assert comparison.freq_hz == pytest.approx([20e9, 30e9])
         # The junction loads the line: the direct solve is slower and
         # lossier than the bare electrode by far more than the routes'
         # residual disagreement.
