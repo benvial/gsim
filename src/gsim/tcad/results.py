@@ -7,11 +7,19 @@ converted back to the gsim mesh unit (um).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field
 
+if TYPE_CHECKING:
+    from gsim.common.twmzm import JunctionBranch
+
 __all__ = ["BiasPoint", "BiasSweepResult", "CarrierMap"]
+
+#: Biases this far apart (V) count as the same Bias point.
+BIAS_TOL_V: float = 1e-9
 
 
 class CarrierMap(BaseModel):
@@ -79,7 +87,7 @@ class BiasPoint(BaseModel):
         """Small-signal admittance per meter of device length (S/m)."""
         return self.admittance_s_per_cm * 1e2
 
-    def junction_branch(self) -> tuple[float, float]:
+    def junction_branch(self) -> JunctionBranch:
         """Fit the series-RC junction branch to this point's admittance.
 
         The lumped shunt model the standard loaded-line workflow inserts
@@ -87,14 +95,14 @@ class BiasPoint(BaseModel):
         capacitance behind the series resistance of the doped slab.
 
         Returns:
-            ``(r_s_ohm_m, c_j_f_per_m)`` — series resistance (ohm*m) and
-            junction capacitance (F/m).
+            The fitted :class:`~gsim.common.twmzm.JunctionBranch`, both
+            fields floats.
 
         Raises:
             ValueError: When this point holds no small-signal admittance,
                 or one a series RC cannot represent.
         """
-        from gsim.common.twmzm import series_rc_from_admittance
+        from gsim.common.twmzm import JunctionBranch, series_rc_from_admittance
 
         if self.admittance_freq_hz <= 0 or self.admittance_s_per_cm == 0:
             raise ValueError(
@@ -105,7 +113,7 @@ class BiasPoint(BaseModel):
         r_s, c_j = series_rc_from_admittance(
             self.admittance_s_per_m, freq_hz=self.admittance_freq_hz
         )
-        return float(r_s), float(c_j)
+        return JunctionBranch(r_s_ohm_m=float(r_s), c_j_f_per_m=float(c_j))
 
 
 class BiasSweepResult(BaseModel):
@@ -140,16 +148,40 @@ class BiasSweepResult(BaseModel):
             [p.admittance_s_per_cm for p in self.points], dtype=np.complex128
         )
 
-    def junction_branch(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    def point_at(self, bias_v: float, *, tol: float = BIAS_TOL_V) -> BiasPoint:
+        """The solved point at one bias.
+
+        Args:
+            bias_v: Bias to look up (V).
+            tol: How far apart two biases may sit and still count as the
+                same Bias point (V).
+
+        Returns:
+            The matching point.
+
+        Raises:
+            ValueError: When the sweep visited no such bias, naming the
+                biases it did visit.
+        """
+        for point in self.points:
+            if abs(point.bias_v - bias_v) <= tol:
+                return point
+        visited = ", ".join(f"{point.bias_v:g}" for point in self.points)
+        raise ValueError(
+            f"The bias sweep has no point at V = {bias_v:g}; it visited {visited} V."
+        )
+
+    def junction_branch(self) -> JunctionBranch:
         """The series-RC junction branch fitted at every Bias point.
 
         Returns:
-            ``(r_s_ohm_m, c_j_f_per_m)`` arrays in sweep order — series
-            resistance (ohm*m) and junction capacitance (F/m) per meter
-            of Traveling-wave electrode.
+            A :class:`~gsim.common.twmzm.JunctionBranch` of arrays in
+            sweep order.
         """
+        from gsim.common.twmzm import JunctionBranch
+
         fitted = [p.junction_branch() for p in self.points]
-        return (
-            np.asarray([r for r, _ in fitted], dtype=np.float64),
-            np.asarray([c for _, c in fitted], dtype=np.float64),
+        return JunctionBranch(
+            r_s_ohm_m=np.asarray([r for r, _ in fitted], dtype=np.float64),
+            c_j_f_per_m=np.asarray([c for _, c in fitted], dtype=np.float64),
         )

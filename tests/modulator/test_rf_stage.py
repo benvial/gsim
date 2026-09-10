@@ -361,9 +361,9 @@ class TestJunctionBranchLookup:
     def rc_sweep(self, study, r_s_ohm_m=8e-4, c_j_f_per_m=2.4e-10, freq_hz=1e6):
         """Give the charge Stage's points an exact series-RC admittance."""
         from gsim.tcad.results import BiasSweepResult
+        from tests._helpers import series_rc_admittance
 
-        omega = 2 * np.pi * freq_hz
-        y_per_m = 1.0 / (r_s_ohm_m + 1.0 / (1j * omega * c_j_f_per_m))
+        y_per_m = series_rc_admittance(freq_hz, r_s_ohm_m, c_j_f_per_m)
         sweep: BiasSweepResult = study.charge._result
         study.charge._result = sweep.model_copy(
             update={

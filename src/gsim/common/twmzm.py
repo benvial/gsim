@@ -22,12 +22,15 @@ wave on a lossy line of length L terminated in ``Z_L`` and driven through
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
 __all__ = [
     "SINC_3DB_ARGUMENT",
+    "JunctionBranch",
     "eo_bandwidth",
     "eo_response",
     "loaded_line_params",
@@ -39,6 +42,24 @@ __all__ = [
 
 #: Argument where ``|sin(u)/u|`` falls to 1/sqrt(2) (walk-off 3 dB point).
 SINC_3DB_ARGUMENT: float = 1.3915573782515105
+
+
+class JunctionBranch(NamedTuple):
+    """The series-RC shunt branch per meter of Traveling-wave electrode.
+
+    The lumped junction model the standard loaded-line workflow inserts
+    per unit length: the junction capacitance behind the series
+    resistance of the doped slab. A named pair, so the two numbers that
+    always travel together do so under their own names; both are floats
+    from a single Bias point's fit and same-shape arrays from a sweep's.
+
+    Attributes:
+        r_s_ohm_m: Series resistance (ohm*m).
+        c_j_f_per_m: Junction capacitance (F/m).
+    """
+
+    r_s_ohm_m: float | NDArray[np.float64]
+    c_j_f_per_m: float | NDArray[np.float64]
 
 
 def _f_avg(u: NDArray[np.complex128]) -> NDArray[np.complex128]:
@@ -239,14 +260,12 @@ def series_rc_from_admittance(
     y_s_per_m: ArrayLike,
     *,
     freq_hz: float,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+) -> JunctionBranch:
     """Fit a series-RC shunt branch to a small-signal admittance.
 
     Inverts ``Y = 1 / (R_s + 1/(j omega C_j))``: the branch impedance is
     ``Z = 1/Y = R_s - j/(omega C_j)``, so ``R_s = Re(Z)`` and
-    ``C_j = -1/(omega Im(Z))``. This is the lumped junction model the
-    standard loaded-line workflow inserts per unit length of the
-    traveling-wave electrode.
+    ``C_j = -1/(omega Im(Z))``.
 
     Args:
         y_s_per_m: Complex shunt admittance per meter of Traveling-wave
@@ -255,8 +274,8 @@ def series_rc_from_admittance(
         freq_hz: Frequency the admittance was measured at (Hz, > 0).
 
     Returns:
-        ``(r_s_ohm_m, c_j_f_per_m)`` — series resistance (ohm*m) and
-        junction capacitance (F/m), same shape as ``y_s_per_m``.
+        The fitted :class:`JunctionBranch`, its fields the same shape as
+        ``y_s_per_m``.
 
     Raises:
         ValueError: When the frequency is not positive, or the admittance
@@ -278,17 +297,17 @@ def series_rc_from_admittance(
         )
     omega = 2.0 * np.pi * freq_hz
     z = 1.0 / y
-    r_s = np.asarray(z.real, dtype=np.float64)
-    c_j = np.asarray(-1.0 / (omega * z.imag), dtype=np.float64)
-    return r_s, c_j
+    return JunctionBranch(
+        r_s_ohm_m=np.asarray(z.real, dtype=np.float64),
+        c_j_f_per_m=np.asarray(-1.0 / (omega * z.imag), dtype=np.float64),
+    )
 
 
 def loaded_line_params(
     freq_hz: ArrayLike,
     *,
     rlgc: dict[str, NDArray[np.float64]],
-    r_s_ohm_m: float,
-    c_j_f_per_m: float,
+    junction: JunctionBranch | tuple[float, float],
 ) -> tuple[NDArray[np.complex128], NDArray[np.complex128]]:
     """Load a line's shunt admittance with a series-RC junction branch.
 
@@ -304,8 +323,9 @@ def loaded_line_params(
         rlgc: Unloaded per-unit-length parameters — arrays ``R`` (ohm/m),
             ``L`` (H/m), ``G`` (S/m), ``C`` (F/m) on the frequency axis,
             as :func:`rlgc_from_line_params` returns them.
-        r_s_ohm_m: Series resistance of the junction branch (ohm*m).
-        c_j_f_per_m: Junction capacitance (F/m).
+        junction: The series-RC branch to insert, one (scalar) fit — as
+            :meth:`gsim.tcad.results.BiasPoint.junction_branch` returns
+            it.
 
     Returns:
         ``(gamma_per_m, z0_ohm)`` of the loaded line, per frequency.
@@ -316,6 +336,7 @@ def loaded_line_params(
     for name in ("R", "L", "G", "C"):
         if np.asarray(rlgc[name]).shape != freq.shape:
             raise ValueError(f"rlgc[{name!r}] must have the same shape as freq_hz.")
+    r_s_ohm_m, c_j_f_per_m = junction
     omega = 2.0 * np.pi * freq
     z_series = rlgc["R"] + 1j * omega * rlgc["L"]
     y_junction = 1j * omega * c_j_f_per_m / (1.0 + 1j * omega * r_s_ohm_m * c_j_f_per_m)

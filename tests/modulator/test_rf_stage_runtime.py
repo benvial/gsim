@@ -385,20 +385,26 @@ class TestUnloadedSolve:
         assert line.unloaded is True
         assert line.freq_hz == pytest.approx(FREQS_HZ)
 
-    def test_the_bare_line_sits_between_air_and_the_strip_dielectric(self, unloaded):
+    def test_the_bare_line_sits_between_oxide_and_the_strip_dielectric(self, unloaded):
         study, line = unloaded
 
-        # No carriers: the mode disperses between the air/oxide side and
-        # the strips' relative permittivity, nowhere near the slow-wave
-        # index a loaded junction produces.
-        assert np.all(line.n_rf > 1.0)
+        # No carriers: the mode's index sits between the light lines of
+        # the materials it spreads over — above the oxide's sqrt(3.9),
+        # below the strips' sqrt(11.7) — nowhere near the slow-wave
+        # index a loaded junction produces. Measured ~2.2 on the demo
+        # device.
+        assert np.all(line.n_rf > 1.9)
         assert np.all(line.n_rf < np.sqrt(study.rf.strip_permittivity))
 
-    def test_the_impedance_is_in_the_tens_of_ohms(self, unloaded):
+    def test_the_impedance_is_a_plausible_bare_lines(self, unloaded):
         _, line = unloaded
 
-        assert np.all(line.z0_ohm.real > 10.0)
-        assert np.all(line.z0_ohm.real < 300.0)
+        # The demo device measures ~180 ohm: the electrodes are two
+        # narrow (2 um) conductors on a thin stack, a high-impedance
+        # pair rather than a 50-ohm CPW. The bracket rules out a
+        # metal-shorted (~0) or non-line (>> 250 ohm) answer.
+        assert np.all(line.z0_ohm.real > 30.0)
+        assert np.all(line.z0_ohm.real < 250.0)
 
     def test_the_unloaded_solve_is_cached_and_invalidated(self, unloaded):
         study, line = unloaded

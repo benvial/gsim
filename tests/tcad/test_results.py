@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
+from tests._helpers import series_rc_admittance
 
 FREQ_HZ = 1.0
 
@@ -31,8 +32,7 @@ def tiny_map() -> CarrierMap:
 
 def rc_point(bias_v: float, r_s_ohm_m: float, c_j_f_per_m: float) -> BiasPoint:
     """A bias point whose admittance is exactly a series RC per meter."""
-    omega = 2.0 * np.pi * FREQ_HZ
-    y_per_m = 1.0 / (r_s_ohm_m + 1.0 / (1j * omega * c_j_f_per_m))
+    y_per_m = series_rc_admittance(FREQ_HZ, r_s_ohm_m, c_j_f_per_m)
     return BiasPoint(
         bias_v=bias_v,
         carriers=tiny_map(),

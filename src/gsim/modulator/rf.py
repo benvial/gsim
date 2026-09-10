@@ -60,20 +60,19 @@ from gsim.common.stack.staircase import (
 )
 from gsim.modulator.em import EMStage
 from gsim.modulator.route import require_route
+from gsim.tcad.results import BIAS_TOL_V
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from gsim.common.stack.staircase import StaircaseCrossSection
+    from gsim.common.twmzm import JunctionBranch
     from gsim.common.twmzm_report import LoadedLineComparison, RFLineParams
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import BiasSweepResult, CarrierMap
 
 __all__ = ["RFStage"]
-
-#: Biases this far apart (V) count as the same Bias point.
-BIAS_TOL_V: float = 1e-9
 
 #: Strips the Junction extent should span before the Staircase is warned
 #: about: fewer, and the depletion edge sits inside one Strip.
@@ -239,15 +238,13 @@ class RFStage(EMStage):
             )
         if self.bias_v is None:
             return responses.points[-1]
-        for point in responses.points:
-            if abs(point.bias_v - self.bias_v) <= BIAS_TOL_V:
-                return point
-        visited = ", ".join(f"{point.bias_v:g}" for point in responses.points)
-        raise ValueError(
-            f"The bias sweep has no point at V = {self.bias_v:g}; it visited "
-            f"{visited} V. Solve that bias with study.charge(biases=[...]) or "
-            f"pick one of them with study.{self.stage_name}(bias_v=...)."
-        )
+        try:
+            return responses.point_at(self.bias_v, tol=BIAS_TOL_V)
+        except ValueError as err:
+            raise ValueError(
+                f"{err} Solve that bias with study.charge(biases=[...]) or "
+                f"pick one of them with study.{self.stage_name}(bias_v=...)."
+            ) from None
 
     def signal_contact_name(self) -> str:
         """Name of the Contact the RF drive is applied to.
@@ -724,12 +721,14 @@ class RFStage(EMStage):
             )
         return n_eff, z0_ohm
 
-    def _check_settings(self) -> Path | None:
-        """Refuse settings the selected Route cannot honour, cheaply.
+    def _check_route(self) -> Path | None:
+        """Resolve the Route's runtime, refusing settings it cannot honour.
 
         Before the charge solve and before meshing: a user whose Route
         cannot run, or whose settings the Route cannot honour, should
         pay nothing to find that out. Every check reads settings only.
+        Named like :func:`~gsim.modulator.route.require_route`, whose
+        answer it passes through.
 
         Returns:
             The Palace binary when that Route is selected, else ``None``.
@@ -786,7 +785,7 @@ class RFStage(EMStage):
         """
         if self._unloaded_result is not None and not force:
             return self._unloaded_result
-        binary = self._check_settings()
+        binary = self._check_route()
         output_dir = self._require_study().stage_dir(self.stage_name) / "unloaded"
         output_dir.mkdir(parents=True, exist_ok=True)
         line = self._solve_staircase(
@@ -798,7 +797,7 @@ class RFStage(EMStage):
         self._unloaded_result = line
         return line
 
-    def junction_branch(self) -> tuple[float, float]:
+    def junction_branch(self) -> JunctionBranch:
         """The series-RC junction branch at this Stage's Bias point.
 
         Read off the charge sweep's small-signal admittance at the same
@@ -806,7 +805,7 @@ class RFStage(EMStage):
         Traveling-wave electrode the loaded-line assembly inserts.
 
         Returns:
-            ``(r_s_ohm_m, c_j_f_per_m)``.
+            The fitted :class:`~gsim.common.twmzm.JunctionBranch`.
 
         Raises:
             ValueError: When the sweep's point holds no small-signal
@@ -814,13 +813,7 @@ class RFStage(EMStage):
         """
         bias = self.bias_point().bias_v
         sweep: BiasSweepResult = self._require_study().charge.run()
-        for point in sweep.points:
-            if abs(point.bias_v - bias) <= BIAS_TOL_V:
-                return point.junction_branch()
-        visited = ", ".join(f"{point.bias_v:g}" for point in sweep.points)
-        raise ValueError(
-            f"The charge sweep has no point at V = {bias:g}; it visited {visited} V."
-        )
+        return sweep.point_at(bias, tol=BIAS_TOL_V).junction_branch()
 
     def crosscheck(self, *, force: bool = False) -> LoadedLineComparison:
         """Both loaded-line routes side by side, at this Stage's Bias point.
@@ -849,10 +842,9 @@ class RFStage(EMStage):
 
         direct: RFLineParams = self.run(force=force)
         unloaded = self.run_unloaded(force=force)
-        r_s, c_j = self.junction_branch()
         freq = np.asarray(self.frequencies_hz, dtype=np.float64)
         gamma, z0 = loaded_line_params(
-            freq, rlgc=unloaded.rlgc, r_s_ohm_m=r_s, c_j_f_per_m=c_j
+            freq, rlgc=unloaded.rlgc, junction=self.junction_branch()
         )
         assembled = line_params_from_gamma(freq, gamma, z0_ohm=z0)
         return LoadedLineComparison(direct=direct, assembled=assembled)
@@ -864,7 +856,7 @@ class RFStage(EMStage):
 
     def _solve(self) -> RFLineParams:
         """Mesh the Staircase and solve the line Mode at every frequency."""
-        binary = self._check_settings()
+        binary = self._check_route()
         point = self.bias_point()
         line = self._solve_staircase(self.staircase(), binary)
         self._solved_bias_v = point.bias_v

@@ -37,7 +37,7 @@ from gsim.common.carriers import (
     carrier_index_shift,
 )
 from gsim.modulator.stage import Stage
-from gsim.tcad.results import CarrierMap
+from gsim.tcad.results import BIAS_TOL_V, CarrierMap
 
 if TYPE_CHECKING:
     from gsim.tcad.results import BiasSweepResult
@@ -123,6 +123,29 @@ class CarrierResponseSweep(BaseModel):
     def voltages(self) -> NDArray[np.float64]:
         """Applied biases (V) in sweep order."""
         return np.asarray([p.bias_v for p in self.points], dtype=np.float64)
+
+    def point_at(self, bias_v: float, *, tol: float = BIAS_TOL_V) -> CarrierResponse:
+        """The response at one bias.
+
+        Args:
+            bias_v: Bias to look up (V).
+            tol: How far apart two biases may sit and still count as the
+                same Bias point (V).
+
+        Returns:
+            The matching point's response.
+
+        Raises:
+            ValueError: When the sweep visited no such bias, naming the
+                biases it did visit.
+        """
+        for point in self.points:
+            if abs(point.bias_v - bias_v) <= tol:
+                return point
+        visited = ", ".join(f"{point.bias_v:g}" for point in self.points)
+        raise ValueError(
+            f"The bias sweep has no point at V = {bias_v:g}; it visited {visited} V."
+        )
 
 
 class CarriersStage(Stage):
