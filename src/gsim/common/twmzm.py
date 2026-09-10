@@ -30,6 +30,7 @@ __all__ = [
     "SINC_3DB_ARGUMENT",
     "eo_bandwidth",
     "eo_response",
+    "loaded_line_params",
     "rlgc_from_line_params",
     "series_rc_from_admittance",
     "vpi_length_vcm",
@@ -279,6 +280,53 @@ def series_rc_from_admittance(
     r_s = np.asarray(z.real, dtype=np.float64)
     c_j = np.asarray(-1.0 / (omega * z.imag), dtype=np.float64)
     return r_s, c_j
+
+
+def loaded_line_params(
+    freq_hz: ArrayLike,
+    *,
+    rlgc: dict[str, NDArray[np.float64]],
+    r_s_ohm_m: float,
+    c_j_f_per_m: float,
+) -> tuple[NDArray[np.complex128], NDArray[np.complex128]]:
+    """Load a line's shunt admittance with a series-RC junction branch.
+
+    The classic loaded-line assembly: the unloaded line's series
+    impedance ``R + j omega L`` is unchanged, its shunt admittance
+    ``G + j omega C`` gains the junction branch
+    ``j omega C_j / (1 + j omega R_s C_j)``, and the loaded propagation
+    constant and characteristic impedance follow from the telegrapher
+    relations ``gamma = sqrt(ZY)``, ``Z_0 = sqrt(Z/Y)``.
+
+    Args:
+        freq_hz: Frequencies in Hz (> 0).
+        rlgc: Unloaded per-unit-length parameters — arrays ``R`` (ohm/m),
+            ``L`` (H/m), ``G`` (S/m), ``C`` (F/m) on the frequency axis,
+            as :func:`rlgc_from_line_params` returns them.
+        r_s_ohm_m: Series resistance of the junction branch (ohm*m).
+        c_j_f_per_m: Junction capacitance (F/m).
+
+    Returns:
+        ``(gamma_per_m, z0_ohm)`` of the loaded line, per frequency.
+    """
+    freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64))
+    if np.any(freq <= 0):
+        raise ValueError("Frequencies must be positive.")
+    for name in ("R", "L", "G", "C"):
+        if np.asarray(rlgc[name]).shape != freq.shape:
+            raise ValueError(f"rlgc[{name!r}] must have the same shape as freq_hz.")
+    omega = 2.0 * np.pi * freq
+    z_series = rlgc["R"] + 1j * omega * rlgc["L"]
+    y_junction = 1j * omega * c_j_f_per_m / (1.0 + 1j * omega * r_s_ohm_m * c_j_f_per_m)
+    y_shunt = rlgc["G"] + 1j * omega * rlgc["C"] + y_junction
+    # The principal square root keeps Re >= 0, the passive-line branch of
+    # both quantities.
+    gamma = np.sqrt(z_series * y_shunt)
+    z0 = np.sqrt(z_series / y_shunt)
+    return (
+        np.asarray(gamma, dtype=np.complex128),
+        np.asarray(z0, dtype=np.complex128),
+    )
 
 
 def rlgc_from_line_params(

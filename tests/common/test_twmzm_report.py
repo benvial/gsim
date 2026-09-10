@@ -12,7 +12,9 @@ from scipy.constants import speed_of_light as C0  # noqa: N812
 
 from gsim.common.twmzm import SINC_3DB_ARGUMENT, walkoff_bandwidth
 from gsim.common.twmzm_report import (
+    LoadedLineComparison,
     OpticalPhaseSweep,
+    line_params_from_gamma,
     line_params_from_neff,
     twmzm_figures_of_merit,
 )
@@ -127,3 +129,85 @@ class TestUnloadedFlag:
     def test_an_unloaded_solve_is_flagged(self):
         rf = line_params_from_neff(FREQ, 2.5 + 0j, z0_ohm=50.0, unloaded=True)
         assert rf.unloaded is True
+
+
+class TestLineParamsFromGamma:
+    def test_roundtrips_the_gamma_property(self):
+        rf = line_params_from_neff(FREQ, 2.5 - 0.05j, z0_ohm=45.0 + 2.0j)
+
+        back = line_params_from_gamma(FREQ, rf.gamma_per_m, z0_ohm=rf.z0_ohm)
+
+        assert back.n_rf == pytest.approx(rf.n_rf)
+        assert back.alpha_rf_np_m == pytest.approx(rf.alpha_rf_np_m)
+        assert back.z0_ohm == pytest.approx(rf.z0_ohm)
+        assert back.unloaded is False
+
+    def test_hand_values(self):
+        freq = np.array([10e9])
+        omega = 2 * np.pi * freq
+        gamma = 30.0 + 1j * omega * 2.5 / C0
+
+        rf = line_params_from_gamma(freq, gamma, z0_ohm=40.0)
+
+        assert rf.n_rf == pytest.approx([2.5])
+        assert rf.alpha_rf_np_m == pytest.approx([30.0])
+
+    def test_either_sign_convention_is_loss(self):
+        freq = np.array([10e9])
+        omega = 2 * np.pi * freq
+        gamma = -30.0 - 1j * omega * 2.5 / C0
+
+        rf = line_params_from_gamma(freq, gamma, z0_ohm=40.0)
+
+        assert rf.n_rf == pytest.approx([2.5])
+        assert rf.alpha_rf_np_m == pytest.approx([30.0])
+
+
+def _line(n_rf=2.5, alpha=40.0, z0=45.0, unloaded=False):
+    freq = np.array([10e9, 40e9])
+    return line_params_from_neff(
+        freq,
+        n_rf - 1j * alpha * C0 / (2 * np.pi * freq),
+        z0_ohm=z0,
+        unloaded=unloaded,
+    )
+
+
+class TestLoadedLineComparison:
+    def test_identical_routes_have_zero_deltas_and_pass(self):
+        cmp = LoadedLineComparison(direct=_line(), assembled=_line())
+
+        assert cmp.delta_n_rf == pytest.approx([0.0, 0.0], abs=1e-15)
+        assert cmp.delta_alpha == pytest.approx([0.0, 0.0], abs=1e-15)
+        assert cmp.delta_z0 == pytest.approx([0.0, 0.0], abs=1e-15)
+        cmp.check()
+
+    def test_the_deltas_are_relative_to_the_direct_route(self):
+        cmp = LoadedLineComparison(direct=_line(n_rf=2.0), assembled=_line(n_rf=2.2))
+
+        assert cmp.delta_n_rf == pytest.approx([0.1, 0.1])
+
+    def test_a_diverged_index_fails_naming_quantity_and_frequency(self):
+        cmp = LoadedLineComparison(direct=_line(n_rf=2.0), assembled=_line(n_rf=3.0))
+
+        with pytest.raises(ValueError, match=r"n_RF.*10 GHz"):
+            cmp.check()
+
+    def test_a_diverged_impedance_fails_naming_the_impedance(self):
+        cmp = LoadedLineComparison(direct=_line(z0=40.0), assembled=_line(z0=80.0))
+
+        with pytest.raises(ValueError, match=r"Z0"):
+            cmp.check()
+
+    def test_the_tolerances_are_adjustable(self):
+        cmp = LoadedLineComparison(direct=_line(n_rf=2.0), assembled=_line(n_rf=2.2))
+
+        cmp.check(rtol_n_rf=0.2)
+        with pytest.raises(ValueError, match="n_RF"):
+            cmp.check(rtol_n_rf=0.05)
+
+    def test_mismatched_frequency_axes_are_rejected(self):
+        long = line_params_from_neff(np.array([1e9, 2e9, 3e9]), 2.5, z0_ohm=45.0)
+
+        with pytest.raises(ValueError, match="freq"):
+            LoadedLineComparison(direct=_line(), assembled=long)

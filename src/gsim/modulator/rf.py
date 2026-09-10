@@ -65,10 +65,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from gsim.common.stack.staircase import StaircaseCrossSection
-    from gsim.common.twmzm_report import RFLineParams
+    from gsim.common.twmzm_report import LoadedLineComparison, RFLineParams
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
     from gsim.palace import BoundaryModeSim
-    from gsim.tcad.results import CarrierMap
+    from gsim.tcad.results import BiasSweepResult, CarrierMap
 
 __all__ = ["RFStage"]
 
@@ -797,6 +797,65 @@ class RFStage(EMStage):
         )
         self._unloaded_result = line
         return line
+
+    def junction_branch(self) -> tuple[float, float]:
+        """The series-RC junction branch at this Stage's Bias point.
+
+        Read off the charge sweep's small-signal admittance at the same
+        Bias the loaded solve uses — the shunt branch per meter of
+        Traveling-wave electrode the loaded-line assembly inserts.
+
+        Returns:
+            ``(r_s_ohm_m, c_j_f_per_m)``.
+
+        Raises:
+            ValueError: When the sweep's point holds no small-signal
+                admittance, or one a series RC cannot represent.
+        """
+        bias = self.bias_point().bias_v
+        sweep: BiasSweepResult = self._require_study().charge.run()
+        for point in sweep.points:
+            if abs(point.bias_v - bias) <= BIAS_TOL_V:
+                return point.junction_branch()
+        visited = ", ".join(f"{point.bias_v:g}" for point in sweep.points)
+        raise ValueError(
+            f"The charge sweep has no point at V = {bias:g}; it visited {visited} V."
+        )
+
+    def crosscheck(self, *, force: bool = False) -> LoadedLineComparison:
+        """Both loaded-line routes side by side, at this Stage's Bias point.
+
+        The demonstration that the pipeline and the standard workflow
+        are the same compact model assembled two ways: the direct route
+        solves the carrier-loaded Staircase (:meth:`run`); the assembled
+        route loads the unloaded RLGC (:meth:`run_unloaded`) with the
+        charge solve's series-RC junction branch
+        (:func:`gsim.common.twmzm.loaded_line_params`). The returned
+        comparison holds both routes' n_RF, loss and Z0 with their
+        relative deltas, and its ``check()`` fails loudly where they
+        disagree.
+
+        Args:
+            force: Re-solve both routes even where results are cached.
+
+        Returns:
+            The side-by-side comparison.
+        """
+        from gsim.common.twmzm import loaded_line_params
+        from gsim.common.twmzm_report import (
+            LoadedLineComparison,
+            line_params_from_gamma,
+        )
+
+        direct: RFLineParams = self.run(force=force)
+        unloaded = self.run_unloaded(force=force)
+        r_s, c_j = self.junction_branch()
+        freq = np.asarray(self.frequencies_hz, dtype=np.float64)
+        gamma, z0 = loaded_line_params(
+            freq, rlgc=unloaded.rlgc, r_s_ohm_m=r_s, c_j_f_per_m=c_j
+        )
+        assembled = line_params_from_gamma(freq, gamma, z0_ohm=z0)
+        return LoadedLineComparison(direct=direct, assembled=assembled)
 
     def invalidate(self) -> None:
         """Drop the loaded and the unloaded result, and downstream ones."""

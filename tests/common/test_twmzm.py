@@ -11,6 +11,8 @@ Analytic checks use the standard traveling-wave modulator limits:
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import numpy as np
 import pytest
 from scipy.constants import speed_of_light as C0  # noqa: N812
@@ -18,6 +20,7 @@ from scipy.constants import speed_of_light as C0  # noqa: N812
 from gsim.common.twmzm import (
     eo_bandwidth,
     eo_response,
+    loaded_line_params,
     rlgc_from_line_params,
     series_rc_from_admittance,
     vpi_length_vcm,
@@ -260,3 +263,49 @@ class TestSeriesRCFromAdmittance:
     def test_rejects_a_nonpositive_frequency(self):
         with pytest.raises(ValueError, match="frequency"):
             series_rc_from_admittance(1e-3 + 1e-4j, freq_hz=0.0)
+
+
+class TestLoadedLineParams:
+    UNLOADED: ClassVar = {
+        "R": np.zeros(2),
+        "L": np.full(2, 4e-7),
+        "G": np.zeros(2),
+        "C": np.full(2, 8e-11),
+    }
+    FREQ = np.array([1e9, 10e9])
+
+    def test_zero_junction_branch_recovers_the_unloaded_line(self):
+        gamma, z0 = loaded_line_params(
+            self.FREQ, rlgc=self.UNLOADED, r_s_ohm_m=0.0, c_j_f_per_m=0.0
+        )
+        omega = 2 * np.pi * self.FREQ
+        assert gamma == pytest.approx(1j * omega * np.sqrt(4e-7 * 8e-11), rel=1e-12)
+        assert z0 == pytest.approx(np.full(2, np.sqrt(4e-7 / 8e-11)), rel=1e-12)
+
+    def test_a_lossless_junction_adds_its_capacitance(self):
+        c_j = 2e-10
+        gamma, z0 = loaded_line_params(
+            self.FREQ, rlgc=self.UNLOADED, r_s_ohm_m=0.0, c_j_f_per_m=c_j
+        )
+        omega = 2 * np.pi * self.FREQ
+        c_total = 8e-11 + c_j
+        assert gamma == pytest.approx(1j * omega * np.sqrt(4e-7 * c_total), rel=1e-12)
+        assert z0 == pytest.approx(np.sqrt(4e-7 / c_total) * np.ones(2), rel=1e-12)
+
+    def test_the_series_resistance_makes_the_line_lossy(self):
+        gamma, z0 = loaded_line_params(
+            self.FREQ, rlgc=self.UNLOADED, r_s_ohm_m=2e-3, c_j_f_per_m=2e-10
+        )
+        # Hand-computed: Z = jwL', Y = jwC' + jwC_j / (1 + jwR_sC_j).
+        omega = 2 * np.pi * self.FREQ
+        y_j = 1j * omega * 2e-10 / (1 + 1j * omega * 2e-3 * 2e-10)
+        z_series = 1j * omega * 4e-7
+        y_shunt = 1j * omega * 8e-11 + y_j
+        assert gamma == pytest.approx(np.sqrt(z_series * y_shunt), rel=1e-12)
+        assert z0 == pytest.approx(np.sqrt(z_series / y_shunt), rel=1e-12)
+        assert np.all(gamma.real > 0)
+
+    def test_rejects_mismatched_rlgc_shapes(self):
+        bad = dict(self.UNLOADED, L=np.full(3, 4e-7))
+        with pytest.raises(ValueError, match="shape"):
+            loaded_line_params(self.FREQ, rlgc=bad, r_s_ohm_m=0.0, c_j_f_per_m=0.0)

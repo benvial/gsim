@@ -411,3 +411,54 @@ class TestUnloadedSolve:
         study, _ = unloaded
 
         assert study.rf.has_run is False
+
+
+@pytest.mark.tcad_local
+class TestCrosscheck:
+    """Ticket: the two loaded-line routes agree on the demo device.
+
+    The comparison needs the direct solve to actually resolve the
+    junction, which the defaults do not attempt: the Strips must tile
+    the whole doped slab (so the pads' series resistance is in), be
+    narrower than the depletion region (61 across 1.2 um), and the mode
+    selection must admit the slow-wave Mode, whose loss ratio at 10 GHz
+    (~0.53) sits above the line-tuned default bound. 10-20 GHz is the
+    band where both solves stay on the quasi-TEM branch: lower, the RC
+    slow wave loses as much as it advances and the selection rightly
+    refuses it; higher, the unloaded solve wanders onto a substrate
+    branch.
+    """
+
+    def test_the_routes_agree_within_the_gates_tolerance(self, tmp_path):
+        pytest.importorskip("devsim")
+        demo = build_demo()
+        component, stack = demo.component, demo.stack
+        study = Study(
+            component=component,
+            stack=stack,
+            device=Device(p_regions=["p_rib", "p_pad"], n_regions=["n_rib", "n_pad"]),
+            output_dir=tmp_path,
+        )
+        study.charge(biases=[0.0, 2.0])
+        study.rf(
+            frequencies_hz=[10e9, 20e9],
+            n_strips=61,
+            strip_span=SLAB,
+            num_modes=8,
+            n_guess=6.0,
+            max_loss_ratio=0.6,
+        )
+
+        comparison = study.rf.crosscheck()
+
+        assert comparison.direct.unloaded is False
+        assert comparison.assembled.unloaded is False
+        assert comparison.freq_hz == pytest.approx([10e9, 20e9])
+        # The junction loads the line: the direct solve is slower and
+        # lossier than the bare electrode by far more than the routes'
+        # residual disagreement.
+        unloaded = study.rf.run_unloaded()
+        assert np.all(comparison.direct.n_rf > 1.5 * unloaded.n_rf)
+        # The gate: both routes' n_RF, loss and Z0 within the stated
+        # tolerances, or check() names the diverging quantity.
+        comparison.check()

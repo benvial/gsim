@@ -32,9 +32,11 @@ from gsim.common.twmzm import (
 )
 
 __all__ = [
+    "LoadedLineComparison",
     "OpticalPhaseSweep",
     "RFLineParams",
     "TWMZMReport",
+    "line_params_from_gamma",
     "line_params_from_neff",
     "twmzm_figures_of_merit",
 ]
@@ -133,6 +135,162 @@ def line_params_from_neff(
         z0_ohm=np.asarray(z0, dtype=np.complex128),
         unloaded=unloaded,
     )
+
+
+def line_params_from_gamma(
+    freq_hz: ArrayLike,
+    gamma_per_m: ArrayLike,
+    *,
+    z0_ohm: ArrayLike,
+    unloaded: bool = False,
+) -> RFLineParams:
+    """Build :class:`RFLineParams` from complex propagation constants.
+
+    The inverse of :attr:`RFLineParams.gamma_per_m`, for routes that
+    produce ``gamma`` directly — the loaded-line assembly
+    (:func:`gsim.common.twmzm.loaded_line_params`) rather than a mode
+    solve: ``n_RF = |Im(gamma)| c0 / omega`` and
+    ``alpha = |Re(gamma)|``, so either sign convention is read as loss.
+
+    Args:
+        freq_hz: RF frequencies in Hz.
+        gamma_per_m: Complex propagation constant per frequency (1/m).
+        z0_ohm: Characteristic impedance per frequency (complex allowed).
+        unloaded: Flag the result as the bare electrode's.
+
+    Returns:
+        The RF line parameters.
+    """
+    freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64))
+    gamma = np.broadcast_to(
+        np.atleast_1d(np.asarray(gamma_per_m, dtype=np.complex128)), freq.shape
+    )
+    z0 = np.broadcast_to(
+        np.atleast_1d(np.asarray(z0_ohm, dtype=np.complex128)), freq.shape
+    )
+    omega = 2.0 * np.pi * freq
+    return RFLineParams(
+        freq_hz=freq,
+        n_rf=np.asarray(np.abs(gamma.imag) * C0 / omega, dtype=np.float64),
+        alpha_rf_np_m=np.asarray(np.abs(gamma.real), dtype=np.float64),
+        z0_ohm=np.asarray(z0, dtype=np.complex128),
+        unloaded=unloaded,
+    )
+
+
+class LoadedLineComparison(BaseModel):
+    """The two loaded-line routes side by side, at one Bias point.
+
+    The direct route solves the carrier-loaded Staircase as one
+    cross-section; the assembled route combines the unloaded (bare
+    electrode) RLGC with the charge solve's series-RC junction branch per
+    unit length. Both are the same compact model assembled two ways, so
+    their n_RF, loss and Z0 should agree — up to what the lumped branch
+    cannot capture of the distributed junction. The known systematic gap:
+    the undepleted slab conducts, so in the direct solve it extends the
+    electrode plates toward the junction and every field path (oxide,
+    substrate, air) sees the narrowed gap, while the assembly keeps the
+    bare electrode's shunt parameters and adds only the junction's own
+    R_s/C_j — the assembled route therefore reads consistently light. On
+    the demo device it sits ~19% low on n_RF, ~21% low on the loss and
+    ~23% high on |Z0|, flat across 10-20 GHz. The default tolerances of
+    :meth:`check` are set just outside that gap; a route bug (a dropped
+    conductivity, a wrong-branch mode, a unit slip) overshoots them by
+    multiples.
+
+    Attributes:
+        direct: The direct loaded solve's line parameters.
+        assembled: The loaded-line assembly's parameters, from the
+            unloaded RLGC plus the junction branch.
+    """
+
+    direct: RFLineParams
+    assembled: RFLineParams
+
+    @model_validator(mode="after")
+    def validate_axes(self) -> Self:
+        """Both routes answer on the same frequency axis."""
+        if self.direct.freq_hz.shape != self.assembled.freq_hz.shape or np.any(
+            self.direct.freq_hz != self.assembled.freq_hz
+        ):
+            raise ValueError("The two routes must share one freq_hz axis.")
+        return self
+
+    @property
+    def freq_hz(self) -> NDArray[np.float64]:
+        """The shared frequency axis (Hz)."""
+        return self.direct.freq_hz
+
+    @property
+    def delta_n_rf(self) -> NDArray[np.float64]:
+        """Relative n_RF difference, assembled against direct."""
+        return np.asarray(
+            (self.assembled.n_rf - self.direct.n_rf) / self.direct.n_rf,
+            dtype=np.float64,
+        )
+
+    @property
+    def delta_alpha(self) -> NDArray[np.float64]:
+        """Relative RF-loss difference, assembled against direct."""
+        return np.asarray(
+            (self.assembled.alpha_rf_np_m - self.direct.alpha_rf_np_m)
+            / self.direct.alpha_rf_np_m,
+            dtype=np.float64,
+        )
+
+    @property
+    def delta_z0(self) -> NDArray[np.float64]:
+        """Relative |Z0| deviation, assembled against direct."""
+        return np.asarray(
+            np.abs(self.assembled.z0_ohm - self.direct.z0_ohm)
+            / np.abs(self.direct.z0_ohm),
+            dtype=np.float64,
+        )
+
+    def check(
+        self,
+        *,
+        rtol_n_rf: float = 0.25,
+        rtol_alpha: float = 0.35,
+        rtol_z0: float = 0.3,
+    ) -> None:
+        """Fail loudly where the two routes disagree.
+
+        The defaults sit just outside the systematic gap the class
+        docstring describes (the assembled route reading ~20% light on
+        the demo device), so they pass an honest assembly and fail a
+        broken route, which misses by multiples.
+
+        Args:
+            rtol_n_rf: Relative tolerance on n_RF.
+            rtol_alpha: Relative tolerance on the RF loss.
+            rtol_z0: Relative tolerance on |Z0|.
+
+        Raises:
+            ValueError: Naming the quantity that diverged and the
+                frequency it diverged at.
+        """
+        for name, delta, rtol in (
+            ("n_RF", self.delta_n_rf, rtol_n_rf),
+            ("the RF loss", self.delta_alpha, rtol_alpha),
+            ("Z0", self.delta_z0, rtol_z0),
+        ):
+            excess = np.abs(delta) > rtol
+            if np.any(excess):
+                where = int(np.argmax(np.abs(np.where(excess, delta, 0.0))))
+                raise ValueError(
+                    f"The two loaded-line routes disagree on {name}: "
+                    f"{delta[where]:+.1%} relative at "
+                    f"{self.freq_hz[where] / 1e9:g} GHz "
+                    f"(tolerance {rtol:.0%}). Direct "
+                    f"{self.direct.n_rf[where]:g}/"
+                    f"{self.direct.alpha_rf_np_m[where]:g}/"
+                    f"{self.direct.z0_ohm[where]:.3g} vs assembled "
+                    f"{self.assembled.n_rf[where]:g}/"
+                    f"{self.assembled.alpha_rf_np_m[where]:g}/"
+                    f"{self.assembled.z0_ohm[where]:.3g} "
+                    "(n_RF/loss Np/m/Z0 ohm)."
+                )
 
 
 class OpticalPhaseSweep(BaseModel):

@@ -355,3 +355,39 @@ class TestUnloadedStaircase:
         assert np.asarray(unloaded.strips["edges_um"], dtype=float) == pytest.approx(
             np.asarray(loaded.strips["edges_um"], dtype=float)
         )
+
+
+class TestJunctionBranchLookup:
+    def rc_sweep(self, study, r_s_ohm_m=8e-4, c_j_f_per_m=2.4e-10, freq_hz=1e6):
+        """Give the charge Stage's points an exact series-RC admittance."""
+        from gsim.tcad.results import BiasSweepResult
+
+        omega = 2 * np.pi * freq_hz
+        y_per_m = 1.0 / (r_s_ohm_m + 1.0 / (1j * omega * c_j_f_per_m))
+        sweep: BiasSweepResult = study.charge._result
+        study.charge._result = sweep.model_copy(
+            update={
+                "points": [
+                    point.model_copy(
+                        update={
+                            "admittance_s_per_cm": complex(y_per_m) / 1e2,
+                            "admittance_freq_hz": freq_hz,
+                        }
+                    )
+                    for point in sweep.points
+                ]
+            }
+        )
+
+    def test_the_branch_is_read_at_the_stages_bias_point(self, biased):
+        self.rc_sweep(biased)
+        biased.rf(bias_v=2.0)
+
+        r_s, c_j = biased.rf.junction_branch()
+
+        assert r_s == pytest.approx(8e-4, rel=1e-9)
+        assert c_j == pytest.approx(2.4e-10, rel=1e-9)
+
+    def test_a_sweep_without_admittances_says_how_to_get_them(self, biased):
+        with pytest.raises(ValueError, match="admittance"):
+            biased.rf.junction_branch()
