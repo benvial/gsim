@@ -249,7 +249,8 @@ def series_rc_from_admittance(
     traveling-wave electrode.
 
     Args:
-        y_s_per_m: Complex shunt admittance per meter of line (S/m);
+        y_s_per_m: Complex shunt admittance per meter of Traveling-wave
+            electrode (S/m);
             scalar or array, fit element by element.
         freq_hz: Frequency the admittance was measured at (Hz, > 0).
 
