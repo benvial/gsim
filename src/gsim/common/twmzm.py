@@ -31,6 +31,7 @@ __all__ = [
     "eo_bandwidth",
     "eo_response",
     "rlgc_from_line_params",
+    "series_rc_from_admittance",
     "vpi_length_vcm",
     "walkoff_bandwidth",
 ]
@@ -231,6 +232,53 @@ def vpi_length_vcm(
         raise ValueError("dn_eff slope vanishes; V_pi L is unbounded there.")
     # lambda[um] / (2 |slope|) is in V*um; 1 V*cm = 1e4 V*um.
     return wavelength_um / (2.0 * np.abs(slope)) / 1e4
+
+
+def series_rc_from_admittance(
+    y_s_per_m: ArrayLike,
+    *,
+    freq_hz: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Fit a series-RC shunt branch to a small-signal admittance.
+
+    Inverts ``Y = 1 / (R_s + 1/(j omega C_j))``: the branch impedance is
+    ``Z = 1/Y = R_s - j/(omega C_j)``, so ``R_s = Re(Z)`` and
+    ``C_j = -1/(omega Im(Z))``. This is the lumped junction model the
+    standard loaded-line workflow inserts per unit length of the
+    traveling-wave electrode.
+
+    Args:
+        y_s_per_m: Complex shunt admittance per meter of line (S/m);
+            scalar or array, fit element by element.
+        freq_hz: Frequency the admittance was measured at (Hz, > 0).
+
+    Returns:
+        ``(r_s_ohm_m, c_j_f_per_m)`` — series resistance (ohm*m) and
+        junction capacitance (F/m), same shape as ``y_s_per_m``.
+
+    Raises:
+        ValueError: When the frequency is not positive, or the admittance
+            is not one a series RC can represent (negative conductance,
+            or a non-capacitive susceptance).
+    """
+    if freq_hz <= 0:
+        raise ValueError("The fit frequency must be positive.")
+    y = np.asarray(y_s_per_m, dtype=np.complex128)
+    if np.any(y.real < 0):
+        raise ValueError(
+            "The admittance has negative conductance, which no series RC "
+            "branch can represent."
+        )
+    if np.any(y.imag <= 0):
+        raise ValueError(
+            "The admittance is not capacitive (Im(Y) <= 0), so a series-RC "
+            "junction branch cannot represent it."
+        )
+    omega = 2.0 * np.pi * freq_hz
+    z = 1.0 / y
+    r_s = np.asarray(z.real, dtype=np.float64)
+    c_j = np.asarray(-1.0 / (omega * z.imag), dtype=np.float64)
+    return r_s, c_j
 
 
 def rlgc_from_line_params(

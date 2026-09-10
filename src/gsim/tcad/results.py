@@ -50,6 +50,13 @@ class BiasPoint(BaseModel):
             (C per cm of depth).
         capacitance_f_per_cm: Small-signal capacitance |dQ/dV| at this
             bias (F per cm of depth).
+        admittance_s_per_cm: Complex small-signal terminal admittance of
+            the swept contact at :attr:`admittance_freq_hz`
+            (S per cm of depth).
+        admittance_freq_hz: Frequency the admittance's AC solve ran at
+            (Hz) — above the quasi-static one, so the capacitive current
+            dominates the junction leakage in ``Re(Y)``; zero when no AC
+            solve produced this point.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -59,11 +66,46 @@ class BiasPoint(BaseModel):
     currents_a_per_cm: dict[str, float] = Field(default_factory=dict)
     charge_c_per_cm: float = 0.0
     capacitance_f_per_cm: float = 0.0
+    admittance_s_per_cm: complex = 0.0j
+    admittance_freq_hz: float = 0.0
 
     @property
     def capacitance_f_per_m(self) -> float:
         """Small-signal capacitance per meter of device length (F/m)."""
         return self.capacitance_f_per_cm * 1e2
+
+    @property
+    def admittance_s_per_m(self) -> complex:
+        """Small-signal admittance per meter of device length (S/m)."""
+        return self.admittance_s_per_cm * 1e2
+
+    def junction_branch(self) -> tuple[float, float]:
+        """Fit the series-RC junction branch to this point's admittance.
+
+        The lumped shunt model the standard loaded-line workflow inserts
+        per unit length of the Traveling-wave electrode: the junction
+        capacitance behind the series resistance of the doped slab.
+
+        Returns:
+            ``(r_s_ohm_m, c_j_f_per_m)`` — series resistance (ohm*m) and
+            junction capacitance (F/m).
+
+        Raises:
+            ValueError: When this point holds no small-signal admittance,
+                or one a series RC cannot represent.
+        """
+        from gsim.common.twmzm import series_rc_from_admittance
+
+        if self.admittance_freq_hz <= 0 or self.admittance_s_per_cm == 0:
+            raise ValueError(
+                f"The bias point at {self.bias_v:g} V holds no small-signal "
+                "admittance; re-solve it with a charge backend recent enough "
+                "to report one."
+            )
+        r_s, c_j = series_rc_from_admittance(
+            self.admittance_s_per_m, freq_hz=self.admittance_freq_hz
+        )
+        return float(r_s), float(c_j)
 
 
 class BiasSweepResult(BaseModel):
@@ -90,3 +132,24 @@ class BiasSweepResult(BaseModel):
     def capacitance_f_per_m(self) -> NDArray[np.float64]:
         """Small-signal C(V) per meter of device length in sweep order."""
         return np.asarray(self.capacitance_f_per_cm * 1e2, dtype=np.float64)
+
+    @property
+    def admittance_s_per_cm(self) -> NDArray[np.complex128]:
+        """Small-signal terminal admittance per cm of depth in sweep order."""
+        return np.asarray(
+            [p.admittance_s_per_cm for p in self.points], dtype=np.complex128
+        )
+
+    def junction_branch(self) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """The series-RC junction branch fitted at every Bias point.
+
+        Returns:
+            ``(r_s_ohm_m, c_j_f_per_m)`` arrays in sweep order — series
+            resistance (ohm*m) and junction capacitance (F/m) per meter
+            of Traveling-wave electrode.
+        """
+        fitted = [p.junction_branch() for p in self.points]
+        return (
+            np.asarray([r for r, _ in fitted], dtype=np.float64),
+            np.asarray([c for _, c in fitted], dtype=np.float64),
+        )

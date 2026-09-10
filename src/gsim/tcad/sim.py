@@ -101,6 +101,14 @@ class ChargeTransportSim(BaseModel):
     #: Frequency (Hz) of the small-signal AC solve extracting C(V); low
     #: enough to be quasi-static.
     small_signal_freq_hz: float = Field(default=1.0, gt=0.0)
+    #: Frequency (Hz) of the second small-signal AC solve, the one whose
+    #: complex admittance the series-RC junction fit reads. At the
+    #: quasi-static frequency the real part of the branch impedance is
+    #: the junction's DC leakage rather than the slab's series
+    #: resistance; here the capacitive current dominates the leakage
+    #: while still sitting far below the branch's own RC rolloff, so
+    #: ``Re(1/Y)`` is the series resistance.
+    junction_freq_hz: float = Field(default=1e9, gt=0.0)
     #: Newton absolute error target passed to ``devsim.solve``.
     absolute_error: float = Field(default=1e10, gt=0.0)
     #: Newton relative error target passed to ``devsim.solve``. The 2D
@@ -748,13 +756,26 @@ class ChargeTransportSim(BaseModel):
                 value=1.0 if spec.name == contact else 0.0,
             )
         freq = self.small_signal_freq_hz
+        node = f"{self._source_name(contact)}.I"
         devsim.solve(type="ac", frequency=freq)
         current_imag = float(
-            devsim.get_circuit_node_value(
-                node=f"{self._source_name(contact)}.I", solution="ssac_imag"
-            )
+            devsim.get_circuit_node_value(node=node, solution="ssac_imag")
         )
         capacitance = abs(current_imag) / (2.0 * math.pi * freq)
+
+        # A second AC solve, high enough that the capacitive current
+        # dominates the junction's DC leakage (which owns Re(Y) at the
+        # quasi-static frequency) yet far below the branch's RC rolloff:
+        # this is the admittance the series-RC junction fit inverts. The
+        # source drives the swept contact with unit AC amplitude, so its
+        # circuit-node current is the terminal admittance Y = I / V — up
+        # to sign: the circuit node reports the current through the
+        # source, which flows out of the contact it drives.
+        devsim.solve(type="ac", frequency=self.junction_freq_hz)
+        admittance = -complex(
+            float(devsim.get_circuit_node_value(node=node, solution="ssac_real")),
+            float(devsim.get_circuit_node_value(node=node, solution="ssac_imag")),
+        )
 
         return BiasPoint(
             bias_v=bias,
@@ -762,6 +783,8 @@ class ChargeTransportSim(BaseModel):
             currents_a_per_cm=currents,
             charge_c_per_cm=charge,
             capacitance_f_per_cm=capacitance,
+            admittance_s_per_cm=admittance,
+            admittance_freq_hz=self.junction_freq_hz,
         )
 
     def sweep(

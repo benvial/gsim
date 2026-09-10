@@ -108,3 +108,44 @@ class TestSolve:
 
         assert second is not first
         assert [point.bias_v for point in second.points] == [0.5]
+
+
+@pytest.mark.tcad_local
+class TestJunctionBranch:
+    def test_the_sweep_carries_a_fittable_junction_branch(self, tmp_path):
+        """Ticket: the shunt branch per unit length, sane on the demo device.
+
+        C_j lands in the fF/um decade range (1e-10..1e-8 F/m), R_s in the
+        ohm*mm range (1e-5..1e-1 ohm*m), and reverse bias widens the
+        depletion region so C_j falls.
+        """
+        pytest.importorskip("devsim")
+        demo = build_demo()
+        component, stack = demo.component, demo.stack
+        study = Study(
+            component=component,
+            stack=stack,
+            device=Device(
+                p_regions=["p_rib", "p_pad"],
+                n_regions=["n_rib", "n_pad"],
+            ),
+            output_dir=tmp_path,
+        )
+        study.charge(biases=[0.0, 1.0, 2.0])
+        sweep = study.charge.run()
+
+        for point in sweep.points:
+            assert point.admittance_freq_hz > 0.0
+            assert point.admittance_s_per_cm.imag > 0.0
+
+        r_s, c_j = sweep.junction_branch()
+
+        assert np.all(c_j > 1e-11)
+        assert np.all(c_j < 1e-7)
+        assert np.all(r_s > 0.0)
+        assert np.all(r_s < 1e0)
+        # The fit's capacitance agrees with the existing |Im(I)|/omega
+        # extraction at the quasi-static frequency, where R_s barely bites.
+        assert c_j == pytest.approx(sweep.capacitance_f_per_m, rel=0.05)
+        # Reverse bias (positive on the cathode) depletes the junction.
+        assert np.all(np.diff(c_j) < 0.0)
