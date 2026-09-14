@@ -27,20 +27,43 @@ def test_concerns_batch_validate_without_partial_updates() -> None:
 
     assert simulation.source.num_wavelengths == 101
     assert simulation.solver.cell_size_nm == 60
+    assert simulation.geometry.mesh_size_nm == 1000
+    assert simulation.geometry.geometry_tolerance_nm == 10
 
     simulation.source(port="o2", wavelength_um=1.31, wavelength_span_um=0.04)
-    simulation.domain(padding_um=0.75, pml_cells=16)
+    simulation.domain(
+        padding_um=0.75,
+        pml_cells=16,
+        x_bounds=(-0.25, 2.25),
+        y_bounds=(-1.0, 1.0),
+        z_bounds=(-0.5, 0.75),
+    )
     simulation.solver(cell_size_nm=40, energy_decay_fraction=1e-5)
+    simulation.geometry.mesh_size_nm = 750
+    simulation.geometry.geometry_tolerance_nm = 20
 
     assert isinstance(simulation.source, fdtd.PortSource)
     assert simulation.source.port == "o2"
     assert simulation.domain.padding_um == 0.75
+    assert simulation.domain.x_bounds == (-0.25, 2.25)
+    assert simulation.domain.y_bounds == (-1.0, 1.0)
+    assert simulation.domain.z_bounds == (-0.5, 0.75)
     assert simulation.solver.cell_size_nm == 40
+    assert simulation.geometry.mesh_size_nm == 750
+    assert simulation.geometry.geometry_tolerance_nm == 20
 
     with pytest.raises(ValidationError):
         simulation.solver(cell_size_nm=-1, max_wall_seconds=20)
     assert simulation.solver.cell_size_nm == 40
     assert simulation.solver.max_wall_seconds == 3600
+
+    with pytest.raises(ValidationError):
+        simulation.geometry.geometry_tolerance_nm = 31
+    assert simulation.geometry.geometry_tolerance_nm == 20
+
+    with pytest.raises(ValidationError, match="lower bound"):
+        simulation.domain(z_bounds=(1.0, -1.0))
+    assert simulation.domain.z_bounds == (-0.5, 0.75)
 
 
 def test_dipole_material_override_and_plane_monitor_serialize(

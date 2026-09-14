@@ -1,4 +1,4 @@
-"""Interactive Three.js views of ZapFDTD Gmsh simulation meshes."""
+"""Interactive Three.js views of GDSFactory FDTD Gmsh simulation meshes."""
 
 from __future__ import annotations
 
@@ -46,13 +46,16 @@ def plot_mesh(
     position_um: float | None = None,
     show_groups: Sequence[str] | None = None,
     hide_groups: Sequence[str] = (),
+    zoom_to_cursor: bool = True,
+    cell_size_nm: float | None = None,
+    pml_cells: int | None = None,
     height: int = 600,
 ) -> MeshViewer:
-    """Build an interactive ZapFDTD-style viewer for a Gmsh mesh.
+    """Build an interactive GDSFactory FDTD viewer for a Gmsh mesh.
 
     The mesh is embedded in the returned HTML, so the source ``.msh`` file is
     no longer needed once this function returns. Three.js is loaded from the
-    same public CDN used by the original ZapFDTD viewer.
+    same public CDN used by the original GDSFactory FDTD viewer.
     """
     path = Path(mesh_path)
     if not path.is_file():
@@ -63,16 +66,23 @@ def plot_mesh(
         raise ValueError(f"axis must be 'x', 'y', or 'z', got {axis!r}")
     if position_um is not None and not isfinite(position_um):
         raise ValueError("position_um must be finite when provided")
+    if cell_size_nm is not None and (not isfinite(cell_size_nm) or cell_size_nm <= 0):
+        raise ValueError("cell_size_nm must be positive and finite when provided")
+    if pml_cells is not None and pml_cells < 0:
+        raise ValueError("pml_cells must be nonnegative when provided")
     if height <= 0:
         raise ValueError("height must be positive")
 
     template = files("gsim.fdtd").joinpath("assets/mesh-viewer.html").read_text("utf8")
     options = {
         "axis": axis,
+        "cellSizeNm": cell_size_nm,
         "hideGroups": list(hide_groups),
         "mode": mode,
+        "pmlCells": pml_cells,
         "positionUm": position_um,
         "showGroups": None if show_groups is None else list(show_groups),
+        "zoomToCursor": zoom_to_cursor,
     }
     html = template.replace(
         "__GSIM_MESH_DATA__", _script_json(path.read_text(encoding="utf8"))

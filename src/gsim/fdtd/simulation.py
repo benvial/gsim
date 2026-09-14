@@ -46,7 +46,8 @@ class Simulation:
     num_wavelengths: int = 101
     default_port: str | None = None
     background_padding_um: float = 1.0
-    mesh_size_nm: float = 500.0
+    mesh_size_nm: float = 1000.0
+    geometry_tolerance_nm: float = 10.0
     vertical_port_axis: Literal["+z", "-z"] = "+z"
     vertical_port_aperture_width_um: float | None = None
     vertical_port_waist_radius_um: float | None = None
@@ -66,10 +67,13 @@ class Simulation:
             "nanometers_per_cell": self.nanometers_per_cell,
             "background_padding_um": self.background_padding_um,
             "mesh_size_nm": self.mesh_size_nm,
+            "geometry_tolerance_nm": self.geometry_tolerance_nm,
         }
         for name, value in positive_values.items():
             if not isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive.")
+        if self.geometry_tolerance_nm > 30:
+            raise ValueError("geometry_tolerance_nm must be at most 30.")
         if not self.background_material:
             raise ValueError("background_material cannot be empty.")
         if self.pml_cells < 0:
@@ -310,7 +314,7 @@ class Simulation:
             background_material=self.background_material,
             background_padding_um=self.background_padding_um,
             mesh_size_nm=self.mesh_size_nm,
-            nanometers_per_cell=self.nanometers_per_cell,
+            geometry_tolerance_nm=self.geometry_tolerance_nm,
         )
         config = self._config(manifest, material_snapshots)
         config_path.write_text(

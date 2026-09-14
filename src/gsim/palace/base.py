@@ -1813,6 +1813,7 @@ class PalaceSimMixin:
 
         tmp = self._prepare_upload_dir()
         try:
+            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(tmp)
             self._input_hash = compute_input_hash(tmp, "palace")
             self._job_id = gcloud.upload(
                 tmp, "palace", verbose=verbose, input_hash=self._input_hash
@@ -1875,7 +1876,10 @@ class PalaceSimMixin:
         if self._job_id is None:
             raise ValueError("No job submitted yet")
         return gcloud.wait_for_results(
-            self._job_id, verbose=verbose, parent_dir=parent_dir
+            self._job_id,
+            verbose=verbose,
+            parent_dir=parent_dir,
+            estimated_runtime_seconds=getattr(self, "_estimated_runtime_seconds", None),
         )
 
     # -------------------------------------------------------------------------
@@ -1930,6 +1934,7 @@ class PalaceSimMixin:
 
         if check_cache:
             tmp = self._prepare_upload_dir()
+            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(tmp)
             self._input_hash, cached_job_id = gcloud.check_cache_for_dir(tmp, "palace")
             if cached_job_id is not None:
                 self._job_id = cached_job_id

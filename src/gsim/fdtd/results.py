@@ -1,4 +1,4 @@
-"""Typed loading, tabulation, and plotting of ZapFDTD output."""
+"""Typed loading, tabulation, and plotting of GDSFactory FDTD output."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class ComplexTrace:
     def from_samples(
         cls, samples: list[Mapping[str, Any]], valid: np.ndarray
     ) -> ComplexTrace:
-        """Build a trace from ZapFDTD's list-of-records representation."""
+        """Build a trace from the GDSFactory FDTD list-of-records representation."""
         values = np.asarray(
             [complex(sample.get("re", 0), sample.get("im", 0)) for sample in samples]
         )
@@ -339,7 +339,7 @@ class MonitorResults(dict[str, PlaneMonitorResult]):
 
 @dataclass
 class FDTDResult:
-    """Complete typed result from one ZapFDTD cloud run."""
+    """Complete typed result from one GDSFactory FDTD cloud run."""
 
     excitation_type: str
     excited_port: str | None
@@ -420,7 +420,7 @@ class FDTDResult:
 
     @classmethod
     def from_run_result(cls, run_result: Any) -> FDTDResult:
-        """Locate and parse ZapFDTD output downloaded by :mod:`gsim.gcloud`."""
+        """Locate and parse GDSFactory FDTD output downloaded by :mod:`gsim.gcloud`."""
         candidates = [
             Path(path)
             for name, path in run_result.files.items()
@@ -446,10 +446,38 @@ class FDTDResult:
 
     def plot_plotly(self, **kwargs: Any) -> Any:
         """Interactively plot S-parameters, or non-eigenmode port power."""
+        normalize_to = kwargs.pop("normalize_to", None)
         if self.s_parameters:
+            if normalize_to is not None:
+                raise ValueError("S-parameters are already source-normalized")
             return self.s_parameters.plot_plotly(**kwargs)
         kwargs.setdefault("quantity", "modal_power")
-        return self.port_outputs.plot_plotly(**kwargs)
+        if normalize_to is not None and kwargs["quantity"] != "modal_power":
+            raise ValueError("monitor normalization requires modal_power")
+        figure = self.port_outputs.plot_plotly(**kwargs)
+        if normalize_to is None:
+            return figure
+
+        monitor = self.monitors[normalize_to]
+        if monitor.flux is None:
+            raise ValueError(f"monitor {normalize_to!r} has no flux data")
+        order = np.argsort(monitor.wavelength_um)
+        monitor_power = np.interp(
+            self.wavelength_um,
+            monitor.wavelength_um[order],
+            np.abs(monitor.flux[order]),
+            left=np.nan,
+            right=np.nan,
+        )
+        for trace in figure.data:
+            trace.y = np.divide(
+                trace.y,
+                monitor_power,
+                out=np.full_like(trace.y, np.nan, dtype=float),
+                where=monitor_power > 0,
+            )
+        figure.update_yaxes(title=f"Power / |{normalize_to} flux|")
+        return figure
 
 
 def _parse_monitor(

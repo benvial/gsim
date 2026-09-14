@@ -2,20 +2,16 @@
 docs_dir = "."
 nav = [
   { "Home" = "index.md" },
-  { "FDTD for Photonics" = [
-    { "GDSFactory FDTD: GPDK MMI" = "nbs/fdtd_mmi_gpdk.md" },
-    { "Y-Branch" = "nbs/meep_ybranch.md" },
-    { "Ring Coupler" = "nbs/meep_ring_coupler.md" },
-    { "Directional Coupler" = "nbs/meep_dc.md" },
-    { "Crossing" = "nbs/meep_crossing.md" },
-    { "2D FDTD" = "nbs/meep_2d.md" },
-    { "2D Grating Coupler" = "nbs/meep_2d_xz_gc.md" },
-    { "2D Grating Coupler: Wavelength Sweep" = "nbs/meep_2d_xz_gc_wavelength_sweep.md" }
-  ] },
-  { "Eigenmode Analysis" = [
-    { "Rib Waveguide" = "nbs/meep_mode_solver_rib.md" },
-    { "SOI Slab" = "nbs/meep_mode_solver_soi.md" },
-    { "TFLN Ridge" = "nbs/meep_mode_solver_tfln.md" }
+  { "Photonic FDTD" = [
+    { "MMI Quickstart" = "nbs/fdtd_mmi_gpdk.md" },
+    { "Directional Coupler" = "nbs/fdtd_directional_coupler.md" },
+    { "Waveguide Crossing" = "nbs/fdtd_waveguide_crossing.md" },
+    { "Broadband Directional Coupler" = "nbs/fdtd_broadband_directional_coupler.md" },
+    { "Meep: Directional Coupler" = "nbs/meep_dc.md" },
+    { "Meep: 2D Directional Coupler" = "nbs/meep_2d.md" },
+    { "Meep: 2D Grating Coupler" = "nbs/meep_2d_xz_gc.md" },
+    { "Meep: 2D Grating Coupler Sweep" = "nbs/meep_2d_xz_gc_wavelength_sweep.md" },
+    { "Meep: 3D MMI Comparison" = "nbs/meep_ybranch.md" }
   ] },
   { "FEM for RF" = [
     { "CPW (Lumped Ports)" = "nbs/palace_cpw_lumped.md" },
@@ -30,6 +26,7 @@ nav = [
   { "TCAD for Modulators" = [{ "TCAD TW-MZM" = "nbs/tcad_twmzm.md" }] },
   { "Changelog" = "CHANGELOG.md" },
   { "API Reference" = [
+    { "Materials" = "materials.md" },
     { "GDSFactory FDTD" = "api/fdtd.md" },
     { "Palace" = "api/palace.md" },
     { "Meep" = "api/meep.md" },
@@ -42,6 +39,7 @@ site_name = "gsim"
 site_url = "https://gdsfactory.com/gsim"
 repo_url = "https://gdsfactory.com/"
 repo_name = "gdsfactory.com"
+copyright = "Copyright &copy; 2025 GDSFactory"
 
 [project.plugins.search]
 

@@ -1,28 +1,60 @@
 # gsim
 
-Electromagnetic simulation for photonics and electronics, powered by [GDSFactory+](https://gdsfactory.com).
+Photonic FDTD and RF/microwave simulation for GDSFactory, powered by [GDSFactory+](https://gdsfactory.com).
 
-## Overview
+| Engine                            | Status and use                                                                    |
+| --------------------------------- | --------------------------------------------------------------------------------- |
+| **GDSFactory FDTD** (`gsim.fdtd`) | **Primary.** New photonic FDTD simulations supported by its current capabilities. |
+| **Palace** (`gsim.palace`)        | **Established.** FEM simulations for RF and microwave devices.                    |
+| **Meep** (`gsim.meep`)            | **Supported.** Photonic workflows that are not yet available in GDSFactory FDTD.  |
 
-gsim connects GDSFactory layout designs to multiple EM solvers for photonic and electronic simulation. It handles
-geometry extraction, mesh generation, port configuration, and cloud execution so you can go from GDS to S-parameters
-with minimal boilerplate.
+## Photonic FDTD
 
-## Solvers
+**GDSFactory FDTD (`gsim.fdtd`) is the primary engine for new photonic simulations.** Meep (`gsim.meep`) remains
+supported for capabilities not yet available in GDSFactory FDTD.
 
-| Module        | Solver                                      | Method | Use Case                                               |
-| ------------- | ------------------------------------------- | ------ | ------------------------------------------------------ |
-| `gsim.fdtd`   | GDSFactory FDTD                             | FDTD   | PDK-native mesh and runtime configuration generation   |
-| `gsim.palace` | [Palace](https://awslabs.github.io/palace/) | FEM    | RF/microwave, impedance extraction, driven simulations |
-| `gsim.meep`   | [Meep](https://meep.readthedocs.io/)        | FDTD   | Photonic components, S-parameters, mode propagation    |
+### Quick start
 
-## Features
+```python
+import gdsfactory as gf
 
-- **Layer stack extraction** — build 3D geometry from PDK layer stacks
-- **Port configuration** — convert GDSFactory ports into solver-compatible definitions
-- **Mesh generation** — GMSH finite-element meshes with configurable quality presets (Palace)
-- **Cloud execution** — upload, run, and download results via `gsim.gcloud`
-- **Visualization** — solver-agnostic 3D/2D component preview (PyVista, Matplotlib)
+from gsim import fdtd
+
+gf.gpdk.PDK.activate()
+component = gf.get_component("mmi1x2")
+
+simulation = fdtd.Simulation()
+simulation.materials(background="SiO2", overrides={"si": 3.4757})
+simulation.geometry(component)
+simulation.source(port="o1", wavelength_span_um=0.1)
+
+result = simulation.run(check_cache=True)
+result.plot_plotly()
+```
+
+[Start with the MMI tutorial](nbs/fdtd_mmi_gpdk.md) or browse the [GDSFactory FDTD API](api/fdtd.md).
+
+## GDSFactory FDTD roadmap
+
+Over the next six months, we plan to add:
+
+- Material dispersion
+- Anisotropic materials
+- Periodic boundary conditions
+- Gradients for inverse design
+- Feature parity and Meep migration
+
+Meep will be deprecated only after GDSFactory FDTD reaches the required feature coverage and a documented migration path
+is available.
+
+*Last updated: August 2026.*
+
+## Palace for RF and microwave
+
+`gsim.palace` is the FEM engine for driven RF and microwave simulations, eigenmodes, electrostatics, and impedance
+extraction.
+
+[Start with the Palace CPW tutorial](nbs/palace_cpw_lumped.md) or browse the [Palace API](api/palace.md).
 
 ## Installation
 
@@ -30,38 +62,7 @@ with minimal boilerplate.
 pip install gsim
 ```
 
-## Quick Start — Palace (RF/Microwave)
+## API reference
 
-```python
-from gsim.palace import DrivenSim
-
-sim = DrivenSim()
-sim.set_geometry(component)
-sim.set_stack(air_above=300.0)
-sim.add_cpw_port("o1", layer="topmetal2", s_width=10, gap_width=6)
-sim.set_driven(fmin=1e9, fmax=100e9)
-sim.set_output_dir("./sim")
-sim.mesh(preset="fine")
-results = sim.run()
-```
-
-## Quick Start — Meep (Photonics)
-
-```python
-from gsim import meep
-
-sim = meep.Simulation()
-sim.geometry(component=ybranch, z_crop="auto")
-sim.materials = {"si": 3.47, "SiO2": 1.44}
-sim.source(port="o1", wavelength=1.55, wavelength_span=0.01)
-sim.num_freqs = 11
-sim.monitors = ["o1", "o2"]
-sim.domain(pml=1.0, margin=0.5)
-sim.solver(resolution=32, simplify_tol=0.01)
-result = sim.run()
-```
-
-## API Reference
-
-See the API docs for full details: [GDSFactory FDTD](api/fdtd.md), [Palace](api/palace.md), [Meep](api/meep.md),
-[Common](api/common.md), [Cloud](api/cloud.md).
+[GDSFactory FDTD](api/fdtd.md) · [Meep](api/meep.md) · [Palace](api/palace.md) · [Common](api/common.md) ·
+[Cloud](api/cloud.md)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import MultiPolygon, Polygon, box
 
 import gsim.fdtd.mesh_loft as mesh_loft
 from gsim.common.pdk import ResolvedLayer, ResolvedPort
@@ -64,14 +64,14 @@ def _resolved_port(name: str, x_um: float, normal_x: int) -> ResolvedPort:
     )
 
 
-def test_sidewall_slices_bound_error_to_quarter_cell() -> None:
+def test_sidewall_slices_bound_geometry_error() -> None:
     layer = _resolved_layer(Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]))
 
-    slice_count = sidewall_slice_count(layer, nanometers_per_cell=31.25)
+    slice_count = sidewall_slice_count(layer, geometry_tolerance_nm=10)
 
-    assert slice_count == 3
+    assert slice_count == 2
     total_displacement_nm = 38.7919357558623
-    assert total_displacement_nm / (2 * slice_count) < 31.25 / 4
+    assert total_displacement_nm / (2 * slice_count) < 10
 
 
 def test_disconnected_polygons_retain_holes() -> None:
@@ -120,8 +120,14 @@ def test_incompatible_loft_uses_stepped_fallback(monkeypatch) -> None:
     )
     fallback_calls = []
 
-    def fake_stepped_builder(kernel, layer, ports, *, nanometers_per_cell) -> list[int]:
-        fallback_calls.append((kernel, layer, ports, nanometers_per_cell))
+    def fake_stepped_builder(
+        kernel,
+        layer,
+        ports,
+        *,
+        geometry_tolerance_nm,
+    ) -> list[int]:
+        fallback_calls.append((kernel, layer, ports, geometry_tolerance_nm))
         return [42]
 
     monkeypatch.setattr(
@@ -136,8 +142,35 @@ def test_incompatible_loft_uses_stepped_fallback(monkeypatch) -> None:
         kernel,
         layer,
         [],
-        nanometers_per_cell=60,
+        geometry_tolerance_nm=10,
     )
 
     assert volume_tags == [42]
-    assert fallback_calls == [(kernel, layer, [], 60)]
+    assert fallback_calls == [(kernel, layer, [], 10)]
+
+
+def test_disconnected_polygons_are_lofted_independently(monkeypatch) -> None:
+    first = box(0, 0, 1, 1)
+    second = box(2, 0, 3, 1)
+    layer = _resolved_layer(MultiPolygon([first, second]))
+    kernel = object()
+    lofted_geometries = []
+
+    monkeypatch.setattr(
+        mesh_loft,
+        "_add_lofted_layer_volumes",
+        lambda _kernel, polygon_layer, _sections: lofted_geometries.append(
+            polygon_layer.geometry
+        )
+        or [len(lofted_geometries)],
+    )
+
+    volume_tags = mesh_loft.add_layer_volumes(
+        kernel,
+        layer,
+        [],
+        geometry_tolerance_nm=10,
+    )
+
+    assert volume_tags == [1, 2]
+    assert lofted_geometries == [first, second]

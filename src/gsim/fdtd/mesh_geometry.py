@@ -18,7 +18,6 @@ from gsim.palace.mesh.gmsh_utils import extrude_polygon
 
 UM_TO_NM = 1000.0
 GEOMETRY_TOLERANCE_NM = 1e-3
-DEFAULT_MAX_SIDEWALL_ERROR_FRACTION = 0.25
 
 
 def _polygon_sort_key(polygon: Polygon) -> tuple[float, ...]:
@@ -67,22 +66,17 @@ def _sidewall_offset_um(layer: ResolvedLayer, normalized_z: float) -> float:
 
 def sidewall_slice_count(
     layer: ResolvedLayer,
-    nanometers_per_cell: float,
-    *,
-    max_error_fraction: float = DEFAULT_MAX_SIDEWALL_ERROR_FRACTION,
+    geometry_tolerance_nm: float,
 ) -> int:
-    """Choose midpoint slices that bound lateral error relative to a Yee cell."""
-    if nanometers_per_cell <= 0:
-        raise ValueError("nanometers_per_cell must be positive.")
-    if not 0 < max_error_fraction <= 1:
-        raise ValueError("max_error_fraction must be in the interval (0, 1].")
+    """Choose midpoint slices that bound lateral geometry error."""
+    if geometry_tolerance_nm <= 0:
+        raise ValueError("geometry_tolerance_nm must be positive.")
     total_displacement_nm = (
         abs(layer.thickness) * abs(tan(radians(layer.sidewall_angle))) * UM_TO_NM
     )
     if total_displacement_nm == 0:
         return 1
-    maximum_error_nm = max_error_fraction * nanometers_per_cell
-    return max(1, ceil(total_displacement_nm / (2 * maximum_error_nm)))
+    return max(1, ceil(total_displacement_nm / (2 * geometry_tolerance_nm)))
 
 
 def _port_groups(
@@ -234,10 +228,10 @@ def _add_stepped_layer_volumes(
     layer: ResolvedLayer,
     ports: list[ResolvedPort],
     *,
-    nanometers_per_cell: float,
+    geometry_tolerance_nm: float,
 ) -> list[int]:
     """Create midpoint-slice prisms when exact loft correspondence is unsafe."""
-    slice_count = sidewall_slice_count(layer, nanometers_per_cell)
+    slice_count = sidewall_slice_count(layer, geometry_tolerance_nm)
     z_lower_um, z_upper_um = layer.z_bounds
     volume_tags = []
     for slice_index in range(slice_count):
