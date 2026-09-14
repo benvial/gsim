@@ -12,8 +12,10 @@ extra costs nothing but the error message.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+import numpy as np
 from pydantic import Field, PrivateAttr
 
 from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
@@ -124,6 +126,66 @@ class ChargeStage(Stage):
         if self.contact is not None:
             return self.contact
         return str(self._require_study().layout.contact_on("n").name)
+
+    def export_junction_model(self, path: str | Path | None = None) -> Path:
+        """Write the junction's series-RC branch per Bias point to a file.
+
+        The devsim-derived compact model leaves gsim as one tabular JSON
+        file — C_j(V) and R_s(V) per meter of Traveling-wave electrode,
+        with units, the swept Contact and the solve settings recorded —
+        so circulax or any circuit tool reads it back without importing
+        gsim. The format lives in
+        :func:`gsim.common.circuit.write_junction_model`; the matching
+        reader is :func:`gsim.common.circuit.read_junction_model`. Runs
+        the charge Stage first when it holds no result.
+
+        Args:
+            path: Output file; ``junction.json`` in the charge Stage's
+                output directory when omitted.
+
+        Returns:
+            The written path.
+
+        Raises:
+            ValueError: When a Bias point holds no small-signal
+                admittance, or the sweep's points were fitted at
+                different frequencies.
+        """
+        from gsim import __version__
+        from gsim.common.circuit import write_junction_model
+
+        sweep: BiasSweepResult = self.run()
+        if not sweep.points:
+            raise ValueError(
+                "The bias sweep holds no points, so there is no junction to "
+                "export; sweep at least one bias with study.charge(biases=[...])."
+            )
+        branch = sweep.junction_branch()
+        frequencies = {point.admittance_freq_hz for point in sweep.points}
+        if len(frequencies) != 1:
+            listed = ", ".join(f"{freq:g}" for freq in sorted(frequencies))
+            raise ValueError(
+                f"The bias sweep's admittances were fitted at {listed} Hz; a "
+                "junction model records one fit frequency, so re-solve the "
+                "sweep with a single junction_freq_hz."
+            )
+        target = (
+            Path(path)
+            if path is not None
+            else self._require_study().stage_dir(self.stage_name) / "junction.json"
+        )
+        return write_junction_model(
+            target,
+            bias_v=sweep.voltages,
+            r_s_ohm_m=np.asarray(branch.r_s_ohm_m, dtype=np.float64),
+            c_j_f_per_m=np.asarray(branch.c_j_f_per_m, dtype=np.float64),
+            contact=sweep.contact,
+            freq_hz=frequencies.pop(),
+            provenance={
+                "generator": f"gsim {__version__}",
+                "temperature_k": self.temperature,
+            },
+        )
 
     def _solve(self) -> BiasSweepResult:
         """Mesh the charge Window and sweep the bias."""

@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
-from pydantic import Field, field_validator
+from numpy.typing import NDArray
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from gsim.modulator.stage import Stage
 
@@ -42,7 +43,161 @@ if TYPE_CHECKING:
     )
     from gsim.modulator.optical import OpticalSweep
 
-__all__ = ["LineStage"]
+__all__ = ["ExportRoundTrip", "LineStage"]
+
+
+class ExportRoundTrip(BaseModel):
+    """Proof the compact-model handoff loses nothing.
+
+    Both exported artifacts read back from their files and replayed with
+    plain network math, next to the Study's own numbers: the driven
+    response of the Traveling-wave electrode — ideal generator, the
+    exported two-port, a load — against the same response from the
+    solved line parameters, and the junction model file's series-RC
+    branch against the charge sweep's fit.
+
+    The two responses share every input except the file: the internal
+    one comes from the telegrapher ABCD of ``gamma``/``Z0``, the
+    reassembled one from the Touchstone S-matrix, so what the comparison
+    exercises is exactly the writers, the readers and the S-parameter
+    conversion in between. The junction file carries JSON's exact float
+    representation, so its columns are compared for equality, not
+    tolerance.
+
+    Attributes:
+        touchstone_path: The two-port file the response was rebuilt from.
+        junction_path: The junction model file that was read back.
+        freq_hz: Frequencies of both responses (Hz).
+        internal: ``V_load/V_gen`` from the solved line parameters.
+        reassembled: ``V_load/V_gen`` from the exported two-port.
+        bias_v: Biases of the junction sweep (V).
+        r_s_internal_ohm_m: Series resistance from the charge Stage.
+        r_s_file_ohm_m: Series resistance read back from the file.
+        c_j_internal_f_per_m: Junction capacitance from the charge Stage.
+        c_j_file_f_per_m: Junction capacitance read back from the file.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    touchstone_path: Path
+    junction_path: Path
+    freq_hz: NDArray[np.float64]
+    internal: NDArray[np.complex128]
+    reassembled: NDArray[np.complex128]
+    bias_v: NDArray[np.float64]
+    r_s_internal_ohm_m: NDArray[np.float64]
+    r_s_file_ohm_m: NDArray[np.float64]
+    c_j_internal_f_per_m: NDArray[np.float64]
+    c_j_file_f_per_m: NDArray[np.float64]
+
+    @property
+    def response_rel_diff(self) -> NDArray[np.float64]:
+        """``|reassembled - internal| / |internal|`` per frequency."""
+        return np.asarray(
+            np.abs(self.reassembled - self.internal) / np.abs(self.internal),
+            dtype=np.float64,
+        )
+
+    def table(self) -> str:
+        """The side-by-side comparison as a printable table."""
+        lines = [
+            "Driven response V_load/V_gen (internal vs reassembled from "
+            f"{self.touchstone_path.name}):",
+            f"{'f (GHz)':>10} {'|H| internal':>14} {'|H| files':>14} {'rel diff':>10}",
+        ]
+        lines.extend(
+            f"{freq / 1e9:>10.3f} {abs(internal):>14.6e} "
+            f"{abs(rebuilt):>14.6e} {diff:>10.2e}"
+            for freq, internal, rebuilt, diff in zip(
+                self.freq_hz,
+                self.internal,
+                self.reassembled,
+                self.response_rel_diff,
+                strict=True,
+            )
+        )
+        lines.append(f"Junction branch (charge stage vs {self.junction_path.name}):")
+        lines.append(
+            f"{'bias (V)':>10} {'R_s (ohm*m)':>14} {'C_j (F/m)':>14} {'match':>10}"
+        )
+        lines.extend(
+            f"{bias:>10.3f} {r_file:>14.6e} {c_file:>14.6e} "
+            f"{'exact' if r_file == r_int and c_file == c_int else 'DIFFERS':>10}"
+            for bias, r_int, r_file, c_int, c_file in zip(
+                self.bias_v,
+                self.r_s_internal_ohm_m,
+                self.r_s_file_ohm_m,
+                self.c_j_internal_f_per_m,
+                self.c_j_file_f_per_m,
+                strict=True,
+            )
+        )
+        return "\n".join(lines)
+
+    def __str__(self) -> str:
+        """The printable side-by-side table."""
+        return self.table()
+
+    def check(self, *, response_tol: float = 1e-8) -> ExportRoundTrip:
+        """Fail loudly where an export does not round-trip.
+
+        The driven responses agree to ``response_tol`` — the Touchstone
+        file quantizes to 12 significant digits, so the default leaves
+        three orders of margin above that floor and anything past it is
+        a real defect, not formatting. The junction columns must match
+        exactly.
+
+        Args:
+            response_tol: Largest relative driven-response difference
+                accepted at any solved frequency.
+
+        Returns:
+            This comparison, so the call chains.
+
+        Raises:
+            ValueError: Naming the diverging quantity — and where it
+                diverges — when a round-trip fails, or when the
+                responses are not finite and agreement cannot be
+                verified at all.
+        """
+        diff = self.response_rel_diff
+        finite = np.isfinite(diff)
+        if not np.all(finite):
+            # NaN compares False against any tolerance, so a NaN response
+            # (the rf stage reported no impedance, say) must fail here
+            # rather than slip through as agreement.
+            where = int(np.argmax(~finite))
+            raise ValueError(
+                "The driven response comparison is not finite at "
+                f"{self.freq_hz[where] / 1e9:g} GHz (internal "
+                f"{self.internal[where]}, reassembled "
+                f"{self.reassembled[where]}), so the round trip cannot be "
+                "verified. The rf stage will have said why its line "
+                "parameters are unusable — re-run it and read its warnings."
+            )
+        worst = int(np.argmax(diff))
+        if diff[worst] > response_tol:
+            raise ValueError(
+                "The driven response reassembled from "
+                f"{self.touchstone_path.name} differs from the line stage's "
+                f"by {diff[worst]:.3e} (relative) at "
+                f"{self.freq_hz[worst] / 1e9:g} GHz, above the "
+                f"{response_tol:g} tolerance."
+            )
+        for name, internal, read_back in (
+            ("R_s", self.r_s_internal_ohm_m, self.r_s_file_ohm_m),
+            ("C_j", self.c_j_internal_f_per_m, self.c_j_file_f_per_m),
+        ):
+            mismatch = np.nonzero(internal != read_back)[0]
+            if mismatch.size:
+                where = int(mismatch[0])
+                raise ValueError(
+                    f"The junction model's {name} read back from "
+                    f"{self.junction_path.name} differs from the charge "
+                    f"stage's at {self.bias_v[where]:g} V: "
+                    f"{read_back[where]!r} != {internal[where]!r}."
+                )
+        return self
 
 
 class LineStage(Stage):
@@ -327,6 +482,95 @@ class LineStage(Stage):
             length_m=self.length_m,
             z_ref_ohm=z_ref_ohm,
         )
+
+    def driven_response(self) -> NDArray[np.complex128]:
+        """``V_load / V_gen`` of the terminated electrode, per frequency.
+
+        The electrical response of the Traveling-wave electrode between
+        this Stage's generator and load, from the solved line parameters
+        via the telegrapher ABCD matrix, on the RF Stage's solved
+        frequencies. Runs the RF Stage first when it holds no result.
+
+        Returns:
+            The complex voltage transfer per solved frequency.
+        """
+        from gsim.common.circuit import line_driven_response
+
+        rf = self._solved_line()
+        return line_driven_response(
+            rf.gamma_per_m,
+            rf.z0_ohm,
+            length_m=self.length_m,
+            z_gen_ohm=self.z_gen_ohm,
+            z_load_ohm=self.z_load_ohm,
+        )
+
+    def verify_exports(
+        self,
+        *,
+        touchstone_path: str | Path | None = None,
+        junction_path: str | Path | None = None,
+        z_ref_ohm: float = 50.0,
+        quiet: bool = False,
+    ) -> ExportRoundTrip:
+        """Prove the exported compact models round-trip losslessly.
+
+        Writes both handoff artifacts — the electrode's Touchstone
+        two-port and the junction model file — reads them back with the
+        plain stdlib/numpy readers a consumer would use, reassembles the
+        driven line response from the files (ideal generator, the
+        two-port, this Stage's load; no circulax and no sax anywhere),
+        and puts it side by side with the same response from the solved
+        line parameters. Prints the comparison table and returns it;
+        gate on it with :meth:`ExportRoundTrip.check`.
+
+        Args:
+            touchstone_path: Where to write the two-port; the line
+                Stage's directory when omitted.
+            junction_path: Where to write the junction model; the charge
+                Stage's directory when omitted.
+            z_ref_ohm: Port reference impedance of the exported
+                S-parameters (ohm, real).
+            quiet: Skip printing the table.
+
+        Returns:
+            The side-by-side comparison.
+        """
+        from gsim.common.circuit import (
+            read_junction_model,
+            read_touchstone,
+            terminated_response,
+        )
+
+        study = self._require_study()
+        touchstone = self.export_touchstone(touchstone_path, z_ref_ohm=z_ref_ohm)
+        junction = study.charge.export_junction_model(junction_path)
+
+        two_port = read_touchstone(touchstone)
+        model = read_junction_model(junction)
+        sweep = study.charge.run()
+        branch = sweep.junction_branch()
+
+        comparison = ExportRoundTrip(
+            touchstone_path=touchstone,
+            junction_path=junction,
+            freq_hz=two_port.freq_hz,
+            internal=self.driven_response(),
+            reassembled=terminated_response(
+                two_port.s,
+                z_ref_ohm=two_port.z_ref_ohm,
+                z_gen_ohm=self.z_gen_ohm,
+                z_load_ohm=self.z_load_ohm,
+            ),
+            bias_v=sweep.voltages,
+            r_s_internal_ohm_m=np.asarray(branch.r_s_ohm_m, dtype=np.float64),
+            r_s_file_ohm_m=model.r_s_ohm_m,
+            c_j_internal_f_per_m=np.asarray(branch.c_j_f_per_m, dtype=np.float64),
+            c_j_file_f_per_m=model.c_j_f_per_m,
+        )
+        if not quiet:
+            print(comparison.table())  # noqa: T201
+        return comparison
 
     # ------------------------------------------------------------------
     # Solve

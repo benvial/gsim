@@ -149,3 +149,36 @@ class TestJunctionBranch:
         assert c_j == pytest.approx(sweep.capacitance_f_per_m, rel=0.05)
         # Reverse bias (positive on the cathode) depletes the junction.
         assert np.all(np.diff(c_j) < 0.0)
+
+
+@pytest.mark.tcad_local
+class TestJunctionModelExport:
+    def test_the_demo_sweep_round_trips_through_the_model_file(self, tmp_path):
+        """Ticket: the exported file reconstructs the sweep's fit exactly."""
+        pytest.importorskip("devsim")
+        from gsim.common.circuit import read_junction_model
+
+        demo = build_demo()
+        component, stack = demo.component, demo.stack
+        study = Study(
+            component=component,
+            stack=stack,
+            device=Device(
+                p_regions=["p_rib", "p_pad"],
+                n_regions=["n_rib", "n_pad"],
+            ),
+            output_dir=tmp_path,
+        )
+        study.charge(biases=[0.0, 1.0, 2.0])
+
+        path = study.charge.export_junction_model()
+        model = read_junction_model(path)
+
+        sweep = study.charge.run()
+        r_s, c_j = sweep.junction_branch()
+        assert path == study.stage_dir("charge") / "junction.json"
+        assert model.contact == "cathode"
+        assert model.freq_hz == sweep.points[0].admittance_freq_hz
+        assert model.bias_v.tolist() == sweep.voltages.tolist()
+        assert model.r_s_ohm_m.tolist() == list(r_s)
+        assert model.c_j_f_per_m.tolist() == list(c_j)

@@ -213,3 +213,226 @@ class TestSaxLineModel:
         z0 += 10.0
 
         np.testing.assert_allclose(model()[("o2", "o1")], before, rtol=1e-12)
+
+
+class TestJunctionModelFile:
+    """The junction compact model round-trips through its JSON file."""
+
+    BIAS = np.asarray([0.0, 0.5, 1.0, 2.0])
+    # Deliberately awkward floats: exact round-trip is the contract.
+    R_S = np.asarray([1.2345678901234e-4, 1.1e-4, 0.9e-4, 1.0 / 3.0 * 1e-4])
+    C_J = np.asarray([3.3e-10, 2.9e-10, 2.6e-10, 2.2e-10])
+
+    def write(self, path, **overrides):
+        from gsim.common.circuit import write_junction_model
+
+        kwargs = dict(
+            bias_v=self.BIAS,
+            r_s_ohm_m=self.R_S,
+            c_j_f_per_m=self.C_J,
+            contact="cathode",
+            freq_hz=1e9,
+            provenance={"generator": "gsim test", "temperature_k": 300.0},
+        )
+        kwargs.update(overrides)
+        return write_junction_model(path, **kwargs)
+
+    def test_the_file_round_trips_exactly(self, tmp_path):
+        from gsim.common.circuit import read_junction_model
+
+        path = self.write(tmp_path / "junction.json")
+        model = read_junction_model(path)
+
+        assert model.bias_v.tolist() == self.BIAS.tolist()
+        assert model.r_s_ohm_m.tolist() == self.R_S.tolist()
+        assert model.c_j_f_per_m.tolist() == self.C_J.tolist()
+        assert model.contact == "cathode"
+        assert model.freq_hz == 1e9
+        assert model.provenance["temperature_k"] == 300.0
+
+    def test_the_file_is_plain_json_with_units(self, tmp_path):
+        import json
+
+        payload = json.loads(self.write(tmp_path / "junction.json").read_text())
+
+        assert payload["format"] == "gsim-junction-model"
+        assert payload["version"] == 1
+        assert payload["units"]["c_j_f_per_m"] == "F/m"
+        assert payload["units"]["r_s_ohm_m"] == "ohm*m"
+        assert payload["contact"] == "cathode"
+
+    def test_the_json_suffix_is_added(self, tmp_path):
+        assert self.write(tmp_path / "junction").suffix == ".json"
+
+    def test_a_dotted_stem_keeps_its_name(self, tmp_path):
+        assert self.write(tmp_path / "sweep.2026-09").name == "sweep.2026-09.json"
+
+    def test_mismatched_columns_are_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="per bias point"):
+            self.write(tmp_path / "junction.json", r_s_ohm_m=self.R_S[:-1])
+
+    def test_an_empty_sweep_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="non-empty"):
+            self.write(
+                tmp_path / "junction.json",
+                bias_v=[],
+                r_s_ohm_m=[],
+                c_j_f_per_m=[],
+            )
+
+    def test_a_nonpositive_fit_frequency_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="freq_hz"):
+            self.write(tmp_path / "junction.json", freq_hz=0.0)
+
+    def test_a_foreign_file_is_refused_by_name(self, tmp_path):
+        from gsim.common.circuit import read_junction_model
+
+        path = tmp_path / "other.json"
+        path.write_text('{"format": "something-else"}')
+
+        with pytest.raises(ValueError, match="gsim-junction-model"):
+            read_junction_model(path)
+
+    def test_a_newer_schema_version_is_refused(self, tmp_path):
+        import json
+
+        from gsim.common.circuit import read_junction_model
+
+        path = self.write(tmp_path / "junction.json")
+        payload = json.loads(path.read_text())
+        payload["version"] = 99
+        path.write_text(json.dumps(payload))
+
+        with pytest.raises(ValueError, match="version"):
+            read_junction_model(path)
+
+
+class TestTouchstoneReader:
+    def test_what_gsim_writes_reads_back(self, tmp_path):
+        from gsim.common.circuit import read_touchstone
+
+        gamma, z0 = lossy_line()
+        s = line_smatrix(gamma, z0, length_m=LENGTH_M, z_ref_ohm=Z_REF)
+        path = write_touchstone(
+            tmp_path / "line.s2p",
+            freq_hz=FREQ_HZ,
+            s=s,
+            z_ref_ohm=Z_REF,
+            comments=["length_m = 0.003"],
+        )
+
+        two_port = read_touchstone(path)
+
+        np.testing.assert_allclose(two_port.freq_hz, FREQ_HZ, rtol=1e-12)
+        np.testing.assert_allclose(two_port.s, s, rtol=1e-10, atol=1e-15)
+        assert two_port.z_ref_ohm == Z_REF
+        assert "length_m = 0.003" in two_port.comments
+
+    def test_other_touchstone_flavors_are_refused(self, tmp_path):
+        from gsim.common.circuit import read_touchstone
+
+        path = tmp_path / "ghz.s2p"
+        path.write_text("# GHz S MA R 50\n1.0 1 0 0 0 0 0 1 0\n")
+
+        with pytest.raises(ValueError, match="Hz S RI"):
+            read_touchstone(path)
+
+    def test_a_malformed_row_is_refused(self, tmp_path):
+        from gsim.common.circuit import read_touchstone
+
+        path = tmp_path / "short.s2p"
+        path.write_text("# Hz S RI R 50\n1e9 1 0 0\n")
+
+        with pytest.raises(ValueError, match="columns"):
+            read_touchstone(path)
+
+
+class TestDrivenResponse:
+    """V_load/V_gen from the ABCD chain, checked against closed forms."""
+
+    def test_matched_everything_halves_and_delays(self):
+        from gsim.common.circuit import line_driven_response
+
+        gamma, _ = lossy_line()
+        h = line_driven_response(
+            gamma, Z_REF, length_m=LENGTH_M, z_gen_ohm=Z_REF, z_load_ohm=Z_REF
+        )
+
+        # Generator divider gives 1/2; the line only delays and attenuates.
+        np.testing.assert_allclose(h, 0.5 * np.exp(-gamma * LENGTH_M), rtol=1e-12)
+
+    def test_the_quarter_wave_closed_form(self):
+        from gsim.common.circuit import line_driven_response
+
+        # A lossless quarter-wave line: A = D = 0, B = j Z0, C = j / Z0,
+        # so H = Z_L Z0 / (j (Z0^2 + Z_g Z_L)).
+        z0, z_gen, z_load = 60.0, 50.0, 75.0
+        freq = 10e9
+        beta = 2.0 * np.pi * freq / 299792458.0
+        length = (np.pi / 2.0) / beta
+
+        h = line_driven_response(
+            np.asarray([1j * beta]),
+            z0,
+            length_m=length,
+            z_gen_ohm=z_gen,
+            z_load_ohm=z_load,
+        )
+
+        expected = z_load * z0 / (1j * (z0**2 + z_gen * z_load))
+        np.testing.assert_allclose(h[0], expected, rtol=1e-12)
+
+    def test_the_smatrix_route_agrees_with_the_telegrapher_route(self):
+        from gsim.common.circuit import line_driven_response, terminated_response
+
+        gamma, z0 = lossy_line()
+        z_gen, z_load = 40.0 + 5.0j, 65.0 - 3.0j
+
+        s = line_smatrix(gamma, z0, length_m=LENGTH_M, z_ref_ohm=Z_REF)
+        via_s = terminated_response(
+            s, z_ref_ohm=Z_REF, z_gen_ohm=z_gen, z_load_ohm=z_load
+        )
+        direct = line_driven_response(
+            gamma, z0, length_m=LENGTH_M, z_gen_ohm=z_gen, z_load_ohm=z_load
+        )
+
+        np.testing.assert_allclose(via_s, direct, rtol=1e-10)
+
+    def test_a_complex_reference_is_refused(self):
+        from gsim.common.circuit import terminated_response
+
+        s = np.zeros((3, 2, 2), dtype=np.complex128)
+        s[:, 0, 1] = s[:, 1, 0] = 1.0
+
+        with pytest.raises(ValueError, match="real"):
+            terminated_response(s, z_ref_ohm=50 + 1j)  # type: ignore[arg-type]
+
+    def test_a_wrongly_shaped_smatrix_is_refused(self):
+        from gsim.common.circuit import terminated_response
+
+        with pytest.raises(ValueError, match="2, 2"):
+            terminated_response(np.zeros((3, 3)))
+
+    def test_a_zero_transmission_two_port_is_refused(self):
+        from gsim.common.circuit import terminated_response
+
+        s = np.zeros((3, 2, 2), dtype=np.complex128)
+
+        with pytest.raises(ValueError, match="S21"):
+            terminated_response(s)
+
+    def test_a_repeated_option_line_does_not_override_the_reference(self, tmp_path):
+        from gsim.common.circuit import read_touchstone
+
+        path = tmp_path / "echoed.s2p"
+        path.write_text("# Hz S RI R 50\n1e9 0 0 1 0 1 0 0 0\n# Hz S RI R 75\n")
+
+        assert read_touchstone(path).z_ref_ohm == 50.0
+
+    def test_a_dotted_stem_keeps_its_name(self, tmp_path):
+        gamma, z0 = lossy_line()
+        s = line_smatrix(gamma, z0, length_m=LENGTH_M)
+
+        path = write_touchstone(tmp_path / "line.v2", freq_hz=FREQ_HZ, s=s)
+
+        assert path.name == "line.v2.s2p"

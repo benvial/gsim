@@ -64,7 +64,7 @@ from gsim.modulator.layout import (
     Span,
     derive_layout,
 )
-from gsim.modulator.line import LineStage
+from gsim.modulator.line import ExportRoundTrip, LineStage
 from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
 from gsim.modulator.preset import pn_phase_shifter
 from gsim.modulator.rf import RFStage
@@ -87,6 +87,7 @@ __all__ = [
     "Device",
     "DeviceLayout",
     "EMRoute",
+    "ExportRoundTrip",
     "Interface",
     "LineStage",
     "MaterialResponse",

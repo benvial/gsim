@@ -101,3 +101,34 @@ def biased(study):
     )
     study.charge._has_run = True
     return study
+
+
+#: Frequency the canned small-signal admittances are fitted at (Hz).
+JUNCTION_FREQ_HZ = 1e9
+
+#: Canned series-RC junction branch per bias: (bias_v, r_s_ohm_m, c_j_f_per_m).
+JUNCTION_BRANCH = [
+    (0.0, 1.2e-4, 3.3e-10),
+    (1.0, 1.1e-4, 2.8e-10),
+    (2.0, 1.0e-4, 2.4e-10),
+]
+
+
+def admittance_point(bias_v: float, r_s_ohm_m: float, c_j_f_per_m: float) -> BiasPoint:
+    """A Bias point whose admittance is exactly the given series RC."""
+    omega = 2.0 * np.pi * JUNCTION_FREQ_HZ
+    y_per_m = 1.0 / (r_s_ohm_m - 1j / (omega * c_j_f_per_m))
+    return BiasPoint(
+        bias_v=bias_v,
+        carriers=carriers_at(bias_v),
+        admittance_s_per_cm=y_per_m / 1e2,
+        admittance_freq_hz=JUNCTION_FREQ_HZ,
+    )
+
+
+def junction_sweep() -> BiasSweepResult:
+    """A canned sweep carrying the series-RC admittances per Bias point."""
+    return BiasSweepResult(
+        contact="cathode",
+        points=[admittance_point(*values) for values in JUNCTION_BRANCH],
+    )

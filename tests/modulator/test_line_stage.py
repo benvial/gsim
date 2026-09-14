@@ -425,3 +425,95 @@ class TestTwoPortExport:
         path = solved.line.export_touchstone(tmp_path / "line.s2p")
 
         assert "! length_m = 0.005" in path.read_text().splitlines()
+
+
+class TestExportRoundTrip:
+    """The handoff artifacts reassemble to the Study's own answers."""
+
+    @pytest.fixture
+    def exported(self, solved, monkeypatch):
+        """A Study whose EM and charge Stages answer from canned results."""
+        from gsim.modulator.charge import ChargeStage
+
+        from .conftest import junction_sweep
+
+        monkeypatch.setattr(ChargeStage, "_solve", lambda _stage: junction_sweep())
+        solved.line(n_group=N_GROUP, z_load_ohm=45.0, z_gen_ohm=50.0)
+        return solved
+
+    def test_the_reassembled_response_matches_the_internal_one(self, exported):
+        comparison = exported.line.verify_exports(quiet=True)
+
+        assert comparison.check() is comparison
+        assert np.max(comparison.response_rel_diff) < 1e-8
+        np.testing.assert_allclose(comparison.freq_hz, RF_FREQS, rtol=1e-12)
+
+    def test_the_junction_file_matches_the_charge_stage_exactly(self, exported):
+        comparison = exported.line.verify_exports(quiet=True)
+
+        assert (
+            comparison.r_s_file_ohm_m.tolist() == comparison.r_s_internal_ohm_m.tolist()
+        )
+        assert (
+            comparison.c_j_file_f_per_m.tolist()
+            == comparison.c_j_internal_f_per_m.tolist()
+        )
+
+    def test_the_command_prints_the_side_by_side_table(self, exported, capsys):
+        exported.line.verify_exports()
+
+        out = capsys.readouterr().out
+        assert "internal" in out
+        assert "rel diff" in out
+        assert "Junction branch" in out
+        assert "exact" in out
+
+    def test_the_internal_response_follows_the_terminations(self, exported):
+        from gsim.common.circuit import line_driven_response
+
+        rf = rf_params()
+        expected = line_driven_response(
+            rf.gamma_per_m,
+            rf.z0_ohm,
+            length_m=exported.line.length_m,
+            z_gen_ohm=50.0,
+            z_load_ohm=45.0,
+        )
+        np.testing.assert_allclose(exported.line.driven_response(), expected)
+
+    def test_the_files_land_in_the_stage_directories_by_default(self, exported):
+        comparison = exported.line.verify_exports(quiet=True)
+
+        assert comparison.touchstone_path == (
+            exported.stage_dir("line") / "electrode.s2p"
+        )
+        assert comparison.junction_path == (
+            exported.stage_dir("charge") / "junction.json"
+        )
+
+    def test_a_diverging_response_names_the_quantity_and_frequency(self, exported):
+        comparison = exported.line.verify_exports(quiet=True)
+        comparison.reassembled = comparison.reassembled * 1.01
+
+        with pytest.raises(ValueError, match=r"[Dd]riven response.*GHz"):
+            comparison.check()
+
+    def test_a_diverging_junction_column_names_the_bias(self, exported):
+        comparison = exported.line.verify_exports(quiet=True)
+        tampered = comparison.c_j_file_f_per_m.copy()
+        tampered[1] *= 1.001
+        comparison.c_j_file_f_per_m = tampered
+
+        with pytest.raises(ValueError, match=r"C_j.*1 V"):
+            comparison.check()
+
+    def test_a_nan_response_fails_the_check_rather_than_passing(self, exported):
+        # NaN compares False against any tolerance; the gate must not
+        # read that as agreement.
+        comparison = exported.line.verify_exports(quiet=True)
+        tampered = comparison.internal.copy()
+        tampered[0] = complex(float("nan"), float("nan"))
+        comparison.internal = tampered
+
+        with pytest.raises(ValueError, match="not finite"):
+            comparison.check()

@@ -129,3 +129,43 @@ permittivity and the doping-profile geometry builders.
 ::: gsim.common.viz.export_3d_mesh
     options:
       show_source: false
+
+## Circuit export
+
+The compact-model handoff to circuit simulators: the Traveling-wave
+electrode as a two-port, the junction as a tabulated series-RC model
+file, and the plain-numpy readers and driven-line responses that prove
+the round trip. The junction model file format is specified in
+`write_junction_model`.
+
+::: gsim.common.circuit.line_smatrix
+    options:
+      show_source: false
+
+::: gsim.common.circuit.write_touchstone
+    options:
+      show_source: false
+
+::: gsim.common.circuit.read_touchstone
+    options:
+      show_source: false
+
+::: gsim.common.circuit.sax_line_model
+    options:
+      show_source: false
+
+::: gsim.common.circuit.write_junction_model
+    options:
+      show_source: false
+
+::: gsim.common.circuit.read_junction_model
+    options:
+      show_source: false
+
+::: gsim.common.circuit.terminated_response
+    options:
+      show_source: false
+
+::: gsim.common.circuit.line_driven_response
+    options:
+      show_source: false

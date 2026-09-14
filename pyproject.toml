@@ -291,6 +291,9 @@ select = ["ALL"]
   "SLF001",  # private-member-access
   "T201",  # print
 ]
+"samples/*.py" = [
+  "T201",  # print (samples are runnable demonstrations)
+]
 "scripts/*.py" = [
   "ANN",  # flake8-annotations
   "ARG001",  # unused-function-argument

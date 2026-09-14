@@ -174,3 +174,73 @@ class TestRun:
         out = capsys.readouterr().out.splitlines()
         assert len(out) == 2
         assert all("charge" in line for line in out)
+
+
+class TestJunctionModelExport:
+    """The sweep's junction branch leaves the Study as a model file."""
+
+    @pytest.fixture
+    def swept(self, study, monkeypatch):
+        """A Study whose charge Stage answers from the canned sweep."""
+        from .conftest import junction_sweep
+
+        solves = {"charge": 0}
+
+        def solve(_stage):
+            solves["charge"] += 1
+            return junction_sweep()
+
+        monkeypatch.setattr("gsim.modulator.charge.ChargeStage._solve", solve)
+        study.solves = solves
+        return study
+
+    def test_the_file_matches_the_stage_exactly(self, swept, tmp_path):
+        from gsim.common.circuit import read_junction_model
+
+        path = swept.charge.export_junction_model(tmp_path / "junction.json")
+        model = read_junction_model(path)
+
+        branch = swept.charge.run().junction_branch()
+        assert model.bias_v.tolist() == swept.charge.run().voltages.tolist()
+        assert model.r_s_ohm_m.tolist() == list(branch.r_s_ohm_m)
+        assert model.c_j_f_per_m.tolist() == list(branch.c_j_f_per_m)
+
+    def test_the_contact_and_settings_are_recorded(self, swept, tmp_path):
+        from gsim.common.circuit import read_junction_model
+
+        from .conftest import JUNCTION_FREQ_HZ
+
+        model = read_junction_model(
+            swept.charge.export_junction_model(tmp_path / "junction.json")
+        )
+
+        assert model.contact == "cathode"
+        assert model.freq_hz == JUNCTION_FREQ_HZ
+        assert model.provenance["temperature_k"] == swept.charge.temperature
+        assert model.provenance["generator"].startswith("gsim ")
+
+    def test_without_a_path_it_lands_in_the_charge_stage_directory(self, swept):
+        path = swept.charge.export_junction_model()
+
+        assert path == swept.stage_dir("charge") / "junction.json"
+        assert path.exists()
+
+    def test_the_export_runs_the_stage_first(self, swept, tmp_path):
+        assert swept.charge.has_run is False
+
+        swept.charge.export_junction_model(tmp_path / "junction.json")
+
+        assert swept.charge.has_run is True
+        assert swept.solves == {"charge": 1}
+
+    def test_a_sweep_without_admittances_is_an_actionable_error(self, biased, tmp_path):
+        # The canned `biased` fixture predates the small-signal solve.
+        with pytest.raises(ValueError, match="admittance"):
+            biased.charge.export_junction_model(tmp_path / "junction.json")
+
+    def test_mixed_fit_frequencies_are_refused(self, swept, tmp_path):
+        sweep = swept.charge.run()
+        sweep.points[-1].admittance_freq_hz = 2e9
+
+        with pytest.raises(ValueError, match="one fit frequency"):
+            swept.charge.export_junction_model(tmp_path / "junction.json")

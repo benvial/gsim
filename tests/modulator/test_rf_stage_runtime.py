@@ -54,12 +54,30 @@ def depletion_carriers(bias_v: float) -> CarrierMap:
     )
 
 
+#: Frequency the synthetic small-signal admittances are fitted at (Hz).
+JUNCTION_FREQ_HZ = 1e9
+
+
+def junction_admittance_per_cm(bias_v: float) -> complex:
+    """A series-RC admittance whose capacitance falls with reverse bias."""
+    r_s_ohm_m = 1.1e-4
+    c_j_f_per_m = 3.0e-10 / np.sqrt(1.0 + abs(bias_v))
+    omega = 2.0 * np.pi * JUNCTION_FREQ_HZ
+    return 1.0 / (r_s_ohm_m - 1j / (omega * c_j_f_per_m)) / 1e2
+
+
 def canned_sweep(biases) -> BiasSweepResult:
-    """A Bias sweep of synthetic Carrier maps."""
+    """A Bias sweep of synthetic Carrier maps and series-RC admittances."""
     return BiasSweepResult(
         contact="cathode",
         points=[
-            BiasPoint(bias_v=bias, carriers=depletion_carriers(bias)) for bias in biases
+            BiasPoint(
+                bias_v=bias,
+                carriers=depletion_carriers(bias),
+                admittance_s_per_cm=junction_admittance_per_cm(bias),
+                admittance_freq_hz=JUNCTION_FREQ_HZ,
+            )
+            for bias in biases
         ],
     )
 
@@ -367,6 +385,15 @@ class TestTwoPortExport:
         assert s21.shape == (7,)
         assert np.all(np.isfinite(s21))
         assert np.all(np.abs(s21) <= 1.0 + 1e-9)
+
+    def test_the_exports_round_trip_on_the_real_solve(self, solved):
+        """Ticket: the handoff reassembles to the Study's own answers."""
+        study, _ = solved
+
+        comparison = study.line.verify_exports(quiet=True)
+
+        assert comparison.check() is comparison
+        assert comparison.freq_hz == pytest.approx(FREQS_HZ)
 
 
 @pytest.fixture(scope="module")
