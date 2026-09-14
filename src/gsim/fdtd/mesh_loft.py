@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from math import hypot
 from typing import Any
 
@@ -152,6 +153,34 @@ def _align_ring_to_ports(
     return [(point[0], point[1]) for point in aligned_coordinates]
 
 
+def _ports_on_polygon(
+    polygon: Polygon,
+    ports: list[ResolvedPort],
+) -> list[ResolvedPort]:
+    """Return ports whose two edge endpoints are vertices of this polygon."""
+    coordinates = _ring_coordinates(polygon)
+    tolerance_um = GEOMETRY_TOLERANCE_NM / UM_TO_NM
+    matched_ports = []
+    for port in ports:
+        normal_axis = next(
+            axis for axis, component in enumerate(port.normal) if component
+        )
+        transverse_axis = 1 - normal_axis
+        matching_vertices = [
+            point
+            for point in coordinates
+            if abs(point[normal_axis] - port.center[normal_axis]) <= tolerance_um
+            and abs(
+                abs(point[transverse_axis] - port.center[transverse_axis])
+                - port.width / 2
+            )
+            <= tolerance_um
+        ]
+        if matching_vertices:
+            matched_ports.append(port)
+    return matched_ports
+
+
 def loft_section_polygons(
     layer: ResolvedLayer,
     ports: list[ResolvedPort],
@@ -238,20 +267,46 @@ def add_layer_volumes(
     layer: ResolvedLayer,
     ports: list[ResolvedPort],
     *,
-    nanometers_per_cell: float,
+    geometry_tolerance_nm: float,
 ) -> list[int]:
-    """Create a continuous sidewall loft, with stepped topology fallback."""
+    """Loft compatible polygon members, with a stepped fallback per member."""
     _validate_layer(layer)
-    try:
-        section_polygons = loft_section_polygons(layer, ports)
-    except LoftIncompatibleError:
+    polygons = iter_polygons(layer.geometry, layer_key=layer.key)
+    polygon_ports = [_ports_on_polygon(polygon, ports) for polygon in polygons]
+    assigned_port_names = {
+        port.name for matched_ports in polygon_ports for port in matched_ports
+    }
+    if assigned_port_names != {port.name for port in ports}:
         return _add_stepped_layer_volumes(
             kernel,
             layer,
             ports,
-            nanometers_per_cell=nanometers_per_cell,
+            geometry_tolerance_nm=geometry_tolerance_nm,
         )
-    return _add_lofted_layer_volumes(kernel, layer, section_polygons)
+
+    volume_tags = []
+    for polygon, matched_ports in zip(polygons, polygon_ports, strict=True):
+        polygon_layer = replace(layer, geometry=polygon)
+        try:
+            section_polygons = loft_section_polygons(polygon_layer, matched_ports)
+        except LoftIncompatibleError:
+            volume_tags.extend(
+                _add_stepped_layer_volumes(
+                    kernel,
+                    polygon_layer,
+                    matched_ports,
+                    geometry_tolerance_nm=geometry_tolerance_nm,
+                )
+            )
+        else:
+            volume_tags.extend(
+                _add_lofted_layer_volumes(
+                    kernel,
+                    polygon_layer,
+                    section_polygons,
+                )
+            )
+    return volume_tags
 
 
 __all__ = ["add_layer_volumes", "loft_section_polygons"]

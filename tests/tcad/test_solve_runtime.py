@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gsim.common.stack.junction import PNJunctionConfig
+from gsim.common.stack.pn_junction import PNJunctionConfig
 from gsim.tcad import ChargeTransportSim, StepDoping
 from gsim.tcad.validation import compare_capacitance, estimate_depletion_width_um
 

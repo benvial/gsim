@@ -14,8 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from gsim.common.cross_section import build_doped_cross_section
-from gsim.common.stack.doping import make_pn_junction_profile
-from gsim.common.stack.junction import PNJunctionConfig
+from gsim.common.stack.pn_junction import PNJunctionConfig, make_pn_junction_profile
 from gsim.palace import BoundaryModeSim
 from gsim.palace.models import ContactSpec
 

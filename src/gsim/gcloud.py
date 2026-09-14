@@ -553,11 +553,34 @@ def _fetch_and_print_logs(
     return cursor
 
 
+def estimate_runtime_seconds(input_dir: str | Path) -> float:
+    """Estimate cloud solver runtime from the generated mesh/input size.
+
+    Mesh size is the best solver-agnostic proxy available before execution:
+    finer meshes produce larger discretized systems and generally take longer.
+    The estimate deliberately excludes cloud-queue time.  It is a heuristic,
+    not a scheduling guarantee, and is refined as the solver runs.
+    """
+    directory = Path(input_dir)
+    sizes = [
+        path.stat().st_size
+        for path in directory.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".msh", ".mesh"}
+    ]
+    input_bytes = sum(
+        path.stat().st_size for path in directory.rglob("*") if path.is_file()
+    )
+    size_bytes = max([input_bytes, *sizes])
+    size_mb = size_bytes / (1024 * 1024)
+    return 60.0 + 45.0 * max(size_mb, 0.1) ** 0.75
+
+
 def wait_for_results(
     *job_ids: str,
     verbose: Literal["quiet", "status", "full"] = "status",
     parent_dir: str | Path | None = None,
     poll_interval: float = 5.0,
+    estimated_runtime_seconds: float | None = None,
 ) -> Any:
     """Wait for one or more jobs to finish, then download and parse results.
 
@@ -577,6 +600,9 @@ def wait_for_results(
             ``"full"`` — stream solver logs live (timestamps stripped).
         parent_dir: Where to create sim-data directories (default: cwd).
         poll_interval: Seconds between status polls (default 5.0).
+        estimated_runtime_seconds: Expected solver runtime, excluding queue
+            time. When provided, status output includes an estimated percent
+            complete and remaining time.
 
     Returns:
         Parsed result (single job) or list of parsed results (multiple jobs).
@@ -623,7 +649,11 @@ def wait_for_results(
     while not all(_status_value(j.status) in terminal for j in jobs.values()):
         if verbose == "status":
             prev_lines = _print_status_table(
-                jobs, start_times, prev_lines, end_times=end_times
+                jobs,
+                start_times,
+                prev_lines,
+                end_times=end_times,
+                estimated_runtime_seconds=estimated_runtime_seconds,
             )
 
         time.sleep(poll_interval)
@@ -654,7 +684,12 @@ def wait_for_results(
     # Final status display — skip clear_output when logs were streamed
     if verbose == "status":
         _print_status_table(
-            jobs, start_times, prev_lines, end_times=end_times, final=True
+            jobs,
+            start_times,
+            prev_lines,
+            end_times=end_times,
+            final=True,
+            estimated_runtime_seconds=estimated_runtime_seconds,
         )
 
     # Download + parse all
@@ -698,6 +733,7 @@ def _print_status_table(
     *,
     end_times: dict[str, float] | None = None,
     final: bool = False,
+    estimated_runtime_seconds: float | None = None,
 ) -> int:
     """Print job status, updating in place.
 
@@ -733,14 +769,46 @@ def _print_status_table(
         mins, secs = divmod(int(t), 60)
         return f"{mins}m {secs:02d}s"
 
+    def _progress(jid: str, job: Any) -> tuple[int, str]:
+        """Return a conservative lifecycle-based completion estimate.
+
+        The cloud API reports lifecycle states but not solver iteration counts.
+        When an input-size estimate is available, use its elapsed fraction for
+        the running phase; otherwise show only conservative lifecycle progress.
+        """
+        status = _status_value(job.status).casefold()
+        if status == "completed":
+            return 100, "complete"
+        if status == "failed":
+            return 100, "failed"
+        if status == "running":
+            if estimated_runtime_seconds is not None:
+                elapsed = time.monotonic() - start_times[jid]
+                percent = min(99, round(100 * elapsed / estimated_runtime_seconds))
+                remaining = max(0, estimated_runtime_seconds - elapsed)
+                mins, secs = divmod(round(remaining), 60)
+                return percent, f"running, ETA {mins}m {secs:02d}s"
+            return 50, "running"
+        if status == "queued":
+            return 15, "queued"
+        return 5, status or "starting"
+
+    def _bar(percent: int, width: int = 20) -> str:
+        filled = round(width * percent / 100)
+        return f"[{'#' * filled}{'.' * (width - filled)}] {percent:3d}%"
+
     lines_printed = 0
     n = len(jobs)
 
     if n == 1:
         jid, job = next(iter(jobs.items()))
-        msg = f"  {job.job_name or jid}  {_status_value(job.status)}  {_elapsed(jid)}"
+        percent, phase = _progress(jid, job)
+        msg = (
+            f"  {job.job_name or jid}  {_bar(percent)}  {phase}"
+            f"  elapsed {_elapsed(jid)}"
+        )
         if mode == "tty":
-            sys.stdout.write(f"\r{msg:<60s}")
+            sys.stdout.write(f"\r{msg:<80s}")
             if final:
                 sys.stdout.write("\n")
         else:
@@ -752,8 +820,11 @@ def _print_status_table(
     print(f"Waiting for {n} jobs...")  # noqa: T201
     lines_printed += 1
     for jid, job in jobs.items():
-        status = _status_value(job.status)
-        line = f"  {job.job_name or jid:<30s} {status:<12s} {_elapsed(jid)}"
+        percent, phase = _progress(jid, job)
+        line = (
+            f"  {job.job_name or jid:<30s} {_bar(percent)} {phase:<12s}"
+            f" elapsed {_elapsed(jid)}"
+        )
         print(line)  # noqa: T201
         lines_printed += 1
 

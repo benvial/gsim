@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from math import dist
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +12,6 @@ import gmsh
 from gsim.common.pdk import ResolvedLayer, ResolvedPassivePcell, ResolvedPort
 from gsim.fdtd.mesh_geometry import GEOMETRY_TOLERANCE_NM, UM_TO_NM
 from gsim.fdtd.mesh_loft import add_layer_volumes
-from gsim.fdtd.mesh_sizing import (
-    geometry_aware_sizing,
-    install_geometry_aware_mesh_field,
-)
 from gsim.fdtd.mesh_validation import validate_mesh
 from gsim.fdtd.models import (
     FDTDGeometryError,
@@ -26,6 +23,8 @@ from gsim.fdtd.models import (
 _GMSH_OPTIONS_CHANGED = (
     "General.Terminal",
     "Mesh.Binary",
+    "Mesh.Algorithm",
+    "Mesh.Algorithm3D",
     "Mesh.ElementOrder",
     "Mesh.MeshSizeExtendFromBoundary",
     "Mesh.MeshSizeFromCurvature",
@@ -67,8 +66,12 @@ def background_bounds_nm(
     resolved: ResolvedPassivePcell,
     background_material: str,
     padding_um: float,
+    *,
+    x_bounds: tuple[float, float] | None = None,
+    y_bounds: tuple[float, float] | None = None,
+    z_bounds: tuple[float, float] | None = None,
 ) -> tuple[float, float, float, float, float, float]:
-    """Build a port-aligned background box from PDK and component bounds."""
+    """Build a port-aligned background box from PDK and optional axis bounds."""
     lower, upper = resolved.bounds
     port_axes = {
         next(index for index, value in enumerate(port.normal) if value)
@@ -78,28 +81,63 @@ def background_bounds_nm(
     x_padding = 0.0 if 0 in port_axes else padding_um
     y_padding = 0.0 if 1 in port_axes else padding_um
 
-    background_z_bounds = []
-    for level in resolved.layer_stack.layers.values():
-        if level.material != background_material or level.thickness == 0:
-            continue
-        level_zmax = float(level.zmin + level.thickness)
-        background_z_bounds.append(
-            (min(float(level.zmin), level_zmax), max(float(level.zmin), level_zmax))
-        )
-    if background_z_bounds:
-        z_lower = min(lower[2], *(bounds[0] for bounds in background_z_bounds))
-        z_upper = max(upper[2], *(bounds[1] for bounds in background_z_bounds))
+    if z_bounds is not None:
+        z_lower, z_upper = z_bounds
     else:
-        z_lower = lower[2] - padding_um
-        z_upper = upper[2] + padding_um
+        background_z_bounds = []
+        for level in resolved.layer_stack.layers.values():
+            if level.material != background_material or level.thickness == 0:
+                continue
+            level_zmax = float(level.zmin + level.thickness)
+            background_z_bounds.append(
+                (
+                    min(float(level.zmin), level_zmax),
+                    max(float(level.zmin), level_zmax),
+                )
+            )
+        if background_z_bounds:
+            z_lower = min(lower[2], *(bounds[0] for bounds in background_z_bounds))
+            z_upper = max(upper[2], *(bounds[1] for bounds in background_z_bounds))
+        else:
+            z_lower = lower[2] - padding_um
+            z_upper = upper[2] + padding_um
+
+    automatic_bounds = (
+        lower[0] - x_padding,
+        lower[1] - y_padding,
+        z_lower,
+        upper[0] + x_padding,
+        upper[1] + y_padding,
+        z_upper,
+    )
+    explicit_bounds = (x_bounds, y_bounds, z_bounds)
+    final_bounds = list(automatic_bounds)
+    for axis, (axis_name, requested_bounds) in enumerate(
+        zip(("x", "y", "z"), explicit_bounds, strict=True)
+    ):
+        if requested_bounds is None:
+            continue
+        requested_lower, requested_upper = requested_bounds
+        if requested_lower >= requested_upper:
+            raise FDTDGeometryError(
+                f"domain.{axis_name}_bounds lower bound must be smaller than "
+                "its upper bound."
+            )
+        if requested_lower > lower[axis] or requested_upper < upper[axis]:
+            raise FDTDGeometryError(
+                f"domain.{axis_name}_bounds {requested_bounds} must contain "
+                f"the geometry bounds ({lower[axis]}, {upper[axis]})."
+            )
+        final_bounds[axis] = requested_lower
+        final_bounds[axis + 3] = requested_upper
 
     return (
-        (lower[0] - x_padding) * UM_TO_NM,
-        (lower[1] - y_padding) * UM_TO_NM,
-        z_lower * UM_TO_NM,
-        (upper[0] + x_padding) * UM_TO_NM,
-        (upper[1] + y_padding) * UM_TO_NM,
-        z_upper * UM_TO_NM,
+        final_bounds[0] * UM_TO_NM,
+        final_bounds[1] * UM_TO_NM,
+        final_bounds[2] * UM_TO_NM,
+        final_bounds[3] * UM_TO_NM,
+        final_bounds[4] * UM_TO_NM,
+        final_bounds[5] * UM_TO_NM,
     )
 
 
@@ -192,6 +230,87 @@ def _guided_layer_key(port: ResolvedPort) -> str:
     return port.layer_key
 
 
+def _material_boundary_entities(
+    layer_volume_tags: Mapping[str, list[int]],
+) -> tuple[set[int], set[int]]:
+    """Return every material surface and curve that must receive mesh elements."""
+    surfaces: set[int] = set()
+    for volume_tags in layer_volume_tags.values():
+        for dimension, tag in gmsh.model.getBoundary(
+            [(3, volume_tag) for volume_tag in volume_tags],
+            combined=False,
+            oriented=False,
+            recursive=False,
+        ):
+            if dimension == 2:
+                surfaces.add(tag)
+    curves = {
+        tag
+        for dimension, tag in gmsh.model.getBoundary(
+            [(2, surface_tag) for surface_tag in surfaces],
+            combined=False,
+            oriented=False,
+            recursive=False,
+        )
+        if dimension == 1
+    }
+    return surfaces, curves
+
+
+def _entity_element_count(dimension: int, tag: int) -> int:
+    """Return the number of generated elements attached to one CAD entity."""
+    return sum(
+        len(element_tags)
+        for element_tags in gmsh.model.mesh.getElements(dimension, tag)[1]
+    )
+
+
+def _validate_material_entity_mesh(
+    layer_volume_tags: Mapping[str, list[int]],
+    geometry_tolerance_nm: float,
+) -> None:
+    """Require complete CAD coverage and bound material-boundary projection error."""
+    surfaces, curves = _material_boundary_entities(layer_volume_tags)
+    unmeshed_curves = [
+        tag for tag in sorted(curves) if _entity_element_count(1, tag) == 0
+    ]
+    unmeshed_surfaces = [
+        tag for tag in sorted(surfaces) if _entity_element_count(2, tag) == 0
+    ]
+    unmeshed_volumes = [
+        tag
+        for volume_tags in layer_volume_tags.values()
+        for tag in volume_tags
+        if _entity_element_count(3, tag) == 0
+    ]
+    if unmeshed_curves or unmeshed_surfaces or unmeshed_volumes:
+        raise FDTDGeometryError(
+            "Gmsh did not cover every material CAD entity: "
+            f"curves={unmeshed_curves[:5]}, surfaces={unmeshed_surfaces[:5]}, "
+            f"volumes={unmeshed_volumes[:5]}."
+        )
+
+    maximum_deviation_nm = 0.0
+    for surface_tag in surfaces:
+        _, coordinates, _ = gmsh.model.mesh.getNodes(
+            2,
+            surface_tag,
+            includeBoundary=True,
+        )
+        for coordinate_index in range(0, len(coordinates), 3):
+            point = coordinates[coordinate_index : coordinate_index + 3]
+            closest_point = gmsh.model.getClosestPoint(2, surface_tag, point)[0]
+            maximum_deviation_nm = max(
+                maximum_deviation_nm,
+                dist(point, closest_point),
+            )
+    if maximum_deviation_nm > geometry_tolerance_nm:
+        raise FDTDGeometryError(
+            "Material-boundary mesh exceeds geometry_tolerance_nm: "
+            f"{maximum_deviation_nm:.6g} nm > {geometry_tolerance_nm:.6g} nm."
+        )
+
+
 def generate_mesh(
     resolved: ResolvedPassivePcell,
     mesh_path: Path,
@@ -199,15 +318,20 @@ def generate_mesh(
     background_material: str,
     background_padding_um: float,
     mesh_size_nm: float,
-    nanometers_per_cell: float,
+    geometry_tolerance_nm: float,
+    x_bounds: tuple[float, float] | None = None,
+    y_bounds: tuple[float, float] | None = None,
+    z_bounds: tuple[float, float] | None = None,
 ) -> MeshManifest:
-    """Generate and validate a coarse GDSFactory FDTD tetrahedral mesh."""
+    """Generate an exact-boundary transfer mesh with coarse volume tetrahedra."""
     if background_padding_um <= 0:
         raise FDTDGeometryError("background_padding_um must be positive.")
     if mesh_size_nm <= 0:
         raise FDTDGeometryError("mesh_size_nm must be positive.")
-    if nanometers_per_cell <= 0:
-        raise FDTDGeometryError("nanometers_per_cell must be positive.")
+    if not 0 < geometry_tolerance_nm <= 30:
+        raise FDTDGeometryError(
+            "geometry_tolerance_nm must be greater than 0 and at most 30."
+        )
     if "background" in resolved.layers:
         raise FDTDGeometryError(
             "Layer name 'background' is reserved by GDSFactory FDTD."
@@ -227,6 +351,9 @@ def generate_mesh(
             resolved,
             background_material,
             background_padding_um,
+            x_bounds=x_bounds,
+            y_bounds=y_bounds,
+            z_bounds=z_bounds,
         )
         guided_ports = {
             name: port for name, port in resolved.ports.items() if not port.is_vertical
@@ -248,7 +375,7 @@ def generate_mesh(
                 kernel,
                 layer,
                 [port for port in guided_ports.values() if port.layer_key == name],
-                nanometers_per_cell=nanometers_per_cell,
+                geometry_tolerance_nm=geometry_tolerance_nm,
             )
             for name, layer in resolved.layers.items()
         }
@@ -299,9 +426,15 @@ def generate_mesh(
         gmsh.option.setNumber("Mesh.Binary", 0)
         gmsh.option.setNumber("Mesh.ElementOrder", 1)
         gmsh.option.setNumber("Mesh.SaveAll", 0)
-        sizing = geometry_aware_sizing(mesh_size_nm, nanometers_per_cell)
-        install_geometry_aware_mesh_field(resolved, sizing)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size_nm)
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+        gmsh.option.setNumber("Mesh.Algorithm", 5)
+        gmsh.option.setNumber("Mesh.Algorithm3D", 1)
         gmsh.model.mesh.generate(3)
+        _validate_material_entity_mesh(layer_volume_tags, geometry_tolerance_nm)
         gmsh.write(str(mesh_path))
     except FDTDGeometryError:
         raise

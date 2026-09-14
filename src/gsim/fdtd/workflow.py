@@ -166,6 +166,7 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
         """Map the original flat constructor fields into concern objects."""
         mappings = {
             "mesh_size_nm": (geometry, "mesh_size_nm"),
+            "geometry_tolerance_nm": (geometry, "geometry_tolerance_nm"),
             "background_material": (materials, "background"),
             "wavelength_um": (source, "wavelength_um"),
             "num_wavelengths": (source, "num_wavelengths"),
@@ -178,6 +179,9 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
             "vertical_port_waist_radius_um": (source, "vertical_waist_radius_um"),
             "background_padding_um": (domain, "padding_um"),
             "pml_cells": (domain, "pml_cells"),
+            "x_bounds": (domain, "x_bounds"),
+            "y_bounds": (domain, "y_bounds"),
+            "z_bounds": (domain, "z_bounds"),
             "nanometers_per_cell": (solver, "cell_size_nm"),
             "max_timesteps": (solver, "max_timesteps"),
             "energy_decay_fraction": (solver, "energy_decay_fraction"),
@@ -285,13 +289,17 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
         mesh_path = directory / "mesh.msh"
         config_path = directory / "config.json"
         material_snapshots = self._material_snapshots()
+        self._validate_explicit_domain_contents()
         manifest = generate_mesh(
             resolved,
             mesh_path,
             background_material=self.materials.background,
             background_padding_um=self.domain.padding_um,
             mesh_size_nm=self.geometry.mesh_size_nm,
-            nanometers_per_cell=self.solver.cell_size_nm,
+            geometry_tolerance_nm=self.geometry.geometry_tolerance_nm,
+            x_bounds=self.domain.x_bounds,
+            y_bounds=self.domain.y_bounds,
+            z_bounds=self.domain.z_bounds,
         )
         config = self._config(manifest, material_snapshots)
         config_path.write_text(
@@ -313,6 +321,7 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
         position_um: float | None = None,
         show_groups: Sequence[str] | None = None,
         hide_groups: Sequence[str] = (),
+        zoom_to_cursor: bool = True,
         height: int = 600,
     ) -> Any:
         """Render the current or a temporary mesh with the FDTD viewer."""
@@ -329,6 +338,9 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
                 position_um=position_um,
                 show_groups=show_groups,
                 hide_groups=hide_groups,
+                zoom_to_cursor=zoom_to_cursor,
+                cell_size_nm=self.solver.cell_size_nm,
+                pml_cells=self.domain.pml_cells,
                 height=height,
             )
 
@@ -343,6 +355,9 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
                     position_um=position_um,
                     show_groups=show_groups,
                     hide_groups=hide_groups,
+                    zoom_to_cursor=zoom_to_cursor,
+                    cell_size_nm=self.solver.cell_size_nm,
+                    pml_cells=self.domain.pml_cells,
                     height=height,
                 )
             finally:
@@ -354,6 +369,7 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
         show_mesh: bool = False,
         show_groups: Sequence[str] | None = None,
         hide_groups: Sequence[str] = (),
+        zoom_to_cursor: bool = True,
         height: int = 600,
     ) -> Any:
         """Show the 3D geometry, optionally with Gmsh surface edges."""
@@ -361,6 +377,7 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
             mode="mesh" if show_mesh else "surface",
             show_groups=show_groups,
             hide_groups=hide_groups,
+            zoom_to_cursor=zoom_to_cursor,
             height=height,
         )
 
@@ -372,6 +389,7 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
         show_mesh: bool = False,
         show_groups: Sequence[str] | None = None,
         hide_groups: Sequence[str] = (),
+        zoom_to_cursor: bool = True,
         height: int = 600,
     ) -> Any:
         """Show a filled cross-section, optionally with intersected cell edges."""
@@ -382,6 +400,7 @@ class Simulation(CloudWorkflowMixin, RuntimeConfigMixin):
             position_um=position_um,
             show_groups=show_groups,
             hide_groups=hide_groups,
+            zoom_to_cursor=zoom_to_cursor,
             height=height,
         )
 

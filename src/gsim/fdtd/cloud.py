@@ -37,6 +37,7 @@ class CloudWorkflowMixin:
         from gsim.hashing import compute_input_hash
 
         directory = self._prepare_upload_dir()
+        self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(directory)
         self._input_hash = compute_input_hash(directory, "fdtd")
         self._job_id = gcloud.upload(
             directory,
@@ -79,6 +80,7 @@ class CloudWorkflowMixin:
             verbose=verbose,
             parent_dir=parent_dir,
             poll_interval=poll_interval,
+            estimated_runtime_seconds=getattr(self, "_estimated_runtime_seconds", None),
         )
 
     def run(
@@ -95,6 +97,7 @@ class CloudWorkflowMixin:
 
         if check_cache:
             directory = self._prepare_upload_dir()
+            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(directory)
             self._input_hash, cached_job_id = gcloud.check_cache_for_dir(
                 directory, "fdtd"
             )

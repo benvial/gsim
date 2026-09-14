@@ -1,4 +1,4 @@
-"""Translation from public FDTD concerns to the ZapFDTD runtime schema."""
+"""Translation from public FDTD concerns to the GDSFactory FDTD runtime schema."""
 
 from __future__ import annotations
 
@@ -46,8 +46,24 @@ def _scale_vector(vector: Vector3, factor: float) -> Vector3:
     )
 
 
+def _vector_bounds(center: Vector3, half_size: Vector3) -> tuple[Vector3, Vector3]:
+    """Return fixed-length lower and upper bounds around a center."""
+    return (
+        (
+            center[0] - half_size[0],
+            center[1] - half_size[1],
+            center[2] - half_size[2],
+        ),
+        (
+            center[0] + half_size[0],
+            center[1] + half_size[1],
+            center[2] + half_size[2],
+        ),
+    )
+
+
 class RuntimeConfigMixin:
-    """Serialize sources, monitors, and solver controls for ZapFDTD."""
+    """Serialize sources, monitors, and solver controls for GDSFactory FDTD."""
 
     source: SourceType
     resolved: ResolvedPassivePcell
@@ -55,6 +71,96 @@ class RuntimeConfigMixin:
     monitors: Monitors
     domain: Domain
     solver: Solver
+
+    def _background_bounds_nm(
+        self,
+    ) -> tuple[float, float, float, float, float, float]:
+        """Return the resolved automatic or explicitly bounded domain."""
+        return background_bounds_nm(
+            self.resolved,
+            self.materials.background,
+            self.domain.padding_um,
+            x_bounds=self.domain.x_bounds,
+            y_bounds=self.domain.y_bounds,
+            z_bounds=self.domain.z_bounds,
+        )
+
+    def _validate_explicit_domain_contents(self) -> None:
+        """Require public sources and monitors to fit explicit axis bounds."""
+        explicit_bounds = (
+            self.domain.x_bounds,
+            self.domain.y_bounds,
+            self.domain.z_bounds,
+        )
+        if all(bounds is None for bounds in explicit_bounds):
+            return
+        domain_bounds_nm = self._background_bounds_nm()
+        regions: list[
+            tuple[str, tuple[float, float, float], tuple[float, float, float]]
+        ] = []
+        source = self.source
+        if isinstance(source, GaussianBeamSource):
+            center = _scale_vector(source.center_um, 1000)
+            half_size = _scale_vector(source.size_um, 500)
+            lower, upper = _vector_bounds(center, half_size)
+            regions.append(
+                (
+                    "Gaussian source aperture",
+                    lower,
+                    upper,
+                )
+            )
+            focal_point = _scale_vector(source.focal_point_um, 1000)
+            regions.append(("Gaussian source focus", focal_point, focal_point))
+        elif isinstance(source, DipoleSource):
+            position = _scale_vector(source.position_um, 1000)
+            regions.append(("Dipole source", position, position))
+        elif isinstance(source, LineCurrentSource):
+            position = list(_scale_vector(source.position_um, 1000))
+            lower = position.copy()
+            upper = position.copy()
+            axis = {"x": 0, "y": 1, "z": 2}[source.line_axis]
+            lower[axis] -= source.length_um * 500
+            upper[axis] += source.length_um * 500
+            regions.append(
+                (
+                    "Line-current source",
+                    (lower[0], lower[1], lower[2]),
+                    (upper[0], upper[1], upper[2]),
+                )
+            )
+
+        for monitor in self.monitors:
+            center = _scale_vector(monitor.center_um, 1000)
+            half_size = _scale_vector(monitor.size_um, 500)
+            lower, upper = _vector_bounds(center, half_size)
+            regions.append(
+                (
+                    f"Monitor {monitor.name!r}",
+                    lower,
+                    upper,
+                )
+            )
+            if monitor.fiber_mode is not None:
+                focal_point = _scale_vector(monitor.fiber_mode.focal_point_um, 1000)
+                regions.append(
+                    (f"Monitor {monitor.name!r} fiber focus", focal_point, focal_point)
+                )
+
+        for label, region_min, region_max in regions:
+            for axis, (axis_name, requested_bounds) in enumerate(
+                zip(("x", "y", "z"), explicit_bounds, strict=True)
+            ):
+                if requested_bounds is None:
+                    continue
+                lower_nm = domain_bounds_nm[axis]
+                upper_nm = domain_bounds_nm[axis + 3]
+                if region_min[axis] < lower_nm or region_max[axis] > upper_nm:
+                    extent_um = (region_min[axis] / 1000, region_max[axis] / 1000)
+                    raise FDTDConfigError(
+                        f"{label} {axis_name}-extent {extent_um} exceeds "
+                        f"domain.{axis_name}_bounds {requested_bounds}."
+                    )
 
     def _selected_port_name(self) -> str:
         """Validate and return the explicitly selected source port."""
@@ -100,17 +206,22 @@ class RuntimeConfigMixin:
         }
         if not vertical_ports:
             return {}
-        bounds = background_bounds_nm(
-            self.resolved,
-            self.materials.background,
-            self.domain.padding_um,
-        )
+        bounds = self._background_bounds_nm()
         background_index = material_snapshots[
             self.materials.background
         ].refractive_index
         outward_sign = 1 if self.source.vertical_axis == "+z" else -1
         aperture_z_nm = bounds[5] if outward_sign > 0 else bounds[2]
         device_z_nm = self.resolved.bounds[1 if outward_sign > 0 else 0][2] * 1000
+        monitor_heatmap = self.source.vertical_monitor_heatmap
+        heatmap_config = (
+            HeatmapConfig(
+                quantity=monitor_heatmap.quantity,
+                wavelengths=[value * 1000 for value in monitor_heatmap.wavelengths_um],
+            )
+            if monitor_heatmap is not None
+            else None
+        )
         configs: dict[str, tuple[GaussianBeamConfig, PlaneMonitorConfig]] = {}
         for name, port in vertical_ports.items():
             aperture_width_um = self.source.vertical_aperture_width_um or port.width
@@ -158,6 +269,7 @@ class RuntimeConfigMixin:
                     region_min=region_min,
                     region_max=region_max,
                     normal=self.source.vertical_axis,
+                    heatmap=heatmap_config,
                     fiber_mode=FiberModeConfig(
                         propagation_direction=(0, 0, outward_sign),
                         e_polarization=polarization,

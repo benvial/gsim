@@ -4,7 +4,7 @@ Palace only accepts piecewise-constant materials per mesh domain, so a
 continuously varying carrier distribution is represented as N adjacent
 strips along the junction axis. Each strip becomes a patterned-dielectric
 region through the same ``Layer``/``MaterialProperties`` machinery the
-PN-junction profile uses (:mod:`gsim.common.stack.doping`), so the result
+PN-junction profile uses (:mod:`gsim.common.stack.pn_junction`), so the result
 plugs straight into ``build_doped_cross_section(doping=...)`` and the
 native ``BoundaryMode`` solver.
 
@@ -333,7 +333,7 @@ def make_staircase_profile(
       *dispersion* model, stored as permittivity + loss tangent.
 
     The returned dict has the same shape as
-    :func:`gsim.common.stack.doping.make_doping_profile` (``layer_specs``,
+    :func:`gsim.common.stack.pn_junction.make_doping_profile` (``layer_specs``,
     ``materials``, ``centres``) so it feeds directly into
     ``build_doped_cross_section(doping=...)``; a ``strips`` entry carries
     the per-strip numbers for inspection and convergence checks.

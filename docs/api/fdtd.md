@@ -12,7 +12,7 @@ from gsim import fdtd
 
 sim = fdtd.Simulation(pdk=gpdk)
 sim.materials(background="SiO2")
-sim.geometry(component=mmi, mesh_size_nm=400)
+sim.geometry(component=mmi, geometry_tolerance_nm=10)
 sim.source(
     port="o1",
     wavelength_um=1.55,
@@ -31,31 +31,50 @@ result.plot()
 result.plot_plotly()
 ```
 
-The transfer mesh uses geometry-aware refinement rather than uniform
-tetrahedra. Material polygon edges use the smaller of `mesh_size_nm` and the
-requested `cell_size_nm`; slowly varying bulk regions grow to at least eight
-times that feature size with a graded transition. `cell_size_nm` still requests
-the actual Yee grid used by the FDTD solver and defaults to 60 nm. Source sweeps
-default to 101 wavelengths. Guided-port monitors are implicit; one port source
-returns one S-matrix column.
+The transfer mesh preserves the resolved CAD boundaries exactly and uses coarse
+tetrahedra in volume interiors. Its default maximum target size is 1 µm;
+`mesh_size_nm` remains available as an advanced override. Gmsh conforms to every
+explicit component, hole, gap, tooth, and port edge even when it is smaller than
+that target. `geometry_tolerance_nm` is a geometry-error bound, not a mesh edge
+size.
+
+Transfer meshing is independent of `cell_size_nm`, which requests the actual Yee
+grid used by the FDTD solver and defaults to 60 nm. Source sweeps default to 101
+wavelengths. Guided-port monitors are implicit; one port source returns one
+S-matrix column.
 
 Linear PDK sidewall angles are represented as continuous ruled solids between
 their exact bottom and top contours. If polygon offsetting changes component,
-hole, or edge topology, meshing safely falls back to bounded-error vertical
-slices instead of constructing an invalid loft.
+hole, or edge topology, meshing safely falls back to vertical slices bounded by
+`geometry_tolerance_nm` instead of constructing an invalid loft.
 
 Use `write(path)` to generate `mesh.msh` and `config.json` without submitting.
 The original flat constructor keywords remain accepted for compatibility.
 
+Optional `x_bounds`, `y_bounds`, and `z_bounds` tuples set the non-PML physical
+domain in micrometers. Omitted axes remain automatically sized from the
+component, PDK stack, and padding. Explicit bounds must contain the geometry,
+sources, and monitors; guided ports must remain on a domain face. The backend
+adds PML outside these bounds.
+
+```python
+sim.domain(
+    x_bounds=(0.0, 35.0),
+    y_bounds=(-12.0, 12.0),
+    z_bounds=(-1.0, 1.55),
+)
+```
+
 ## Setup visualization
 
-FDTD setup views use the ported ZapFDTD Three.js viewer and do not depend on
+FDTD setup views use the ported GDSFactory FDTD Three.js viewer and do not depend on
 PyVista. All physical groups are shown by default. Smaller material groups are
 listed first, followed by the largest volumetric group and then the ports.
 
 ```python
 sim.plot_3d()                                   # solid interactive geometry
 sim.plot_3d(show_mesh=True)                     # add Gmsh surface edges
+sim.plot_3d(zoom_to_cursor=False)               # zoom toward the view center
 sim.plot_2d(axis="z", position_um=0.11)         # filled cross-section
 sim.plot_2d(axis="x", position_um=0, show_mesh=True)  # add cell edges
 ```
@@ -64,6 +83,13 @@ Omit `position_um` to start at the geometry midpoint. The 2D viewer includes a
 slider that moves the plane through the mesh. Both methods return a standalone
 `MeshViewer`. Set `show_mesh=True` when element edges are useful, or use
 `viewer.save("mesh.html")` to share the visualization outside a notebook.
+Zooming moves toward the pointer by default; set `zoom_to_cursor=False` to zoom
+toward the view center instead. The same choice is available in the viewer's
+**Zoom toward** controls.
+
+The viewer also summarizes the physical domain, estimated Yee-grid dimensions
+and total cell count (including PML). These values are estimates; the solver
+backend is authoritative when it constructs the final grid.
 
 ## Sources
 
@@ -113,6 +139,18 @@ sim.monitors.add_plane(
 )
 ```
 
+For a vertical `PortSource`, request a field image from its implicit port plane:
+
+```python
+sim.source(
+    port="o2",
+    vertical_monitor_heatmap=fdtd.Heatmap(
+        quantity="abs_e",
+        wavelengths_um=[1.55],
+    ),
+)
+```
+
 Monitor names are unique. Use `add()`, `remove()`, and `clear()` to manage the
 collection. A plane's size must be zero along its normal.
 
@@ -125,6 +163,19 @@ s_parameter_table = result.s_parameters.to_dataframe()
 
 result.port_outputs.plot(quantity="modal_power")
 port_table = result.port_outputs.to_dataframe()
+
+# Net monitor flux can be useful as a diagnostic normalization.
+result.plot_plotly(normalize_to="top")
+
+# For a Gaussian source, use its analytic incident power and mask weak tails.
+coupling = fdtd.gaussian_coupling_efficiency(
+    result, sim.source, port="o1"
+)
+coupling.plot_plotly()
+
+# An eigenmode-normalized fiber overlap is an amplitude; plot its power.
+fiber = fdtd.fiber_coupling_efficiency(result.monitors["fiber"])
+fiber.plot_plotly()
 
 top = result.monitors["top"]
 top.plot_flux()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gsim.common.stack.junction import PNJunctionConfig
+from gsim.common.stack.pn_junction import PNJunctionConfig
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
 from gsim.tcad.validation import (
     analytic_capacitance_f_per_cm,

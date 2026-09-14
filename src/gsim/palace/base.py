@@ -473,14 +473,14 @@ class PalaceSimMixin:
 
         Capacitance-mode modelling of a PN junction: the depletion width
         ``W`` is computed from the doping concentrations and bias point via
-        :class:`gsim.common.stack.junction.PNJunctionConfig` (Sze,
+        :class:`gsim.common.stack.pn_junction.PNJunctionConfig` (Sze,
         *Physics of Semiconductor Devices*, ch. 2), converted to an absolute
         parallel-plate capacitance ``C = eps_s * A / W``, and applied as a
         lumped Impedance boundary on the shared P/N interface.
 
         Use this when the depletion strip is too thin to resolve on the mesh
         (the auto-selection in
-        :func:`gsim.common.stack.doping.make_pn_junction_profile` picks this
+        :func:`gsim.common.stack.pn_junction.make_pn_junction_profile` picks this
         regime); for well-resolved depletion regions prefer drawing them as
         dielectric geometry (``mode="high_res"``) instead.
 
@@ -505,7 +505,7 @@ class PalaceSimMixin:
             ...     height_um=0.22,
             ... )
         """
-        from gsim.common.stack.junction import PNJunctionConfig
+        from gsim.common.stack.pn_junction import PNJunctionConfig
 
         cfg = (
             junction
@@ -994,7 +994,11 @@ class PalaceSimMixin:
         else:
             # Validate port configurations
             for port in self.ports:
-                if port.geometry == "inplane" and port.layer is None:
+                if (
+                    port.geometry == "inplane"
+                    and port.layer is None
+                    and port.voltage_path is None
+                ):
                     errors.append(f"Port '{port.name}': inplane ports require 'layer'")
                 if port.geometry == "via" and (
                     port.from_layer is None or port.to_layer is None
@@ -1170,6 +1174,188 @@ class PalaceSimMixin:
                 )
 
         self._configured_ports = True
+
+    # -------------------------------------------------------------------------
+    # BoundaryMode postprocessing (2D voltage / impedance paths)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _project_mode_path(
+        points: list[list[float]], axis: Literal["x", "y", "z"]
+    ) -> list[list[float]]:
+        """Project path points to the 2D cross-section coordinate frame.
+
+        Points of length 2 are assumed to already be in cross-section
+        coordinates ``(h, v)`` and are passed through. Points of length 3 are
+        layout coordinates ``(x, y, z)`` and are mapped using *axis*: for an
+        x-normal plane ``(h, v) = (y, z)``, for a y-normal plane
+        ``(h, v) = (x, z)``.
+        """
+        projected: list[list[float]] = []
+        for point in points:
+            vals = [float(v) for v in point]
+            if len(vals) == 2:
+                projected.append(vals)
+            elif len(vals) == 3:
+                x, y, z = vals
+                if axis == "x":
+                    projected.append([y, z])
+                elif axis == "y":
+                    projected.append([x, z])
+                else:
+                    projected.append([x, y])
+            else:
+                raise ValueError(
+                    "BoundaryMode path points must have 2 (cross-section) or "
+                    f"3 (layout) coordinates, got {len(vals)}."
+                )
+        return projected
+
+    def _try_find_gf_port(self, port_name: str):
+        """Find a gdsfactory port by name, or return ``None`` if absent."""
+        component = self.geometry.component if self.geometry else None
+        if component is None:
+            return None
+        for port in component.ports:
+            if port.name == port_name:
+                return port
+        return None
+
+    @staticmethod
+    def _resolve_path_geometry(
+        center: tuple[float, float] | None,
+        orientation: float,
+        gf_port,
+        config_width: float | None = None,
+    ) -> tuple[tuple[float, float] | None, float, float | None]:
+        """Resolve (center, orientation, width) from config and/or gf port."""
+        width: float | None = config_width
+        if gf_port is not None:
+            if center is None:
+                center = (float(gf_port.center[0]), float(gf_port.center[1]))
+            if not orientation:
+                orientation = float(gf_port.orientation or 0.0)
+            if width is None:
+                width = float(gf_port.width)
+        return center, orientation, width
+
+    def _derive_single_port_path(
+        self, port: PortConfig, stack: LayerStack
+    ) -> list[list[float]] | None:
+        """Derive a BoundaryMode voltage path across a single lumped port."""
+        import numpy as np
+
+        center, orientation, width = self._resolve_path_geometry(
+            port.center,
+            port.orientation,
+            self._try_find_gf_port(port.name),
+            config_width=port.width,
+        )
+        if center is None or width is None or port.layer is None:
+            return None
+        layer = stack.layers.get(port.layer)
+        if layer is None:
+            return None
+        z = 0.5 * (layer.zmin + layer.zmax)
+        theta = np.deg2rad(orientation)
+        transverse = np.array([-np.sin(theta), np.cos(theta)])
+        c = np.array(center)
+        half = width / 2.0
+        p0 = c - transverse * half
+        p1 = c + transverse * half
+        return [[float(p0[0]), float(p0[1]), z], [float(p1[0]), float(p1[1]), z]]
+
+    def _derive_cpw_gap_paths(
+        self, cpw: CPWPortConfig, stack: LayerStack
+    ) -> list[list[list[float]]] | None:
+        """Derive the two BoundaryMode voltage paths across a CPW's gaps."""
+        import numpy as np
+
+        center, orientation, _ = self._resolve_path_geometry(
+            cpw.center, cpw.orientation, self._try_find_gf_port(cpw.name)
+        )
+        if center is None or not cpw.layer:
+            return None
+        layer = stack.layers.get(cpw.layer)
+        if layer is None:
+            return None
+        z = 0.5 * (layer.zmin + layer.zmax)
+        theta = np.deg2rad(orientation)
+        transverse = np.array([-np.sin(theta), np.cos(theta)])
+        c = np.array(center)
+        s = cpw.s_width / 2.0
+        g = cpw.gap_width
+
+        def _path(sign: float) -> list[list[float]]:
+            p_in = c + sign * transverse * s
+            p_out = c + sign * transverse * (s + g)
+            return [
+                [float(p_in[0]), float(p_in[1]), z],
+                [float(p_out[0]), float(p_out[1]), z],
+            ]
+
+        return [_path(1.0), _path(-1.0)]
+
+    def _build_boundarymode_postprocessing(
+        self, stack: LayerStack, cross_section
+    ) -> dict[str, list[dict[str, object]]]:
+        """Build Palace ``Boundaries.Postprocessing`` entries from ports.
+
+        These entries are postprocessing-only: they do not load or otherwise
+        alter the 2D eigenproblem. Each voltage path produces both an
+        ``Impedance`` entry (characteristic impedance, ``mode-Z.csv``) and a
+        ``Voltage`` entry (mode voltage, ``mode-V.csv``).
+        """
+        axis: Literal["x", "y", "z"] = (
+            getattr(cross_section, "axis", "x") if cross_section is not None else "x"
+        )
+        impedance_entries: list[dict[str, object]] = []
+        voltage_entries: list[dict[str, object]] = []
+        index = 0
+
+        def _append(path: list[list[float]], nsamples: int, current_path) -> None:
+            nonlocal index
+            index += 1
+            projected = self._project_mode_path(path, axis)
+            entry: dict[str, object] = {
+                "Index": index,
+                "VoltagePath": projected,
+                "NSamples": nsamples,
+            }
+            if current_path is not None:
+                entry["CurrentPath"] = self._project_mode_path(current_path, axis)
+            impedance_entries.append(entry)
+            voltage_entries.append(
+                {"Index": index, "VoltagePath": projected, "NSamples": nsamples}
+            )
+
+        ordered: list[tuple[int, PortConfig | CPWPortConfig]] = [
+            (port.order, port) for port in self.ports
+        ] + [(cpw.order, cpw) for cpw in self.cpw_ports]
+
+        for _order, config in sorted(ordered, key=lambda item: item[0]):
+            if isinstance(config, PortConfig):
+                if config.voltage_path is not None:
+                    path = config.voltage_path
+                else:
+                    path = self._derive_single_port_path(config, stack)
+                if path is not None:
+                    _append(path, config.nsamples, config.current_path)
+            else:
+                if config.voltage_paths:
+                    paths = list(config.voltage_paths)
+                else:
+                    derived = self._derive_cpw_gap_paths(config, stack)
+                    paths = derived or []
+                for path in paths:
+                    _append(path, config.nsamples, config.current_path)
+
+        result: dict[str, list[dict[str, object]]] = {}
+        if impedance_entries:
+            result["Impedance"] = impedance_entries
+        if voltage_entries:
+            result["Voltage"] = voltage_entries
+        return result
 
     def _generate_mesh_internal(
         self,
@@ -1741,6 +1927,15 @@ class PalaceSimMixin:
         if getattr(self, "metallic_boundaries", False):
             hints["_metallic_boundaries"] = True
 
+        # BoundaryMode voltage/impedance postprocessing from the configured
+        # lumped/CPW ports. These paths do not affect the 2D eigenproblem.
+        if self.simulation_type == "boundarymode":
+            postprocessing = self._build_boundarymode_postprocessing(
+                stack, getattr(self, "cross_section", None)
+            )
+            if postprocessing:
+                hints["_mode_postprocessing"] = postprocessing
+
         config_path = gen_write_config(
             mesh_result=self._last_mesh_result,
             stack=stack,
@@ -1813,6 +2008,7 @@ class PalaceSimMixin:
 
         tmp = self._prepare_upload_dir()
         try:
+            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(tmp)
             self._input_hash = compute_input_hash(tmp, "palace")
             self._job_id = gcloud.upload(
                 tmp, "palace", verbose=verbose, input_hash=self._input_hash
@@ -1875,7 +2071,10 @@ class PalaceSimMixin:
         if self._job_id is None:
             raise ValueError("No job submitted yet")
         return gcloud.wait_for_results(
-            self._job_id, verbose=verbose, parent_dir=parent_dir
+            self._job_id,
+            verbose=verbose,
+            parent_dir=parent_dir,
+            estimated_runtime_seconds=getattr(self, "_estimated_runtime_seconds", None),
         )
 
     # -------------------------------------------------------------------------
@@ -1930,6 +2129,7 @@ class PalaceSimMixin:
 
         if check_cache:
             tmp = self._prepare_upload_dir()
+            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(tmp)
             self._input_hash, cached_job_id = gcloud.check_cache_for_dir(tmp, "palace")
             if cached_job_id is not None:
                 self._job_id = cached_job_id
@@ -2422,6 +2622,12 @@ class PalaceSimMixin:
         capacitance: float | None = None,
         excited: bool = True,
         geometry: Literal["inplane", "via"] = "inplane",
+        voltage_path: list[list[float]] | None = None,
+        current_path: list[list[float]] | None = None,
+        nsamples: int = 100,
+        center: tuple[float, float] | None = None,
+        orientation: float = 0.0,
+        width: float | None = None,
     ) -> None:
         """Add a single-element lumped port.
 
@@ -2439,6 +2645,15 @@ class PalaceSimMixin:
             capacitance: Shunt capacitance (F)
             excited: Whether this port is excited
             geometry: Port geometry type ("inplane" or "via")
+            voltage_path: For BoundaryMode only - open signal->ground path (um)
+                used to post-process the mode voltage (mode-V.csv). Points may
+                be 2D cross-section coordinates or 3D layout coordinates.
+            current_path: For BoundaryMode only - closed-loop path (um) for the
+                current line integral (impedance postprocessing).
+            nsamples: Line-integral sample count for BoundaryMode postprocessing.
+            center: Explicit (x, y) center (um) for auto-deriving a BoundaryMode
+                voltage path when ``voltage_path`` is not given.
+            orientation: Port orientation in degrees (0 = +x).
 
         Example:
             >>> sim.add_port("o1", layer="topmetal2", length=5.0)
@@ -2463,6 +2678,13 @@ class PalaceSimMixin:
                 capacitance=capacitance,
                 excited=excited,
                 geometry=geometry,
+                voltage_path=voltage_path,
+                current_path=current_path,
+                nsamples=nsamples,
+                center=center,
+                orientation=orientation,
+                width=width,
+                order=len(self.ports) + len(self.cpw_ports),
             )
         )
 
@@ -2477,6 +2699,11 @@ class PalaceSimMixin:
         offset: float | None = None,
         impedance: float = 50.0,
         excited: bool = True,
+        voltage_paths: list[list[list[float]]] | None = None,
+        current_path: list[list[float]] | None = None,
+        nsamples: int = 100,
+        center: tuple[float, float] | None = None,
+        orientation: float = 0.0,
     ) -> None:
         """Add a coplanar waveguide (CPW) port.
 
@@ -2497,6 +2724,15 @@ class PalaceSimMixin:
                 Defaults to length/2 (port flush with conductor edge).
             impedance: Port impedance (Ohms)
             excited: Whether this port is excited
+            voltage_paths: For BoundaryMode only - explicit signal->ground paths
+                (um), one per gap. When omitted, the two gap paths are
+                auto-derived from ``center``/the component port and the layer.
+            current_path: For BoundaryMode only - closed-loop path (um) for the
+                current line integral.
+            nsamples: Line-integral sample count for BoundaryMode postprocessing.
+            center: Explicit (x, y) signal-center (um) for auto-deriving the
+                BoundaryMode gap paths.
+            orientation: Port orientation in degrees (0 = +x).
 
         Example:
             >>> sim.add_cpw_port(
@@ -2516,6 +2752,12 @@ class PalaceSimMixin:
                 offset=offset,
                 impedance=impedance,
                 excited=excited,
+                voltage_paths=voltage_paths,
+                current_path=current_path,
+                nsamples=nsamples,
+                center=center,
+                orientation=orientation,
+                order=len(self.ports) + len(self.cpw_ports),
             )
         )
 

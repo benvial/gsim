@@ -23,6 +23,11 @@ from gsim.fdtd.models import (
     MeshManifest,
     SimulationArtifacts,
 )
+from gsim.fdtd.normalization import (
+    CouplingEfficiencyResult,
+    fiber_coupling_efficiency,
+    gaussian_coupling_efficiency,
+)
 from gsim.fdtd.results import (
     ComplexTrace,
     FDTDResult,
@@ -38,7 +43,7 @@ from gsim.gcloud import RunResult, register_result_parser
 
 
 def _parse_fdtd_result(run_result: RunResult) -> FDTDResult:
-    """Parse downloaded ZapFDTD JSON and sidecar outputs."""
+    """Parse downloaded GDSFactory FDTD JSON and sidecar outputs."""
     return FDTDResult.from_run_result(run_result)
 
 
@@ -46,6 +51,7 @@ register_result_parser("fdtd", _parse_fdtd_result)
 
 __all__ = [
     "ComplexTrace",
+    "CouplingEfficiencyResult",
     "DipoleSource",
     "Domain",
     "FDTDArtifactError",
@@ -73,4 +79,6 @@ __all__ = [
     "Simulation",
     "SimulationArtifacts",
     "Solver",
+    "fiber_coupling_efficiency",
+    "gaussian_coupling_efficiency",
 ]

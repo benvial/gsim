@@ -19,7 +19,7 @@ from gsim.common.cross_section import (
     extract_xz_rectangles,
     extract_yz_rectangles,
 )
-from gsim.common.stack.doping import make_doping_profile
+from gsim.common.stack.pn_junction import make_doping_profile
 
 
 def _layer(

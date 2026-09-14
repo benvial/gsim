@@ -1,7 +1,7 @@
 """Cross-checks between the TCAD charge solve and the analytic Sze model.
 
 The retained depletion-approximation path
-(:class:`gsim.common.stack.junction.PNJunctionConfig`) doubles as a
+(:class:`gsim.common.stack.pn_junction.PNJunctionConfig`) doubles as a
 validation reference for the numeric solve: on an abrupt junction in the
 fully depleted regime the TCAD small-signal C(V) must track the analytic
 ``eps_s / W(V)`` capacitance, and the carrier profile edges must match the
@@ -15,7 +15,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from pydantic import BaseModel, ConfigDict
 
-from gsim.common.stack.junction import PNJunctionConfig
+from gsim.common.stack.pn_junction import PNJunctionConfig
 from gsim.tcad.results import BiasSweepResult
 
 __all__ = [

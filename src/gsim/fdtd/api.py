@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from math import isfinite
 from typing import Any, Literal, Self
 
 from pydantic import (
@@ -43,7 +44,8 @@ class Geometry(BaseModel):
 
     component: Any | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
-    mesh_size_nm: float = Field(default=500.0, gt=0)
+    mesh_size_nm: float = Field(default=1000.0, gt=0)
+    geometry_tolerance_nm: float = Field(default=10.0, gt=0, le=30.0)
     _resolver: Any = PrivateAttr(default=None)
 
     def bind(self, resolver: Any) -> None:
@@ -56,6 +58,7 @@ class Geometry(BaseModel):
         *,
         settings: Mapping[str, Any] | None = None,
         mesh_size_nm: float | None = None,
+        geometry_tolerance_nm: float | None = None,
     ) -> Any:
         """Configure geometry and return its canonical resolved representation."""
         updates: dict[str, Any] = {}
@@ -65,6 +68,8 @@ class Geometry(BaseModel):
             updates["settings"] = dict(settings)
         if mesh_size_nm is not None:
             updates["mesh_size_nm"] = mesh_size_nm
+        if geometry_tolerance_nm is not None:
+            updates["geometry_tolerance_nm"] = geometry_tolerance_nm
         updated = type(self).model_validate({**self.model_dump(), **updates})
         for field_name in type(self).model_fields:
             object.__setattr__(self, field_name, getattr(updated, field_name))
@@ -115,6 +120,21 @@ class Materials(_MutableModel):
         self(overrides=updated)
 
 
+class Heatmap(_MutableModel):
+    """Steady-state scalar field images requested from a plane monitor."""
+
+    quantity: HeatmapQuantity = "intensity"
+    wavelengths_um: list[float] = Field(min_length=1)
+
+    @field_validator("wavelengths_um")
+    @classmethod
+    def validate_wavelengths(cls, values: list[float]) -> list[float]:
+        """Require physical heatmap wavelengths."""
+        if any(value <= 0 for value in values):
+            raise ValueError("heatmap wavelengths must be positive")
+        return values
+
+
 class Source(_MutableModel):
     """Settings shared by every FDTD source."""
 
@@ -139,7 +159,7 @@ class Source(_MutableModel):
 
     @property
     def wavelength_halfspan_um(self) -> float:
-        """Return the half-span expected by the ZapFDTD runtime schema."""
+        """Return the half-span expected by the GDSFactory FDTD runtime schema."""
         return self.wavelength_span_um / 2
 
 
@@ -151,6 +171,7 @@ class PortSource(Source):
     vertical_axis: Literal["+z", "-z"] = "+z"
     vertical_aperture_width_um: float | None = Field(default=None, gt=0)
     vertical_waist_radius_um: float | None = Field(default=None, gt=0)
+    vertical_monitor_heatmap: Heatmap | None = None
 
 
 class DipoleSource(Source):
@@ -196,21 +217,6 @@ class GaussianBeamSource(Source):
 
 
 SourceType = PortSource | DipoleSource | LineCurrentSource | GaussianBeamSource
-
-
-class Heatmap(_MutableModel):
-    """Steady-state scalar field images requested from a plane monitor."""
-
-    quantity: HeatmapQuantity = "intensity"
-    wavelengths_um: list[float] = Field(min_length=1)
-
-    @field_validator("wavelengths_um")
-    @classmethod
-    def validate_wavelengths(cls, values: list[float]) -> list[float]:
-        """Require physical heatmap wavelengths."""
-        if any(value <= 0 for value in values):
-            raise ValueError("heatmap wavelengths must be positive")
-        return values
 
 
 class FiberMode(_MutableModel):
@@ -305,6 +311,33 @@ class Domain(_MutableModel):
 
     padding_um: float = Field(default=1.0, gt=0)
     pml_cells: int = Field(default=32, ge=0)
+    x_bounds: tuple[float, float] | None = Field(
+        default=None,
+        description="Optional physical X-domain bounds in micrometers.",
+    )
+    y_bounds: tuple[float, float] | None = Field(
+        default=None,
+        description="Optional physical Y-domain bounds in micrometers.",
+    )
+    z_bounds: tuple[float, float] | None = Field(
+        default=None,
+        description="Optional physical Z-domain bounds in micrometers.",
+    )
+
+    @field_validator("x_bounds", "y_bounds", "z_bounds")
+    @classmethod
+    def validate_axis_bounds(
+        cls, value: tuple[float, float] | None
+    ) -> tuple[float, float] | None:
+        """Require finite, strictly ordered explicit domain bounds."""
+        if value is None:
+            return None
+        lower, upper = value
+        if not isfinite(lower) or not isfinite(upper):
+            raise ValueError("domain bounds must be finite")
+        if lower >= upper:
+            raise ValueError("domain lower bound must be smaller than upper bound")
+        return value
 
 
 class Solver(_MutableModel):

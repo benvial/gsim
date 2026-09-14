@@ -287,6 +287,41 @@ class TestGetStatus:
 class TestWaitForResultsSingle:
     """Tests for wait_for_results with a single job."""
 
+    @patch("gsim.gcloud._output_mode", new=lambda: "pipe")
+    @patch("gsim.gcloud.sim")
+    def test_status_display_includes_progress_bar(self, mock_sim, capsys):
+        """Status mode renders a lifecycle progress estimate and elapsed time."""
+        from gsim.gcloud import _print_status_table
+
+        mock_sim.SimStatus = SimStatus
+        job = FakeJob(job_name="meep-progress", status=SimStatus.RUNNING)
+
+        _print_status_table({"job-1": job}, {"job-1": 0.0}, final=True)
+
+        output = capsys.readouterr().out
+        assert "[##########..........]  50%" in output
+        assert "running" in output
+        assert "elapsed" in output
+
+    @patch("gsim.gcloud._output_mode", new=lambda: "pipe")
+    @patch("gsim.gcloud.time.monotonic", return_value=120.0)
+    def test_status_display_estimates_remaining_runtime(self, mock_monotonic, capsys):
+        """Input-size runtime estimates drive running progress and ETA output."""
+        from gsim.gcloud import _print_status_table
+
+        job = FakeJob(job_name="meep-progress", status=SimStatus.RUNNING)
+        _print_status_table(
+            {"job-1": job},
+            {"job-1": 0.0},
+            final=True,
+            estimated_runtime_seconds=240.0,
+        )
+
+        output = capsys.readouterr().out
+        assert "[##########..........]  50%" in output
+        assert "ETA 2m 00s" in output
+        assert mock_monotonic.called
+
     @patch("gsim.gcloud.sim")
     def test_already_completed(self, mock_sim, tmp_path):
         """Completed job downloads and parses results immediately."""
@@ -378,6 +413,23 @@ class TestWaitForResultsSingle:
 
         with pytest.raises(ValueError, match="At least one job_id"):
             wait_for_results(verbose="quiet")
+
+
+class TestRuntimeEstimate:
+    """Tests for the pre-run input-size runtime heuristic."""
+
+    def test_larger_mesh_has_a_larger_runtime_estimate(self, tmp_path):
+        """Mesh byte size is used as a solver-agnostic size proxy."""
+        from gsim.gcloud import estimate_runtime_seconds
+
+        small = tmp_path / "small"
+        large = tmp_path / "large"
+        small.mkdir()
+        large.mkdir()
+        (small / "mesh.msh").write_bytes(b"0" * 1024)
+        (large / "mesh.msh").write_bytes(b"0" * (10 * 1024 * 1024))
+
+        assert estimate_runtime_seconds(large) > estimate_runtime_seconds(small)
 
 
 # ---------------------------------------------------------------------------

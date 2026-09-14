@@ -47,8 +47,8 @@ def make_sbend_sim():
 def make_2d_xz_gc_sim():
     """Tiny 2D XZ grating-coupler sim with a Gaussian fiber source.
 
-    Mirrors ``nbs/meep_2d_xz_gc.ipynb`` but with the smallest grating
-    coupler that still produces a coupled mode and a feed monitor.
+    Uses the smallest grating coupler that still produces a coupled mode and
+    a feed monitor.
     """
     from gsim.meep import Simulation
 

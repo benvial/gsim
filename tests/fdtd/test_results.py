@@ -1,4 +1,4 @@
-"""Tests for typed ZapFDTD results, tables, and monitor plots."""
+"""Tests for typed GDSFactory FDTD results, tables, and monitor plots."""
 
 from __future__ import annotations
 
@@ -123,3 +123,11 @@ def test_non_eigenmode_result_and_run_result_parser(tmp_path: Path) -> None:
     plt.close(figure)
     plotly_figure = result.plot_plotly()
     assert plotly_figure.layout.yaxis.title.text == "Modal power"
+
+    normalized_figure = result.plot_plotly(normalize_to="top")
+    assert normalized_figure.layout.yaxis.title.text == "Power / |top flux|"
+    np.testing.assert_allclose(
+        normalized_figure.data[0].y,
+        [np.nan, 1.25, 0.0625 / 0.3],
+        equal_nan=True,
+    )

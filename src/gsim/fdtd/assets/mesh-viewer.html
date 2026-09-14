@@ -47,14 +47,7 @@
         display: none;
       }
       #panel-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-      }
-      h1 {
-        margin: 0;
-        font-size: 16px;
+        width: 100%;
       }
       .muted {
         color: #94a0b2;
@@ -65,6 +58,24 @@
         margin-top: 12px;
         padding-top: 10px;
         border-top: 1px solid #ffffff14;
+      }
+      .stats-title {
+        margin-bottom: 7px;
+      }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 10px;
+        margin: 0;
+        font-size: 11px;
+      }
+      .stats-grid dt {
+        color: #94a0b2;
+      }
+      .stats-grid dd {
+        margin: 0;
+        color: #dce3ec;
+        text-align: right;
       }
       .row {
         display: flex;
@@ -96,19 +107,26 @@
         color: #9aa5b5;
       }
       #panel-toggle {
-        width: 32px;
-        height: 26px;
-        flex: 0 0 auto;
-        padding: 0;
-        border: 1px solid #ffffff14;
-        background: #ffffff08;
-        color: #94a0b2;
-        display: grid;
-        place-items: center;
+        width: 100%;
+        min-height: 26px;
+        padding: 4px 6px;
+        border: 0;
+        background: transparent;
+        color: #eef2f7;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      #panel-toggle .panel-title {
+        font-size: 16px;
+        font-weight: 700;
       }
       #panel-toggle svg {
+        flex: 0 0 auto;
         width: 14px;
         height: 14px;
+        color: #94a0b2;
         transform: rotate(180deg);
         transition: transform 160ms ease;
       }
@@ -118,15 +136,45 @@
       #panel-toggle:hover,
       #panel-toggle:focus-visible {
         background: #ffffff14;
+      }
+      #panel-toggle:hover svg,
+      #panel-toggle:focus-visible svg {
         color: #eef2f7;
       }
       input[type="range"] {
         width: 100%;
         accent-color: #4f91f7;
       }
+      .zoom-focus,
+      .zoom-options,
+      .zoom-option {
+        display: flex;
+        align-items: center;
+      }
+      .zoom-focus {
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .zoom-options {
+        gap: 8px;
+      }
+      .zoom-option {
+        gap: 3px;
+        color: #c7d0dc;
+        font-size: 11px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      input[type="radio"] {
+        margin: 0;
+        accent-color: #4f91f7;
+      }
       #error {
         color: #ff8f8f;
         white-space: pre-wrap;
+      }
+      #error:empty {
+        display: none;
       }
       #orientation-gizmo {
         position: absolute;
@@ -179,7 +227,6 @@
   <body>
     <div id="panel">
       <div id="panel-header">
-        <h1>GDSFactory FDTD</h1>
         <button
           id="panel-toggle"
           type="button"
@@ -188,6 +235,7 @@
           aria-label="Collapse controls"
           title="Collapse controls"
         >
+          <span class="panel-title">GDSFactory FDTD</span>
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
             <path
               d="m5 7.5 5 5 5-5"
@@ -200,7 +248,10 @@
         </button>
       </div>
       <div id="panel-body">
-        <div id="stats" class="section muted" hidden>Loading mesh...</div>
+        <div class="section">
+          <div class="muted">Physical groups</div>
+          <div id="groups"></div>
+        </div>
         <div id="slice-section" class="section" hidden>
           <div class="row">
             <label for="slice">Slice</label
@@ -208,14 +259,41 @@
           </div>
           <input id="slice" type="range" step="any" />
         </div>
-        <div class="section">
-          <div class="muted">Physical groups</div>
-          <div id="groups"></div>
-        </div>
         <div class="section muted">
-          Drag to rotate, scroll to zoom toward the cursor, right-drag to pan.
-          Slice views pan and zoom without rotation.
+          Drag to rotate, scroll to zoom, right-drag to pan. Slice views pan and
+          zoom without rotation.
         </div>
+        <div class="section">
+          <div
+            id="zoom-focus"
+            class="zoom-focus"
+            role="radiogroup"
+            aria-labelledby="zoom-focus-label"
+          >
+            <span id="zoom-focus-label" class="muted">Zoom toward</span>
+            <div class="zoom-options">
+              <label class="zoom-option" for="zoom-pointer">
+                <input
+                  id="zoom-pointer"
+                  type="radio"
+                  name="zoom-focus"
+                  value="pointer"
+                />
+                Pointer
+              </label>
+              <label class="zoom-option" for="zoom-center">
+                <input
+                  id="zoom-center"
+                  type="radio"
+                  name="zoom-focus"
+                  value="center"
+                />
+                View center
+              </label>
+            </div>
+          </div>
+        </div>
+        <div id="stats" class="section" hidden></div>
         <div id="error" class="section muted"></div>
       </div>
     </div>
@@ -308,7 +386,6 @@
       const showEdges =
         options.mode === "mesh" || options.mode === "mesh_slice";
       const statsPanel = document.getElementById("stats");
-      statsPanel.hidden = !showEdges;
       const axisIndex = { x: 0, y: 1, z: 2 }[options.axis];
       const axisVectors = [
         new THREE.Vector3(1, 0, 0),
@@ -326,15 +403,22 @@
         -1.5,
         1.8,
       ).normalize();
-      const physicalGroupPalette = [
-        0xff9fba, 0xb8b2b0, 0x55dfff, 0x69f0bd, 0xd6a4ff, 0xffe082, 0x7dd3fc,
-        0x9fe6cf,
-      ];
+      const physicalGroupPalette = [0x58c7a3, 0xff7a7a];
+      const largestGroupColor = 0xb8b2b0;
       const physicalGroupColors = new Map();
       const panel = document.getElementById("panel");
       const panelToggle = document.getElementById("panel-toggle");
+      const zoomPointer = document.getElementById("zoom-pointer");
+      const zoomCenter = document.getElementById("zoom-center");
       const orientationGizmo = document.getElementById("orientation-gizmo");
       orientationGizmo.hidden = isSlice;
+      zoomPointer.checked = options.zoomToCursor !== false;
+      zoomCenter.checked = !zoomPointer.checked;
+      for (const input of [zoomPointer, zoomCenter]) {
+        input.addEventListener("change", () => {
+          if (controls) controls.zoomToCursor = zoomPointer.checked;
+        });
+      }
 
       panelToggle.addEventListener("click", () => {
         const collapsed = panel.classList.toggle("collapsed");
@@ -348,6 +432,7 @@
       let controls;
       let cameraAnimation;
       let currentModel;
+      let currentLargestGroup = null;
       let groupRoots = new Map();
       let slicePosition = options.positionUm;
       let orthographicHalfHeight = 1;
@@ -643,6 +728,8 @@
 
       function colorFor(mesh, group) {
         if (isPortGroup(mesh, group)) return new THREE.Color(0xf4f7fb);
+        if (group === currentLargestGroup)
+          return new THREE.Color(largestGroupColor);
         if (!physicalGroupColors.has(group)) {
           physicalGroupColors.set(
             group,
@@ -766,13 +853,7 @@
           rawGeometry.dispose();
         }
         const color = colorFor(mesh, group);
-        const opacity = isLargestMaterial
-          ? isSlice
-            ? 0.55
-            : 0.35
-          : isSlice
-            ? 0.96
-            : 0.7;
+        const opacity = isLargestMaterial ? (isSlice ? 0.55 : 0.35) : 1;
         const material = new THREE.MeshStandardMaterial({
           color,
           roughness: 0.72,
@@ -781,9 +862,9 @@
             isSlice || group.startsWith("2_")
               ? THREE.DoubleSide
               : THREE.FrontSide,
-          transparent: true,
+          transparent: isLargestMaterial,
           opacity,
-          depthWrite: isSlice && !isLargestMaterial,
+          depthWrite: !isLargestMaterial,
           polygonOffset: true,
           polygonOffsetFactor: 1,
           polygonOffsetUnits: 1,
@@ -815,13 +896,64 @@
         groupRoots.set(group, groupRoot);
       }
 
+      function formatNumber(value, maximumFractionDigits = 2) {
+        return value.toLocaleString(undefined, { maximumFractionDigits });
+      }
+
+      function updateStats(mesh) {
+        const bounds = new THREE.Box3();
+        for (const point of mesh.nodes.values())
+          bounds.expandByPoint(new THREE.Vector3(...point));
+        const size = bounds.getSize(new THREE.Vector3()).toArray();
+        const stats = [
+          [
+            "Domain",
+            `${size.map((value) => formatNumber(value)).join(" × ")} µm`,
+          ],
+        ];
+        if (options.cellSizeNm) {
+          const pmlCells = options.pmlCells ?? 0;
+          const interiorGrid = size.map((value) =>
+            Math.ceil((value * 1000) / options.cellSizeNm),
+          );
+          const yeeGrid = interiorGrid.map((count) => count + 2 * pmlCells);
+          const totalCells = yeeGrid.reduce(
+            (product, count) => product * count,
+            1,
+          );
+          stats.push(
+            [
+              "Yee grid",
+              `\u2248 ${yeeGrid.map((value) => value.toLocaleString()).join(" × ")}`,
+            ],
+            ["Yee cells", `\u2248 ${totalCells.toLocaleString()}`],
+          );
+        }
+        const title = document.createElement("div");
+        title.className = "stats-title muted";
+        title.textContent = "Simulation estimate";
+        title.title =
+          "Yee-grid dimensions include PML cells on both sides of each axis.";
+        const list = document.createElement("dl");
+        list.className = "stats-grid";
+        for (const [label, value] of stats) {
+          const term = document.createElement("dt");
+          const description = document.createElement("dd");
+          term.textContent = label;
+          description.textContent = value;
+          list.append(term, description);
+        }
+        statsPanel.replaceChildren(title, list);
+        statsPanel.hidden = false;
+      }
+
       function buildModel(mesh) {
         disposeModel();
         groupRoots = new Map();
         const root = new THREE.Group();
         if (isSlice) {
           const groups = slicedGroups(mesh, slicePosition);
-          const largestGroup = largestMaterialGroup(mesh, groups);
+          currentLargestGroup = largestMaterialGroup(mesh, groups);
           for (const [group, data] of orderedGroupEntries(mesh, groups)) {
             addRenderable(
               root,
@@ -829,12 +961,12 @@
               group,
               new Float32Array(data.faces),
               new Float32Array(data.edges),
-              group === largestGroup,
+              group === currentLargestGroup,
             );
           }
         } else {
           const groups = surfaceGroups(mesh);
-          const largestGroup = largestMaterialGroup(mesh, groups);
+          currentLargestGroup = largestMaterialGroup(mesh, groups);
           for (const [group, tags] of orderedGroupEntries(mesh, groups)) {
             addRenderable(
               root,
@@ -842,7 +974,7 @@
               group,
               positionsForNodeTags(tags, mesh.nodes),
               null,
-              group === largestGroup,
+              group === currentLargestGroup,
             );
           }
         }
@@ -850,12 +982,7 @@
         currentModel = root;
         buildGroupControls(mesh);
         frameCamera(root);
-        const triangles = [...root.children].reduce(
-          (total, child) =>
-            total + child.children[0].geometry.attributes.position.count / 3,
-          0,
-        );
-        statsPanel.textContent = `${mesh.nodes.size.toLocaleString()} nodes \u00b7 ${Math.round(triangles).toLocaleString()} visible triangles`;
+        updateStats(mesh);
       }
 
       function buildGroupControls(mesh) {
@@ -884,7 +1011,7 @@
         controls.enableDamping = true;
         controls.dampingFactor = 0.06;
         controls.screenSpacePanning = true;
-        controls.zoomToCursor = true;
+        controls.zoomToCursor = zoomPointer.checked;
         controls.enableRotate = !isSlice;
       }
 
@@ -936,21 +1063,28 @@
       }
 
       function snapCamera(direction) {
-        if (!camera || !controls || isSlice) return;
+        if (!camera || !controls || !currentModel || isSlice) return;
         const normalizedDirection = direction.clone().normalize();
-        const center = controls.target.clone();
-        const distance = Math.max(camera.position.distanceTo(center), 0.001);
+        const startTarget = controls.target.clone();
+        const modelBox = new THREE.Box3().setFromObject(currentModel);
+        if (modelBox.isEmpty()) return;
+        const target = modelBox.getCenter(new THREE.Vector3());
+        const distance = Math.max(
+          camera.position.distanceTo(startTarget),
+          0.001,
+        );
         const targetUp =
           Math.abs(normalizedDirection.dot(zUp)) > 0.999
             ? new THREE.Vector3(0, 1, 0)
             : zUp.clone();
         cameraAnimation = {
-          center,
           duration: 0.35,
           elapsed: 0,
           startPosition: camera.position.clone(),
+          startTarget,
           startUp: camera.up.clone(),
-          targetPosition: center
+          target,
+          targetPosition: target
             .clone()
             .addScaledVector(normalizedDirection, distance),
           targetUp,
@@ -974,7 +1108,12 @@
         camera.up
           .lerpVectors(cameraAnimation.startUp, cameraAnimation.targetUp, eased)
           .normalize();
-        camera.lookAt(cameraAnimation.center);
+        controls.target.lerpVectors(
+          cameraAnimation.startTarget,
+          cameraAnimation.target,
+          eased,
+        );
+        camera.lookAt(controls.target);
         if (progress === 1) {
           cameraAnimation = undefined;
           controls.enabled = true;

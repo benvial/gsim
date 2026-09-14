@@ -60,6 +60,34 @@ def vertical_coupler_component(length: float = 2.0) -> gf.Component:
     return component
 
 
+def ten_nm_feature_component(length: float = 2.0) -> gf.Component:
+    """Return a waveguide plus one explicit 10 nm-wide material feature."""
+    component = gf.Component()
+    component.add_polygon(
+        [(0, -0.25), (length, -0.25), (length, 0.25), (0, 0.25)],
+        layer=(2, 0),
+    )
+    component.add_polygon(
+        [(0.5, 0.4), (0.51, 0.4), (0.51, 0.5), (0.5, 0.5)],
+        layer=(2, 0),
+    )
+    component.add_port(
+        name="o1",
+        center=(0, 0),
+        width=0.5,
+        orientation=180,
+        layer=(2, 0),
+    )
+    component.add_port(
+        name="o2",
+        center=(length, 0),
+        width=0.5,
+        orientation=0,
+        layer=(2, 0),
+    )
+    return component
+
+
 @pytest.fixture
 def fdtd_pdk_module() -> SimpleNamespace:
     """Return a PDK module with project Si and fallback-only SiO2."""
@@ -70,6 +98,15 @@ def fdtd_pdk_module() -> SimpleNamespace:
                 thickness=0.22,
                 zmin=0,
                 sidewall_angle=10,
+                width_to_z=0.5,
+                mesh_order=2,
+                material="Si",
+            ),
+            "thin_core": LayerLevel(
+                layer=LogicalLayer(layer=(2, 0)),
+                thickness=0.22,
+                zmin=0,
+                sidewall_angle=0,
                 width_to_z=0.5,
                 mesh_order=2,
                 material="Si",
@@ -88,6 +125,7 @@ def fdtd_pdk_module() -> SimpleNamespace:
         cells={
             "straight": straight_component,
             "vertical_coupler": vertical_coupler_component,
+            "ten_nm_feature": ten_nm_feature_component,
         },
         layer_stack=layer_stack,
     )
