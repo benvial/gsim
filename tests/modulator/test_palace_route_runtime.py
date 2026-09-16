@@ -29,7 +29,14 @@ import pytest
 from gsim.common.modes import NoLineModeError
 from gsim.modulator import Device, Study
 
-from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_demo
+from .conftest import (
+    CENTER_Y,
+    HALF_WIDTH,
+    PAD_WIDTH,
+    RIB_HEIGHT,
+    WALL_MODE_WARNING,
+    build_demo,
+)
 
 pytest.importorskip("gmsh")
 pytest.importorskip("femwell")
@@ -231,11 +238,6 @@ def rf_line(study, **settings):
 def rf_gate_study(output_dir) -> Study:
     """The gate's Study: the depleted Bias point of :data:`RF_GATE_BIASES`."""
     return study_at(output_dir, biases=RF_GATE_BIASES)
-
-
-#: What either Route says when the Mode it selected is the wall Mode:
-#: femwell off its two electrode currents, Palace off its gap voltage.
-WALL_MODE_WARNING = "window wall"
 
 
 class TestRFElectrodeModel:

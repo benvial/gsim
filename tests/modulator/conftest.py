@@ -30,6 +30,11 @@ RIB_HEIGHT = DEFAULT_RIB_HEIGHT_UM
 ELECTRODE_THICKNESS = DEFAULT_ELECTRODE_THICKNESS_UM
 LENGTH_UM = DEFAULT_LENGTH_UM
 
+#: What either RF Route says when the Mode it selected is the wall Mode:
+#: femwell off its two electrode currents, Palace off its gap voltage
+#: (ADR 0005).
+WALL_MODE_WARNING = "window wall"
+
 
 def build_demo():
     """Draw the lateral PN phase shifter the tests are written against."""
