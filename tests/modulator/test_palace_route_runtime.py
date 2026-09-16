@@ -263,6 +263,81 @@ class TestRFCrossRouteAgreement:
         assert abs(z_palace.real - z_femwell.real) < Z0_RTOL * abs(z_femwell.real)
 
 
+# Palace's own line integrals against the same integrals run on the fields
+# it saved: one solve, two evaluations of ``2P/|I|^2``. The voltage path
+# and the loop sample the FE solution exactly where the fallback reads
+# ParaView nodes, so the two should sit closer than the two Routes do,
+# but the loop hugs the conductor where the field is steepest.
+NATIVE_Z0_RTOL = 0.05
+
+
+@pytest.fixture(scope="module")
+def native_solve(tmp_path_factory):
+    """The ticket-17 cross-section solved once, both impedance readings kept."""
+    from gsim.modulator.route import (
+        declare_impedance_paths,
+        field_line_impedance,
+        native_line_impedance,
+        palace_binary,
+        solve_palace_modes,
+    )
+
+    study = study_at(tmp_path_factory.mktemp("native_z0"))
+    study.rf(
+        route="palace",
+        frequencies_hz=[10e9],
+        n_strips=3,
+        num_modes=4,
+        n_guess=2.0,
+    )
+    stage = study.rf
+    staircase = stage.staircase()
+    sim = stage.simulation(staircase)
+    sim.mesh(**stage.mesh)
+    paths = stage.impedance_paths(sim, staircase)
+    declare_impedance_paths(sim, paths)
+    modes = solve_palace_modes(
+        sim,
+        freq_hz=10e9,
+        num_modes=4,
+        binary=palace_binary(None, stage_name="rf"),
+        target=2.0,
+        save=4,
+    )
+    mode = stage._pick_line_mode(modes, 10e9)
+    h_span, v_span = staircase.electrode_extent(stage.signal_electrode())
+    native = native_line_impedance(sim, mode, stage_name="rf")
+    fields = field_line_impedance(
+        sim, mode, h_span=h_span, v_span=v_span, stage_name="rf"
+    )
+    return paths, native, fields
+
+
+class TestNativeImpedance:
+    """Ticket 22: Palace's ``mode-Z.csv`` against the field-based fallback."""
+
+    def test_palace_wrote_the_impedance_tables(self, native_solve):
+        _, native, _ = native_solve
+        assert native is not None
+        assert np.isfinite(native.real)
+        assert 10.0 < native.real < 1e3
+
+    def test_the_native_and_field_based_impedances_agree(self, native_solve):
+        _, native, fields = native_solve
+        assert np.isfinite(fields.real)
+        assert abs(native.real - fields.real) < NATIVE_Z0_RTOL * abs(fields.real)
+
+    def test_the_stage_reports_the_native_value(self, tmp_path, native_solve):
+        """What ``study.rf.run()`` returns on the Palace Route is the table's."""
+        _, native, _ = native_solve
+        study = study_at(tmp_path)
+        line = rf_line(study, route="palace")
+        # Same Cross-section, same settings, a fresh solve: the reading
+        # is Palace's, so it is real and lands on the same number.
+        assert line.z0_ohm[0].imag == 0.0
+        assert line.z0_ohm[0].real == pytest.approx(native.real, rel=1e-3)
+
+
 class TestStripCountConvergence:
     def test_the_palace_index_shift_converges_in_strip_count(self, tmp_path):
         """Refining the Staircase moves the answer less and less.

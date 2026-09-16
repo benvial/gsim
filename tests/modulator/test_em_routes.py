@@ -426,3 +426,387 @@ class TestAbortedBinaryIsReported:
         assert "partial solver output" in message
         assert "exit status 134" in message
         assert str(tmp_path) in message
+
+
+#: A signal electrode, a return electrode and the meshed domain around
+#: them, for sizing the Palace Route's impedance paths (um).
+SIGNAL = ((-22.6, -20.6), (0.0, 0.5))
+GROUND = ((-19.4, -17.4), (0.0, 0.5))
+DOMAIN = ((-25.0, -15.0), (-3.0, 2.0))
+
+
+def impedance_paths(**overrides):
+    """The paths sized for the electrodes above, with any of them replaced."""
+    from gsim.modulator.route import line_impedance_paths
+
+    kwargs = {"signal": SIGNAL, "ground": GROUND, "domain": DOMAIN}
+    kwargs.update(overrides)
+    return line_impedance_paths(**kwargs)
+
+
+class TestImpedancePaths:
+    """The postprocessing paths the RF Stage's Palace Route declares.
+
+    Pure geometry: a signal electrode, a return electrode and the meshed
+    domain in, a voltage path and a current loop out. Palace integrates
+    E along the first and H around the second, so the first must run
+    from one conductor face to the other and the second must enclose the
+    signal conductor and nothing else.
+    """
+
+    def test_the_voltage_path_crosses_the_gap_face_to_face(self):
+        paths = impedance_paths()
+
+        (h0, v0), (h1, v1) = paths.voltage
+        assert v0 == v1 == pytest.approx(0.25)
+        # From the signal's inner face towards the return's inner face,
+        # each end a hair inside the gap rather than on the conductor.
+        assert -20.6 < h0 < -20.5
+        assert -19.5 < h1 < -19.4
+        assert h1 - h0 == pytest.approx(1.2, rel=1e-2)
+
+    def test_each_end_sits_at_its_own_electrodes_mid_height(self):
+        """A return on another metal level is still met on its face."""
+        paths = impedance_paths(ground=((-19.4, -17.4), (1.0, 1.5)))
+
+        (_, v0), (_, v1) = paths.voltage
+        assert v0 == pytest.approx(0.25)
+        assert v1 == pytest.approx(1.25)
+
+    def test_a_return_on_the_low_side_is_crossed_the_other_way(self):
+        paths = impedance_paths(signal=GROUND, ground=SIGNAL)
+
+        (h0, _), (h1, _) = paths.voltage
+        assert -19.4 > h0 > -19.5
+        assert -20.6 < h1 < -20.5
+
+    def test_the_current_loop_hugs_the_signal_and_only_the_signal(self):
+        paths = impedance_paths()
+
+        h = [p[0] for p in paths.current]
+        v = [p[1] for p in paths.current]
+        (s0, s1), (t0, t1) = SIGNAL
+        # Around the conductor: every corner outside its rectangle...
+        assert min(h) < s0
+        assert max(h) > s1
+        assert min(v) < t0
+        assert max(v) > t1
+        # ...but well clear of the return and of the domain wall.
+        assert max(h) < GROUND[0][0]
+        assert min(h) > DOMAIN[0][0]
+        assert min(v) > DOMAIN[1][0]
+        assert max(v) < DOMAIN[1][1]
+        # And tight: the loop's clearance is a fraction of the gap.
+        assert max(h) - s1 < 0.01 * (GROUND[0][0] - s1)
+
+    def test_the_loop_is_closed_by_palace_not_by_repeating_a_point(self):
+        """Palace joins the last point back to the first itself."""
+        paths = impedance_paths()
+
+        assert len(paths.current) == 4
+        assert paths.current[0] != paths.current[-1]
+
+    def test_the_loop_stays_inside_a_tight_domain(self):
+        """A wall closer than the gap sets the clearance, not the gap."""
+        paths = impedance_paths(domain=((-22.601, -15.0), (-0.001, 2.0)))
+
+        assert min(p[0] for p in paths.current) > -22.601
+        assert min(p[1] for p in paths.current) > -0.001
+
+    def test_touching_electrodes_are_refused(self):
+        with pytest.raises(ValueError, match="no gap"):
+            impedance_paths(ground=((-20.6, -18.6), (0.0, 0.5)))
+
+    def test_electrodes_stacked_over_each_other_are_refused(self):
+        with pytest.raises(ValueError, match="no gap"):
+            impedance_paths(ground=((-22.0, -20.0), (1.0, 1.5)))
+
+    def test_a_signal_the_window_clips_is_refused(self):
+        """An electrode on or over the wall has no outline to loop around."""
+        with pytest.raises(ValueError, match="not inside the meshed domain"):
+            impedance_paths(domain=((-22.6, -15.0), (-3.0, 2.0)))
+
+
+class TestDeclaringThePaths:
+    def test_the_paths_become_the_sims_only_postprocessing_port(self, biased):
+        from gsim.modulator.route import declare_impedance_paths
+
+        sim = biased.rf.simulation()
+        paths = impedance_paths()
+
+        declare_impedance_paths(sim, paths)
+
+        assert len(sim.ports) == 1
+        port = sim.ports[0]
+        assert port.voltage_path == [list(p) for p in paths.voltage]
+        assert port.current_path == [list(p) for p in paths.current]
+        # Two-dimensional points: cross-section coordinates, not layout.
+        assert all(len(p) == 2 for p in port.voltage_path)
+
+    def test_declaring_twice_replaces_rather_than_stacks(self, biased):
+        from gsim.modulator.route import declare_impedance_paths
+
+        sim = biased.rf.simulation()
+
+        declare_impedance_paths(sim, impedance_paths())
+        declare_impedance_paths(sim, impedance_paths())
+
+        assert len(sim.ports) == 1
+
+    def test_another_port_on_the_sim_is_refused(self, biased):
+        """Entry 1 is where the impedance is read, so nothing may precede it."""
+        from gsim.modulator.route import declare_impedance_paths
+
+        sim = biased.rf.simulation()
+        sim.add_port("probe", voltage_path=[[-20.0, 0.1], [-20.0, 0.2]])
+
+        with pytest.raises(ValueError, match=r"already carries ports \['probe'\]"):
+            declare_impedance_paths(sim, impedance_paths())
+
+
+#: ``mode -> (Z_PV, Z_VI)`` of the canned ``mode-Z.csv``.
+NATIVE_TABLE = {1: (100.0, 80.0), 2: (200.0, 120.0)}
+
+
+class TestNativeImpedance:
+    """Reading the selected Mode's impedance off Palace's own tables."""
+
+    class _Sim:
+        def __init__(self, output_dir):
+            self.output_dir = output_dir
+
+    @staticmethod
+    def _write_tables(
+        output_dir, *, rows=None, z_vi: bool = True, where="output/palace"
+    ) -> None:
+        palace_dir = output_dir / where
+        palace_dir.mkdir(parents=True, exist_ok=True)
+        rows = NATIVE_TABLE if rows is None else rows
+        header = "m, Z_PV[1] (Ohm), L_PV[1] (H/m), C_PV[1] (F/m)"
+        lines = [f"{m}, {z_pv}, 1e-7, 1e-10" for m, (z_pv, _) in rows.items()]
+        if z_vi:
+            header += ", Z_VI[1] (Ohm), L_VI[1] (H/m), C_VI[1] (F/m)"
+            lines = [
+                f"{m}, {z_pv}, 1e-7, 1e-10, {z_vi_}, 1e-7, 1e-10"
+                for m, (z_pv, z_vi_) in rows.items()
+            ]
+        (palace_dir / "mode-Z.csv").write_text(header + "\n" + "\n".join(lines) + "\n")
+
+    def test_it_is_the_power_current_impedance_of_the_selected_mode(self, tmp_path):
+        """``Z_VI^2 / Z_PV`` is ``2P/|I|^2``: the definition both Routes use."""
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        self._write_tables(tmp_path)
+
+        z0 = native_line_impedance(
+            self._Sim(tmp_path), PalaceMode(2.1 - 1e-5j, 2), stage_name="rf"
+        )
+
+        assert z0 == pytest.approx(120.0**2 / 200.0)
+
+    def test_a_gap_carrying_no_voltage_is_reported(self, tmp_path):
+        """``|V| |I| << 2P``: the electrodes sit at one potential."""
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        self._write_tables(tmp_path, rows={1: (2.5e-8, 2.1e-3)})
+
+        with pytest.warns(UserWarning, match="between them and the window wall"):
+            z0 = native_line_impedance(
+                self._Sim(tmp_path), PalaceMode(2.03 - 6e-7j, 1), stage_name="rf"
+            )
+
+        # The impedance itself is still the power-current one.
+        assert z0 == pytest.approx(2.1e-3**2 / 2.5e-8)
+
+    def test_a_lossy_line_mode_is_not_reported(self, tmp_path):
+        """``Z_PV / Z_PI`` of 0.4 is a lossy line, not a wall mode."""
+        import warnings
+
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        self._write_tables(tmp_path, rows={1: (1.63, 2.62)})
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            native_line_impedance(
+                self._Sim(tmp_path), PalaceMode(31.9 - 31.9j, 1), stage_name="rf"
+            )
+
+    def test_a_loop_enclosing_no_current_is_no_answer(self, tmp_path):
+        """``Z_VI = 0`` would make the impedance zero, which is no reading."""
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        self._write_tables(tmp_path, rows={1: (100.0, 0.0)})
+
+        assert (
+            native_line_impedance(
+                self._Sim(tmp_path), PalaceMode(2.0, 1), stage_name="rf"
+            )
+            is None
+        )
+
+    def test_a_table_left_beside_the_run_is_not_this_runs(self, tmp_path):
+        """Only the solver's own directory is cleared per run, so only it is read."""
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        self._write_tables(tmp_path, where=".")
+
+        assert (
+            native_line_impedance(
+                self._Sim(tmp_path), PalaceMode(2.0, 1), stage_name="rf"
+            )
+            is None
+        )
+
+    def test_no_table_is_no_answer(self, tmp_path):
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        assert (
+            native_line_impedance(
+                self._Sim(tmp_path), PalaceMode(2.0, 1), stage_name="rf"
+            )
+            is None
+        )
+
+    def test_a_table_without_the_current_is_no_answer(self, tmp_path):
+        """``Z_PV`` alone is a different definition, not a fallback."""
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        self._write_tables(tmp_path, z_vi=False)
+
+        assert (
+            native_line_impedance(
+                self._Sim(tmp_path), PalaceMode(2.0, 1), stage_name="rf"
+            )
+            is None
+        )
+
+    def test_a_mode_the_table_does_not_carry_is_no_answer(self, tmp_path):
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        self._write_tables(tmp_path)
+
+        assert (
+            native_line_impedance(
+                self._Sim(tmp_path), PalaceMode(2.0, 3), stage_name="rf"
+            )
+            is None
+        )
+
+    def test_the_route_prefers_the_native_value(self, tmp_path):
+        """With the table on disk, no field file is read and nothing warns."""
+        import warnings
+
+        from gsim.modulator.route import PalaceMode, palace_line_impedance
+
+        self._write_tables(tmp_path)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            z0 = palace_line_impedance(
+                self._Sim(tmp_path),
+                PalaceMode(2.0, 1),
+                h_span=(-22.6, -20.6),
+                v_span=(0.0, 0.5),
+                stage_name="rf",
+            )
+
+        assert z0 == pytest.approx(80.0**2 / 100.0)
+        assert z0.imag == 0.0
+
+    def test_without_the_table_the_fields_are_read_and_their_absence_reported(
+        self, tmp_path
+    ):
+        """The fallback and its NaN contract stay."""
+        from gsim.modulator.route import PalaceMode, palace_line_impedance
+
+        with pytest.warns(UserWarning, match="could not read mode 1's saved fields"):
+            z0 = palace_line_impedance(
+                self._Sim(tmp_path),
+                PalaceMode(2.0, 1),
+                h_span=(-22.6, -20.6),
+                v_span=(0.0, 0.5),
+                stage_name="rf",
+            )
+
+        assert np.isnan(z0.real)
+
+
+class TestTheStageDeclaresThePaths:
+    def test_the_palace_route_solves_with_the_paths_declared(self, biased, monkeypatch):
+        """The RF Stage sizes the paths from its Staircase, not by hand."""
+        from pathlib import Path
+
+        from gsim.modulator import route
+
+        seen: dict[str, list] = {}
+
+        def fake_extent(_sim):
+            return ((-30.0, -10.0), (-3.0, 2.0))
+
+        def fake_solve(sim, **_kwargs):
+            seen["ports"] = list(sim.ports)
+            return [route.PalaceMode(n_eff=2.0 - 1e-3j, mode_id=1)]
+
+        monkeypatch.setattr(route, "mesh_extent", fake_extent)
+        monkeypatch.setattr(route, "solve_palace_modes", fake_solve)
+        monkeypatch.setattr(
+            route, "palace_line_impedance", lambda *_a, **_k: complex(50.0)
+        )
+
+        biased.rf(route="palace", frequencies_hz=[10e9], n_strips=3)
+        staircase = biased.rf.staircase()
+        sim = biased.rf.simulation(staircase)
+        with pytest.warns(UserWarning, match="cannot check window containment"):
+            n_eff, z0 = biased.rf._solve_palace(sim, staircase, Path("palace"))
+
+        assert n_eff == [2.0 - 1e-3j]
+        assert z0 == [50.0]
+        (port,) = seen["ports"]
+        (h_lo, h_hi), (v_lo, v_hi) = staircase.electrode_extent(
+            biased.rf.signal_electrode()
+        )
+        # The voltage path leaves the signal electrode's inner face at
+        # its mid-height; the loop surrounds that electrode.
+        assert port.voltage_path[0][1] == pytest.approx(0.5 * (v_lo + v_hi))
+        loop_h = [p[0] for p in port.current_path]
+        assert min(loop_h) < h_lo
+        assert max(loop_h) > h_hi
+
+    def test_paths_that_cannot_be_sized_leave_the_solve_to_the_fields(
+        self, biased, monkeypatch
+    ):
+        """A Window clipping an electrode is no reason to refuse the solve."""
+        import warnings
+        from pathlib import Path
+
+        from gsim.modulator import route
+
+        seen: dict[str, list] = {}
+
+        def fake_solve(sim, **_kwargs):
+            seen["ports"] = list(sim.ports)
+            return [route.PalaceMode(n_eff=2.0 - 1e-3j, mode_id=1)]
+
+        # The mesh stops short of the signal electrode's outer face.
+        monkeypatch.setattr(
+            route, "mesh_extent", lambda _sim: ((-22.0, -10.0), (-3.0, 2.0))
+        )
+        monkeypatch.setattr(route, "solve_palace_modes", fake_solve)
+        monkeypatch.setattr(
+            route, "palace_line_impedance", lambda *_a, **_k: complex(50.0)
+        )
+
+        biased.rf(route="palace", frequencies_hz=[10e9], n_strips=3)
+        staircase = biased.rf.staircase()
+        sim = biased.rf.simulation(staircase)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            n_eff, z0 = biased.rf._solve_palace(sim, staircase, Path("palace"))
+        assert any(
+            "read off the saved fields instead" in str(w.message) for w in caught
+        )
+
+        assert n_eff == [2.0 - 1e-3j]
+        assert z0 == [50.0]
+        assert seen["ports"] == []

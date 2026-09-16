@@ -121,3 +121,35 @@ class TestLossBound:
     def test_a_bound_nothing_survives_is_reported(self):
         with pytest.raises(NoLineModeError, match="No propagating line mode"):
             select_line_mode([3.0 - 2.0j], max_loss_ratio=0.5)
+
+
+class TestGainBound:
+    """A Mode that grows along the line is a numerical artefact, not a candidate.
+
+    In the ``exp(+i omega t)`` convention a lossy Mode has ``Im(n_eff) < 0``;
+    a positive imaginary part is gain, which a passive line cannot have.
+    Palace's shift-and-invert search returns such a Mode now and then, well
+    inside the loss bound, and it must not be taken for the line.
+    """
+
+    def test_a_gain_mode_inside_the_loss_bound_is_dropped(self):
+        physical = mode(2.03 - 6e-7j)
+        spurious = mode(1170.0 + 512.0j)  # |Im|/Re = 0.44, but growing
+        assert propagating_modes([physical, spurious], max_loss_ratio=0.5) == [physical]
+
+    def test_it_never_becomes_the_selected_line_mode(self):
+        physical = mode(2.03 - 6e-7j)
+        assert (
+            select_line_mode([physical, mode(1170.0 + 512.0j)], max_loss_ratio=0.5)
+            is physical
+        )
+
+    def test_numerical_noise_on_a_lossless_mode_is_not_gain(self):
+        lossless = mode(2.03 + 1e-9j)
+        assert propagating_modes([lossless]) == [lossless]
+
+    def test_the_bound_is_a_parameter(self):
+        """A coarser solve's noise can be admitted without a whole rule."""
+        noisy = mode(2.4 + 3e-3j)
+        assert propagating_modes([noisy]) == []
+        assert propagating_modes([noisy], max_gain_ratio=1e-2) == [noisy]

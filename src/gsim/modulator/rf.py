@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from gsim.common.twmzm import JunctionBranch
     from gsim.common.twmzm_report import LoadedLineComparison, RFLineParams
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
+    from gsim.modulator.route import ImpedancePaths
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import BiasSweepResult, CarrierMap
 
@@ -656,6 +657,48 @@ class RFStage(EMStage):
             )
         return n_eff, z0_ohm
 
+    def impedance_paths(
+        self, sim: BoundaryModeSim, staircase: StaircaseCrossSection
+    ) -> ImpedancePaths:
+        """Where the Palace Route integrates the line voltage and current.
+
+        Sized from the Staircase rather than hand-specified: the voltage
+        path crosses the gap from the signal electrode to the return
+        electrode, and the current loop hugs the signal electrode inside
+        the meshed domain (:func:`~gsim.modulator.route.line_impedance_paths`).
+
+        Args:
+            sim: The meshed Staircase simulation, whose mesh bounds the
+                paths.
+            staircase: The Staircase it was built from.
+
+        Returns:
+            The two paths.
+
+        Raises:
+            ValueError: When the Staircase does not carry exactly one
+                return electrode beside the signal, or the signal
+                electrode is not inside the mesh — the Palace Route then
+                reads the impedance off the saved fields instead.
+        """
+        from gsim.modulator.route import line_impedance_paths, mesh_extent
+
+        signal = self.signal_electrode()
+        others = [name for name in staircase.electrode_names if name != signal]
+        if len(others) != 1:
+            raise ValueError(
+                f"The {self.stage_name} stage's impedance paths need one return "
+                f"electrode beside the signal '{signal}', but the staircase drew "
+                f"{list(staircase.electrode_names)}."
+            )
+        signal_h, signal_v = staircase.electrode_extent(signal)
+        ground_h, ground_v = staircase.electrode_extent(others[0])
+        return line_impedance_paths(
+            signal=(signal_h, signal_v),
+            ground=(ground_h, ground_v),
+            domain=mesh_extent(sim),
+        )
+
     def _solve_palace(
         self,
         sim: BoundaryModeSim,
@@ -666,15 +709,18 @@ class RFStage(EMStage):
 
         Palace's *text* results are effective indices without fields, so
         the Window-containment ratio — measured while the Mode is being
-        chosen — cannot be had here. The impedance can: the solve saves
-        every Mode it might select, and the selected one's fields are
-        read back and put through the same Marks-Williams integral the
-        femwell Route runs.
+        chosen — cannot be had here. The impedance can: the solve
+        declares the voltage and current paths of the line, sized from
+        the Staircase (:meth:`impedance_paths`), and Palace integrates
+        the selected Mode's impedance along them itself. The solve also
+        saves every Mode it might select, so a result directory whose
+        tables are missing still answers off the saved fields, through
+        the same Marks-Williams integral the femwell Route runs.
 
         Args:
             sim: The meshed Staircase simulation.
             staircase: The Staircase it was built from, holding the
-                signal conductor's outline.
+                electrodes' outlines.
             binary: Palace executable, as ``require_route`` resolved
                 it; resolved again when ``None``.
 
@@ -683,6 +729,7 @@ class RFStage(EMStage):
         """
         from gsim.modulator.route import (
             containment_unmeasurable,
+            declare_impedance_paths,
             palace_binary,
             palace_line_impedance,
             solve_palace_modes,
@@ -692,6 +739,19 @@ class RFStage(EMStage):
         executable = palace_binary(binary, stage_name=self.stage_name)
         verbose = self._is_verbose()
         h_span, v_span = staircase.electrode_extent(self.signal_electrode())
+        try:
+            paths = self.impedance_paths(sim, staircase)
+        except ValueError as err:
+            # Not a reason to refuse the solve: the field-based reading
+            # needs only the signal electrode's outline, which is in hand.
+            warnings.warn(
+                f"The {self.stage_name} stage's palace route cannot declare its "
+                f"impedance paths, so the characteristic impedance is read off "
+                f"the saved fields instead: {err}",
+                stacklevel=2,
+            )
+        else:
+            declare_impedance_paths(sim, paths)
 
         n_eff: list[complex] = []
         z0_ohm: list[complex] = []

@@ -33,6 +33,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 __all__ = [
+    "MAX_GAIN_RATIO",
     "LineModeRule",
     "NoLineModeError",
     "mode_index",
@@ -42,6 +43,14 @@ __all__ = [
 
 #: A candidate rule: given every solved Mode, return the physical ones.
 LineModeRule = Callable[[Sequence[Any]], Sequence[Any]]
+
+#: How much ``Im(n_eff) / Re(n_eff)`` may run positive before a Mode counts
+#: as growing rather than propagating. In the ``exp(+i omega t)``
+#: convention loss is a negative imaginary part; a positive one is gain,
+#: which a passive line cannot have, so it marks a spurious Mode of the
+#: eigenvalue search. The bound leaves room for the numerical noise a
+#: lossless Mode carries.
+MAX_GAIN_RATIO: float = 1e-3
 
 
 class NoLineModeError(ValueError):
@@ -71,17 +80,26 @@ def propagating_modes[ModeT](
     *,
     min_index: float = 1.0,
     max_loss_ratio: float = 1.0,
+    max_gain_ratio: float = MAX_GAIN_RATIO,
 ) -> list[ModeT]:
     """Keep the Modes that propagate, dropping evanescent and spurious ones.
+
+    A Mode is kept when it is guided (``Re(n_eff)`` above *min_index*),
+    loses no more than *max_loss_ratio* per unit length than it advances
+    in phase, and does not grow: ``Im(n_eff)`` positive beyond
+    *max_gain_ratio* is gain, which a passive line cannot have.
 
     Args:
         modes: Every solved Mode.
         min_index: Lower bound on ``Re(n_eff)``; Modes at or below it are
             not guided by the line (default: the vacuum light line).
-        max_loss_ratio: Upper bound on ``|Im(n_eff)| / Re(n_eff)``; a
+        max_loss_ratio: Upper bound on ``-Im(n_eff) / Re(n_eff)``; a
             Mode losing more than this per unit length than it advances
             in phase is not propagating (default: one, where the two are
             equal).
+        max_gain_ratio: Upper bound on ``+Im(n_eff) / Re(n_eff)``, the
+            room left for a lossless Mode's numerical noise (default:
+            :data:`MAX_GAIN_RATIO`).
 
     Returns:
         The propagating Modes, in the order they were solved.
@@ -89,7 +107,10 @@ def propagating_modes[ModeT](
     kept = []
     for mode in modes:
         n_eff = mode_index(mode)
-        if n_eff.real > min_index and abs(n_eff.imag) < max_loss_ratio * n_eff.real:
+        if (
+            n_eff.real > min_index
+            and -max_loss_ratio * n_eff.real < n_eff.imag <= max_gain_ratio * n_eff.real
+        ):
             kept.append(mode)
     return kept
 

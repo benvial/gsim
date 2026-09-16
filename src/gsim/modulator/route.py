@@ -35,10 +35,19 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFAULT_PALACE_STRIPS",
     "FIELD_INDEX_RTOL",
+    "IMPEDANCE_PORT",
+    "MIN_VOLTAGE_POWER_RATIO",
+    "PATH_CLEARANCE_FRACTION",
     "EMRoute",
+    "ImpedancePaths",
     "PalaceMode",
     "containment_unmeasurable",
+    "declare_impedance_paths",
+    "field_line_impedance",
+    "line_impedance_paths",
+    "mesh_extent",
     "mode_boundary_ratio",
+    "native_line_impedance",
     "palace_binary",
     "palace_line_impedance",
     "require_palace_binary",
@@ -62,13 +71,15 @@ class PalaceMode:
 
     Palace's *text* results report Modes as effective indices rather than
     as field vectors, so a Palace Mode carries its index and its
-    solver-assigned number and nothing else. Its fields are not lost —
-    a solve asked to save them writes them to ParaView, and
-    :func:`palace_line_impedance` reads one back through
-    :mod:`gsim.palace.mode_fields` — but they are not in hand at
-    selection time, so anything a Stage measures while choosing a Mode
-    (the Window-containment ratio) stays a femwell-Route capability
-    rather than something to invent.
+    solver-assigned number and nothing else. What else the solve
+    measured is on disk under the same number: the characteristic
+    impedance its postprocessing paths integrate (``mode-Z.csv``, read
+    by :func:`native_line_impedance`) and, when the solve was asked to
+    save them, the fields themselves (ParaView, read by
+    :func:`field_line_impedance`). Neither is in hand at selection time,
+    so anything a Stage measures while choosing a Mode (the
+    Window-containment ratio) stays a femwell-Route capability rather
+    than something to invent.
 
     Attributes:
         n_eff: Complex effective index (``exp(+i omega t)`` convention).
@@ -472,7 +483,246 @@ def _check_field_is_the_mode(field: Any, mode: PalaceMode, *, stage_name: str) -
     )
 
 
-def palace_line_impedance(
+#: How far inside the gap a postprocessing path keeps from a conductor
+#: face, as a fraction of the smallest clearance around it. The paths
+#: are sampled on the meshed domain, and under the ``"pec"`` model a
+#: conductor's interior is not in it (ADR 0003); a hair inside the gap
+#: is on the domain, and a hair is what the voltage integral misses.
+PATH_CLEARANCE_FRACTION: float = 1e-3
+
+#: Name of the postprocessing port the RF Stage declares on its solve.
+IMPEDANCE_PORT: str = "line"
+
+Extent = tuple[tuple[float, float], tuple[float, float]]
+
+
+@dataclass(frozen=True)
+class ImpedancePaths:
+    """Where Palace integrates the line's voltage and current.
+
+    Palace's ``BoundaryMode`` postprocessing takes two paths per
+    impedance entry: an open one along which it integrates ``E`` for
+    the mode voltage, and a closed one around which it integrates ``H``
+    for the current. Both are in the Cross-section's own ``(h, v)``
+    coordinates (um).
+
+    Attributes:
+        voltage: Two points, from the signal conductor's face across the
+            gap to the return conductor's face.
+        current: The corners of a loop enclosing the signal conductor and
+            nothing else. Palace joins the last corner back to the first,
+            so the first is not repeated.
+    """
+
+    voltage: tuple[tuple[float, float], ...]
+    current: tuple[tuple[float, float], ...]
+
+
+def line_impedance_paths(
+    *,
+    signal: Extent,
+    ground: Extent,
+    domain: Extent,
+    clearance_fraction: float = PATH_CLEARANCE_FRACTION,
+) -> ImpedancePaths:
+    """Size the impedance postprocessing paths from the electrode layout.
+
+    The voltage path crosses the gap between the two electrodes, from
+    the signal electrode's face at its mid-height to the return
+    electrode's face at its own, so it is the same path whichever side
+    of the Junction the drive is on. The current loop is the signal
+    electrode's outline pushed out by a clearance: tight enough that
+    the doped Strips standing against the electrode contribute nothing
+    to the enclosed current, which is what the Marks-Williams contour of
+    the field-based fallback measures too.
+
+    Args:
+        signal: ``((h_min, h_max), (v_min, v_max))`` of the signal
+            electrode (um).
+        ground: The same for the return electrode.
+        domain: The same for the meshed domain the paths are sampled on.
+        clearance_fraction: Fraction of the smallest clearance around the
+            signal electrode — the gap, its thickness, its distance to
+            each domain wall — that the paths keep from every face.
+
+    Returns:
+        The two paths.
+
+    Raises:
+        ValueError: When the electrodes leave no gap to cross along the
+            in-plane axis, or the signal electrode is not strictly inside
+            the domain (an electrode the Window clips has no outline to
+            loop around).
+    """
+    (s_lo, s_hi), (t_lo, t_hi) = signal
+    (g_lo, g_hi), (u_lo, u_hi) = ground
+    (d_lo, d_hi), (e_lo, e_hi) = domain
+
+    if not (d_lo < s_lo < s_hi < d_hi and e_lo < t_lo < t_hi < e_hi):
+        raise ValueError(
+            f"The signal electrode spans {signal} but is not inside the meshed "
+            f"domain {domain}, so no path around it can be sampled."
+        )
+    if g_lo > s_hi:
+        gap, faces = g_lo - s_hi, (s_hi, g_lo)
+    elif g_hi < s_lo:
+        gap, faces = s_lo - g_hi, (s_lo, g_hi)
+    else:
+        raise ValueError(
+            f"The electrodes at {signal[0]} and {ground[0]} leave no gap along "
+            "the in-plane axis to integrate the line voltage across."
+        )
+
+    clearance = clearance_fraction * min(
+        gap, t_hi - t_lo, s_lo - d_lo, d_hi - s_hi, t_lo - e_lo, e_hi - t_hi
+    )
+    # A hair into the gap from each face, on the domain rather than on
+    # (or, under the "pec" model, inside) the conductor.
+    inset = clearance if faces[0] < faces[1] else -clearance
+    voltage = (
+        (faces[0] + inset, 0.5 * (t_lo + t_hi)),
+        (faces[1] - inset, 0.5 * (u_lo + u_hi)),
+    )
+    current = (
+        (s_lo - clearance, t_lo - clearance),
+        (s_hi + clearance, t_lo - clearance),
+        (s_hi + clearance, t_hi + clearance),
+        (s_lo - clearance, t_hi + clearance),
+    )
+    return ImpedancePaths(voltage=voltage, current=current)
+
+
+def mesh_extent(sim: BoundaryModeSim) -> Extent:
+    """The rectangle a meshed simulation's 2D mesh covers.
+
+    Args:
+        sim: A meshed ``BoundaryModeSim``.
+
+    Returns:
+        ``((h_min, h_max), (v_min, v_max))`` in the mesh's own
+        cross-section coordinates (um).
+
+    Raises:
+        ValueError: When the simulation has not been meshed.
+    """
+    import meshio
+
+    points = meshio.read(str(sim.mesh_path)).points
+    h = points[:, 0]
+    v = points[:, 1]
+    return ((float(h.min()), float(h.max())), (float(v.min()), float(v.max())))
+
+
+def declare_impedance_paths(
+    sim: BoundaryModeSim, paths: ImpedancePaths, *, nsamples: int = 100
+) -> None:
+    """Register the paths as the solve's one postprocessing port.
+
+    A ``BoundaryMode`` port is postprocessing only — it loads nothing
+    and leaves the eigenproblem as it was — and its entry index is its
+    declaration order across every port on the simulation. The port
+    declared here must therefore be the only one, so that it is entry
+    ``1``, which is where :func:`native_line_impedance` reads.
+
+    Args:
+        sim: The simulation about to be solved; meshed or not, since the
+            paths take no part in meshing.
+        paths: What :func:`line_impedance_paths` sized.
+        nsamples: Quadrature order of each line integral.
+
+    Raises:
+        ValueError: When the simulation already carries another port,
+            which would push the line's entry off index ``1``.
+    """
+    others = [port.name for port in sim.ports if port.name != IMPEDANCE_PORT]
+    others += [cpw.name for cpw in sim.cpw_ports]
+    if others:
+        raise ValueError(
+            f"The simulation already carries ports {others}, so the line's "
+            "impedance paths would not be Palace's postprocessing entry 1. "
+            "Declare them on a simulation with no other ports."
+        )
+    sim.add_port(
+        IMPEDANCE_PORT,
+        voltage_path=[list(point) for point in paths.voltage],
+        current_path=[list(point) for point in paths.current],
+        nsamples=nsamples,
+    )
+
+
+#: Below this ``Z_PV / Z_PI`` — which is ``(|V| |I| / 2P)^2`` — the voltage
+#: across the gap carries none of the Mode's power, and the Mode is not
+#: the line Mode between the two electrodes. A quasi-TEM line Mode has
+#: ``|V| |I| ~ 2P``; a lossy one sits within a factor of a few of it; a
+#: Mode running between both electrodes together and the Window wall
+#: puts the electrodes at one potential and sits many decades under.
+MIN_VOLTAGE_POWER_RATIO: float = 1e-2
+
+
+def native_line_impedance(
+    sim: Any, mode: PalaceMode, *, stage_name: str
+) -> complex | None:
+    """The selected Mode's impedance off Palace's own ``mode-Z.csv``.
+
+    Palace reports two magnitudes per entry: ``Z_PV = |V|^2 / 2P`` from
+    the voltage path alone, and ``Z_VI = |V| / |I|`` once a current path
+    is declared. Their ratio ``Z_VI^2 / Z_PV = 2P / |I|^2`` is the
+    power-current impedance the femwell Route and the field-based
+    fallback both compute, so that is what is read; a table carrying
+    ``Z_PV`` alone is a different definition, not a nearer answer, and
+    is declined the same as no table.
+
+    The voltage cancels out of that ratio, so it is checked on its own:
+    a Mode whose gap voltage carries almost none of its power is not
+    running between the two electrodes, and the Stage is told so.
+
+    Args:
+        sim: The simulation that was run, holding its output directory.
+        mode: The selected Mode.
+        stage_name: Stage asking, named in the warning.
+
+    Returns:
+        The impedance in ohms — real, since the tables carry magnitudes —
+        or ``None`` when the tables are absent, carry no current path, no
+        current (a loop enclosing none), or not this Mode.
+
+    Warns:
+        UserWarning: When the gap voltage carries less than
+            :data:`MIN_VOLTAGE_POWER_RATIO` of the Mode's power.
+    """
+    from gsim.palace.results import load_text_results
+
+    output_dir = getattr(sim, "output_dir", None)
+    if output_dir is None:
+        return None
+    # This run's tables and nothing else: the solver's own directory is
+    # the one cleared before each run, and reading the simulation
+    # directory instead would let a table left at its top level shadow
+    # every frequency of the sweep.
+    try:
+        text = load_text_results(_palace_output_dir(output_dir))
+    except FileNotFoundError:
+        return None
+    z_pv = text.characteristic_impedance(index=1, mode=mode.mode_id, quantity="Z_PV")
+    z_vi = text.characteristic_impedance(index=1, mode=mode.mode_id, quantity="Z_VI")
+    if z_pv is None or z_vi is None or z_pv <= 0.0 or z_vi <= 0.0:
+        return None
+    z_pi = z_vi * z_vi / z_pv
+    if z_pv < MIN_VOLTAGE_POWER_RATIO * z_pi:
+        warnings.warn(
+            f"The {stage_name} stage's palace route selected mode {mode.mode_id} "
+            f"(n_eff = {mode.n_eff:.6g}), whose voltage across the gap carries "
+            f"{z_pv / z_pi:.2g} of the power its current implies: the two "
+            "electrodes sit at one potential, so this is a mode between them "
+            "and the window wall rather than the line mode between them. "
+            "Move n_guess toward the loaded line's index, widen max_loss_ratio, "
+            "or pass a rule= selecting the mode yourself.",
+            stacklevel=2,
+        )
+    return complex(z_pi)
+
+
+def field_line_impedance(
     sim: BoundaryModeSim,
     mode: PalaceMode,
     *,
@@ -528,3 +778,40 @@ def palace_line_impedance(
     # unreadable file.
     _check_field_is_the_mode(field, mode, stage_name=stage_name)
     return z0
+
+
+def palace_line_impedance(
+    sim: BoundaryModeSim,
+    mode: PalaceMode,
+    *,
+    h_span: tuple[float, float],
+    v_span: tuple[float, float],
+    stage_name: str,
+) -> complex:
+    """Characteristic impedance of a Palace Mode.
+
+    Palace's own answer first: the power-current impedance its
+    postprocessing paths measured (:func:`native_line_impedance`), which
+    is on disk whenever the solve declared them. A result directory
+    without the tables — an older one, or a solve configured without
+    paths — falls back to the saved fields
+    (:func:`field_line_impedance`), whose NaN contract stands.
+
+    Args:
+        sim: The simulation that was run, holding its output directory.
+        mode: The selected Mode.
+        h_span: ``(min, max)`` of the signal conductor along the
+            Cross-section's in-plane axis (um), for the fallback.
+        v_span: ``(min, max)`` along its vertical axis (um), likewise.
+        stage_name: Stage asking, named in the fallback's warning.
+
+    Returns:
+        The characteristic impedance in ohms: real off the tables, complex
+        off the fields, NaN when neither could be read.
+    """
+    native = native_line_impedance(sim, mode, stage_name=stage_name)
+    if native is not None:
+        return native
+    return field_line_impedance(
+        sim, mode, h_span=h_span, v_span=v_span, stage_name=stage_name
+    )
