@@ -38,6 +38,16 @@ identically and neither is derailed by. The Palace Route therefore
 defaults to ``"pec"`` and the femwell Route, which can carry the metal's
 own loss, to ``"volume"``.
 
+The Window's outer wall is metallic on both Routes, which makes it a
+third conductor: beside the line Mode between the two electrodes, the
+shielded line has a Mode on which both electrodes sit at one potential
+and return their current through the wall. The index does not separate
+them, and at an undepleted Bias the loaded line Mode can fall outside
+the loss bound and leave the wall Mode as the slowest candidate. Each
+Route therefore checks the Mode it selected — femwell against the
+balance of its two electrode currents, Palace against the voltage its
+gap carries — and warns when it is the wall Mode (ADR 0005).
+
 The selected Route's runtime is checked before the Stage meshes, so a
 missing extra or a missing binary costs nothing but the error message.
 """
@@ -152,7 +162,11 @@ class RFStage(EMStage):
             express it identically: femwell applies its perfect-conductor
             condition to the domain boundary, and the Palace config puts
             the outer wall under ``Boundaries.PEC`` — which is what lets
-            the cross-Route gate compare their answers at all.
+            the cross-Route gate compare their answers at all. The wall
+            is a third conductor, so the shielded line has a second
+            propagating Mode, between both electrodes together and the
+            wall; the Stage checks the Mode it selected against that
+            and says so when it is the wrong one (ADR 0005).
         order: Finite-element order of the mode solve. Under the
             ``"pec"`` conductor model the impedance is read off the field
             around the electrode rather than out of it, and femwell
@@ -449,6 +463,56 @@ class RFStage(EMStage):
                 stacklevel=2,
             )
 
+    def _check_current_balance(
+        self, i_signal: complex, i_return: complex, *, freq_hz: float, n_eff: complex
+    ) -> None:
+        """Warn when the selected Mode is the wall Mode, not the line Mode.
+
+        A shielded two-electrode line has two propagating Modes. On the
+        line Mode the signal and return electrodes carry equal and
+        opposite currents; on the other both sit at one potential and
+        their alike currents return through the metallic Window wall.
+        The index alone does not tell them apart, and at an undepleted
+        Bias the loaded line Mode can lose as fast as it advances and
+        fall outside ``max_loss_ratio``, leaving the wall Mode as the
+        slowest candidate. The Palace Route reads the same diagnosis off
+        its gap voltage (:func:`~gsim.modulator.route.native_line_impedance`);
+        this is the femwell Route's, off the currents it has in hand.
+
+        Args:
+            i_signal: Longitudinal current on the signal electrode.
+            i_return: Longitudinal current on the return electrode, read
+                the same way.
+            freq_hz: The frequency, named in the warning.
+            n_eff: The selected Mode's index, named in the warning.
+
+        Warns:
+            UserWarning: When the
+                :func:`~gsim.common.modes.common_mode_fraction` of the two
+                currents exceeds
+                :data:`~gsim.common.modes.MAX_COMMON_MODE_FRACTION`. A
+                fraction of NaN — no current on either electrode — is no
+                reading, and does not warn.
+        """
+        from gsim.common.modes import (
+            MAX_COMMON_MODE_FRACTION,
+            common_mode_fraction,
+            wall_mode_hint,
+        )
+
+        fraction = common_mode_fraction(i_signal, i_return)
+        if not fraction > MAX_COMMON_MODE_FRACTION:
+            return
+        warnings.warn(
+            f"The {self.stage_name} stage's {self.route} route selected a mode "
+            f"at f = {freq_hz / 1e9:g} GHz (n_eff = {n_eff:.6g}) whose two "
+            f"electrodes carry currents {fraction:.0%} in common rather than "
+            "equal and opposite: they sit at one potential, so this is the "
+            "mode between them and the window wall rather than the line mode "
+            "between them. " + wall_mode_hint(self.stage_name),
+            stacklevel=2,
+        )
+
     @property
     def solved_bias_v(self) -> float | None:
         """Bias the cached line parameters were solved at, or None."""
@@ -597,7 +661,10 @@ class RFStage(EMStage):
         signal current it divides the power by follows the conductor
         model: a ``"volume"`` electrode carries a conduction current over
         its own elements, and a ``"pec"`` one carries Ampere's contour
-        integral around the hole it left in the mesh.
+        integral around the hole it left in the mesh. The return
+        electrode's current is read the same way and checked against the
+        signal's, which is how this Route tells the line Mode from the
+        wall Mode (:meth:`_check_current_balance`).
 
         Args:
             sim: The meshed Staircase simulation.
@@ -605,12 +672,18 @@ class RFStage(EMStage):
 
         Returns:
             ``(n_eff, z0_ohm)``, one entry per configured frequency.
+
+        Warns:
+            UserWarning: When a selected Mode is squeezed by its Window
+                (:meth:`_check_containment`), or is the wall Mode rather
+                than the line Mode (:meth:`_check_current_balance`).
         """
         import meshio
         from scipy.constants import speed_of_light as c0
 
         from gsim.femwell.adapter import (
             boundary_facets_on_rect,
+            electrode_current,
             epsilon_by_region,
             region_elements,
             solve_modes,
@@ -621,12 +694,32 @@ class RFStage(EMStage):
         mesh_path = sim.mesh_path
         mesh = meshio.read(str(mesh_path))
         signal = self.signal_electrode()
+        return_electrodes = [
+            name for name in staircase.electrode_names if name != signal
+        ]
         on_contour = self.effective_conductor_model() == "pec"
-        if on_contour:
-            h_span, v_span = staircase.electrode_extent(signal)
-            signal_elements = None
-        else:
-            signal_elements = region_elements(mesh, signal)
+
+        def conductor(name: str) -> tuple[Any, Any]:
+            """``(elements, extent)`` — how this electrode's current is read."""
+            if on_contour:
+                return None, staircase.electrode_extent(name)
+            return region_elements(mesh, name), None
+
+        def facets_of(mode: Any, extent: Any) -> Any:
+            if extent is None:
+                return None
+            h_span, v_span = extent
+            return boundary_facets_on_rect(
+                mode.basis.mesh, h_span=h_span, v_span=v_span
+            )
+
+        signal_elements, signal_extent = conductor(signal)
+        # The same current definition on the return electrode: a
+        # Staircase with other than one return electrode has no pair to
+        # compare, and is not checked.
+        return_conductor = (
+            conductor(return_electrodes[0]) if len(return_electrodes) == 1 else None
+        )
 
         n_eff: list[complex] = []
         z0_ohm: list[complex] = []
@@ -642,19 +735,33 @@ class RFStage(EMStage):
             )
             mode = self._pick_line_mode(modes, freq)
             n_eff.append(complex(mode.n_eff))
-            current_facets = (
-                boundary_facets_on_rect(mode.basis.mesh, h_span=h_span, v_span=v_span)
-                if on_contour
-                else None
-            )
+            signal_facets = facets_of(mode, signal_extent)
             z0_ohm.append(
                 z0_power_current(
                     mode,
                     frequency_hz=freq,
                     current_elements=signal_elements,
-                    current_facets=current_facets,
+                    current_facets=signal_facets,
                 )
             )
+            if return_conductor is not None:
+                return_elements, return_extent = return_conductor
+                self._check_current_balance(
+                    electrode_current(
+                        mode,
+                        frequency_hz=freq,
+                        elements=signal_elements,
+                        facets=signal_facets,
+                    ),
+                    electrode_current(
+                        mode,
+                        frequency_hz=freq,
+                        elements=return_elements,
+                        facets=facets_of(mode, return_extent),
+                    ),
+                    freq_hz=freq,
+                    n_eff=complex(mode.n_eff),
+                )
         return n_eff, z0_ohm
 
     def impedance_paths(

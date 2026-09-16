@@ -21,6 +21,8 @@ synthetic, so nothing here needs DEVSIM.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -197,10 +199,43 @@ class TestCrossRouteAgreement:
             study.optical.run()
 
 
+#: The Bias sweep the RF gate's Study holds, and the point it is solved
+#: at: the sweep's last. At 0 V the undepleted 1e18 Strips make the
+#: loaded line an RC slow wave (``n_eff = 31.9 - 31.9j``) that the loss
+#: bound rightly drops, and the slowest candidate left is the Mode
+#: between both electrodes together and the metallic Window wall — a
+#: real Mode of the shielded line, on which the Routes agree just as
+#: well, but not the Traveling-wave electrode's (ticket 23). At 4 V the
+#: Staircase's middle Strip is depleted and the line Mode is back inside
+#: the bound: ``n_eff = 2.9015 - 0.0014j``, ``Z0`` ~ 41 ohm.
+RF_GATE_BIASES = (0.0, 4.0)
+
+#: The guess the gate aims the eigenvalue search at: the loaded line's
+#: index, which is also the Stage's own default, rather than the wall
+#: Mode's 2.03.
+RF_GATE_N_GUESS = 3.0
+
+
 def rf_line(study, **settings):
     """Solve the RF Stage once and return its line parameters."""
-    study.rf(frequencies_hz=[10e9], n_strips=3, num_modes=4, n_guess=2.0, **settings)
+    study.rf(
+        frequencies_hz=[10e9],
+        n_strips=3,
+        num_modes=4,
+        n_guess=RF_GATE_N_GUESS,
+        **settings,
+    )
     return study.rf.run()
+
+
+def rf_gate_study(output_dir) -> Study:
+    """The gate's Study: the depleted Bias point of :data:`RF_GATE_BIASES`."""
+    return study_at(output_dir, biases=RF_GATE_BIASES)
+
+
+#: What either Route says when the Mode it selected is the wall Mode:
+#: femwell off its two electrode currents, Palace off its gap voltage.
+WALL_MODE_WARNING = "window wall"
 
 
 class TestRFElectrodeModel:
@@ -210,12 +245,22 @@ class TestRFElectrodeModel:
         """A region with ``|Im(eps)| ~ 1e7`` returns its own modes.
 
         This is why the Palace Route does not default to the model the
-        femwell Route does. Every mode of the search comes back losing
-        far more than it advances, so none of them is a line mode.
+        femwell Route does. What the search returns depends on where it
+        is aimed: at the wall Mode's index every candidate comes back
+        losing far more than it advances and the selection refuses them
+        all; at the loaded line's index (the gate's guess) it also
+        returns the wall Mode carrying the metal's own loss
+        (``n_eff = 2.23 - 0.66j``), inside the loss bound, and the
+        Route's gap-voltage check names it. Either way, no line Mode.
         """
         study = study_at(tmp_path)
-        with pytest.raises(NoLineModeError, match="No propagating line mode"):
-            rf_line(study, route="palace", conductor_model="volume")
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            try:
+                rf_line(study, route="palace", conductor_model="volume")
+            except NoLineModeError:
+                return
+        assert [w for w in record if WALL_MODE_WARNING in str(w.message)]
 
 
 # The Marks-Williams integral is exact to 0.4% on the analytic PEC coax,
@@ -232,31 +277,51 @@ def rf_gate(tmp_path_factory):
     Both Routes express the identical Cross-section: perfect-conductor
     electrodes (ADR 0003) inside a metallic Window, femwell applying its
     boundary condition and Palace putting the same wall under
-    ``Boundaries.PEC``. One solve of each Route is shared across the
-    gate's assertions, because Palace takes tens of seconds per
-    frequency.
+    ``Boundaries.PEC``. The Study is solved at the depleted Bias point
+    of :data:`RF_GATE_BIASES`, so that the Mode both Routes select is
+    the line Mode between the electrodes and not the shielded line's
+    other Mode against the wall (ADR 0005); every warning either Route
+    raised is kept, so the gate can check that neither said otherwise.
+    One solve of each Route is shared across the gate's assertions,
+    because Palace takes tens of seconds per frequency.
     """
-    study = study_at(tmp_path_factory.mktemp("rf_gate"))
-    femwell = rf_line(study, route="femwell", conductor_model="pec", order=2)
-    palace = rf_line(study, route="palace")
-    return femwell, palace
+    study = rf_gate_study(tmp_path_factory.mktemp("rf_gate"))
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        femwell = rf_line(study, route="femwell", conductor_model="pec", order=2)
+        palace = rf_line(study, route="palace")
+    return femwell, palace, [str(w.message) for w in record]
 
 
 class TestRFCrossRouteAgreement:
     """The RF Stage's cross-Route numeric gate (ticket 17)."""
 
+    def test_both_routes_select_the_line_mode_not_the_wall_mode(self, rf_gate):
+        """What the gate compares is the Traveling-wave electrode's Mode.
+
+        Each Route has its own way of telling the two apart — femwell
+        the balance of its two electrode currents, Palace the voltage
+        its gap carries against the power — and neither objected.
+        """
+        _, palace, messages = rf_gate
+        assert not [m for m in messages if WALL_MODE_WARNING in m]
+        # Palace's diagnostic runs only when its impedance tables were
+        # read, and a table reading is real; so a real impedance is what
+        # makes the absence of its warning mean something.
+        assert palace.z0_ohm[0].imag == 0.0
+
     def test_both_routes_land_on_the_same_line_mode(self, rf_gate):
-        femwell, palace = rf_gate
+        femwell, palace, _ = rf_gate
         n_femwell = float(femwell.n_rf[0])
         n_palace = float(palace.n_rf[0])
-        # Both must see the line mode of the loaded staircase, not a
-        # cladding or box resonance.
-        assert n_femwell > 1.5
-        assert n_palace > 1.5
+        # Both must see the line Mode of the loaded Staircase: not a
+        # cladding or box resonance, and not the wall Mode at 2.03.
+        assert n_femwell > 2.5
+        assert n_palace > 2.5
         assert abs(n_palace - n_femwell) < N_EFF_RTOL * n_femwell
 
     def test_both_routes_land_on_the_same_impedance(self, rf_gate):
-        femwell, palace = rf_gate
+        femwell, palace, _ = rf_gate
         z_femwell = complex(femwell.z0_ohm[0])
         z_palace = complex(palace.z0_ohm[0])
         assert np.isfinite(z_palace.real)
@@ -282,13 +347,13 @@ def native_solve(tmp_path_factory):
         solve_palace_modes,
     )
 
-    study = study_at(tmp_path_factory.mktemp("native_z0"))
+    study = rf_gate_study(tmp_path_factory.mktemp("native_z0"))
     study.rf(
         route="palace",
         frequencies_hz=[10e9],
         n_strips=3,
         num_modes=4,
-        n_guess=2.0,
+        n_guess=RF_GATE_N_GUESS,
     )
     stage = study.rf
     staircase = stage.staircase()
@@ -301,7 +366,7 @@ def native_solve(tmp_path_factory):
         freq_hz=10e9,
         num_modes=4,
         binary=palace_binary(None, stage_name="rf"),
-        target=2.0,
+        target=RF_GATE_N_GUESS,
         save=4,
     )
     mode = stage._pick_line_mode(modes, 10e9)
@@ -330,7 +395,7 @@ class TestNativeImpedance:
     def test_the_stage_reports_the_native_value(self, tmp_path, native_solve):
         """What ``study.rf.run()`` returns on the Palace Route is the table's."""
         _, native, _ = native_solve
-        study = study_at(tmp_path)
+        study = rf_gate_study(tmp_path)
         line = rf_line(study, route="palace")
         # Same Cross-section, same settings, a fresh solve: the reading
         # is Palace's, so it is real and lands on the same number.

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from gsim.common.modes import (
+    MAX_COMMON_MODE_FRACTION,
     NoLineModeError,
+    common_mode_fraction,
     propagating_modes,
     select_line_mode,
+    wall_mode_hint,
 )
 
 
@@ -153,3 +157,46 @@ class TestGainBound:
         noisy = mode(2.4 + 3e-3j)
         assert propagating_modes([noisy]) == []
         assert propagating_modes([noisy], max_gain_ratio=1e-2) == [noisy]
+
+
+class TestCommonModeFraction:
+    """Telling the line Mode from the wall Mode by its electrode currents.
+
+    A shielded two-electrode line has two propagating Modes: the line
+    Mode, whose signal and return electrodes carry equal and opposite
+    currents, and the wall Mode, on which both electrodes carry the same
+    current and return it through the metallic Window wall. The fraction
+    reads that difference off the two currents alone, so either Route can
+    ask it.
+    """
+
+    def test_equal_and_opposite_currents_are_the_line_mode(self):
+        assert common_mode_fraction(0.156 + 0j, -0.157 + 0j) == pytest.approx(
+            0.003, abs=1e-3
+        )
+
+    def test_equal_and_alike_currents_are_the_wall_mode(self):
+        assert common_mode_fraction(0.075 + 0j, 0.0751 + 0j) == pytest.approx(
+            1.0, abs=1e-3
+        )
+
+    def test_it_is_a_fraction_between_the_two(self):
+        assert common_mode_fraction(1.0 + 0j, 0.0 + 0j) == pytest.approx(1.0)
+        assert common_mode_fraction(1.0 + 0j, -0.5 + 0j) == pytest.approx(1.0 / 3.0)
+
+    def test_it_reads_the_phase_not_only_the_magnitude(self):
+        """A quarter turn between the two is neither balanced nor alike."""
+        assert common_mode_fraction(1.0 + 0j, 1.0j) == pytest.approx(np.sqrt(2.0) / 2.0)
+
+    def test_no_current_at_all_is_no_reading(self):
+        assert np.isnan(common_mode_fraction(0.0 + 0j, 0.0 + 0j))
+
+    def test_the_default_bound_sits_between_the_two_modes(self):
+        assert 0.0 < MAX_COMMON_MODE_FRACTION < 1.0
+
+    def test_the_way_out_names_the_stage_and_its_settings(self):
+        hint = wall_mode_hint("rf")
+        assert "study.rf(bias_v=...)" in hint
+        assert "n_guess" in hint
+        assert "max_loss_ratio" in hint
+        assert "rule=" in hint

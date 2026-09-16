@@ -690,6 +690,7 @@ def native_line_impedance(
         UserWarning: When the gap voltage carries less than
             :data:`MIN_VOLTAGE_POWER_RATIO` of the Mode's power.
     """
+    from gsim.common.modes import wall_mode_hint
     from gsim.palace.results import load_text_results
 
     output_dir = getattr(sim, "output_dir", None)
@@ -715,8 +716,7 @@ def native_line_impedance(
             f"{z_pv / z_pi:.2g} of the power its current implies: the two "
             "electrodes sit at one potential, so this is a mode between them "
             "and the window wall rather than the line mode between them. "
-            "Move n_guess toward the loaded line's index, widen max_loss_ratio, "
-            "or pass a rule= selecting the mode yourself.",
+            + wall_mode_hint(stage_name),
             stacklevel=2,
         )
     return complex(z_pi)

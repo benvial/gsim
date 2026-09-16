@@ -24,21 +24,32 @@ a discretization's spurious Modes cluster just inside it.
 Modes are read duck-typed: anything with an ``n_eff`` attribute (femwell
 ``Mode``), a mapping with an ``"n_eff"`` key (the Palace result rows), or
 a bare complex number works.
+
+A shielded two-electrode line has a second propagating Mode the index
+alone does not separate from the line Mode: the one on which both
+electrodes sit at one potential and return their current through the
+metallic wall around them. :func:`common_mode_fraction` tells the two
+apart from the electrode currents, which either Backend can measure
+once a Mode is in hand.
 """
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 __all__ = [
+    "MAX_COMMON_MODE_FRACTION",
     "MAX_GAIN_RATIO",
     "LineModeRule",
     "NoLineModeError",
+    "common_mode_fraction",
     "mode_index",
     "propagating_modes",
     "select_line_mode",
+    "wall_mode_hint",
 ]
 
 #: A candidate rule: given every solved Mode, return the physical ones.
@@ -53,8 +64,64 @@ LineModeRule = Callable[[Sequence[Any]], Sequence[Any]]
 MAX_GAIN_RATIO: float = 1e-3
 
 
+#: Above this :func:`common_mode_fraction` a Mode is not the line Mode
+#: between the two electrodes. The line Mode's electrodes carry equal and
+#: opposite currents (a fraction near zero, a few per mille on the
+#: shipped demo); on the wall Mode both carry the same current and the
+#: metallic wall returns it (a fraction of one). Halfway between the two
+#: is a bound neither can drift across through the loading alone.
+MAX_COMMON_MODE_FRACTION: float = 0.5
+
+
 class NoLineModeError(ValueError):
     """No solved Mode qualifies as the physical line Mode."""
+
+
+def common_mode_fraction(i_signal: complex, i_return: complex) -> float:
+    """How much of a Mode's electrode current is common to both electrodes.
+
+    ``|I_signal + I_return| / (|I_signal| + |I_return|)``, with both
+    currents read the same way round — each as the current a contour
+    around its own electrode encloses, or each as the conduction current
+    through its own metal. The line Mode between the two electrodes has
+    them equal and opposite, so the fraction is near zero; the Mode
+    between both electrodes together and the shielding wall has them
+    equal and alike, so it is near one.
+
+    Args:
+        i_signal: Longitudinal current on the signal electrode.
+        i_return: Longitudinal current on the return electrode, in the
+            same convention.
+
+    Returns:
+        The fraction in ``[0, 1]``, or NaN when neither electrode
+        carries any current.
+    """
+    total = abs(i_signal) + abs(i_return)
+    if total == 0.0:
+        return math.nan
+    return float(abs(i_signal + i_return) / total)
+
+
+def wall_mode_hint(stage_name: str) -> str:
+    """The ways out of a selection that landed on the wall Mode.
+
+    Shared by both Routes' diagnostics, so that whichever measurement
+    caught it — the electrode currents or the gap voltage — the user is
+    told the same thing.
+
+    Args:
+        stage_name: Stage whose settings the hint names.
+
+    Returns:
+        One sentence, first the most likely cause.
+    """
+    return (
+        "The loaded line mode is most often outside max_loss_ratio at an "
+        f"undepleted bias; solve at a depleted one with study.{stage_name}"
+        "(bias_v=...), move n_guess toward the loaded line's index, widen "
+        "max_loss_ratio, or pass a rule= selecting the mode yourself."
+    )
 
 
 def mode_index(mode: Any) -> complex:

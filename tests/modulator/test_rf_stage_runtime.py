@@ -10,6 +10,8 @@ off a real charge solve is the ``tcad_local`` test at the bottom.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -494,3 +496,47 @@ class TestCrosscheck:
         # The gate: both routes' n_RF, loss and Z0 within the stated
         # tolerances, or check() names the diverging quantity.
         comparison.check()
+
+
+class TestWallMode:
+    """The femwell Route says when it selected the wall Mode (ticket 23).
+
+    At 0 V the undepleted 1e18 Strips make the loaded line an RC slow
+    wave losing as fast as it advances, the default loss bound drops it,
+    and what is left inside the bound is the Mode running between both
+    electrodes together and the metallic Window wall. Depleting the
+    Junction puts the line Mode back inside the bound, where the default
+    rule finds it.
+    """
+
+    def test_an_undepleted_bias_lands_on_the_wall_mode_and_says_so(self, tmp_path):
+        study = build_study(tmp_path, biases=(0.0, 4.0))
+        study.rf(
+            frequencies_hz=[10e9],
+            n_strips=3,
+            conductor_model="pec",
+            order=2,
+            bias_v=0.0,
+            # Aimed straight at the wall Mode's index; the Stage's own
+            # default of 3.0 lands there too, one candidate later.
+            n_guess=2.0,
+        )
+        with pytest.warns(UserWarning, match="window wall"):
+            study.rf.run()
+
+    def test_a_depleted_bias_lands_on_the_line_mode(self, tmp_path):
+        study = build_study(tmp_path, biases=(0.0, 4.0))
+        study.rf(
+            frequencies_hz=[10e9],
+            n_strips=3,
+            conductor_model="pec",
+            order=2,
+            bias_v=4.0,
+        )
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            line = study.rf.run()
+        assert not [w for w in record if "window wall" in str(w.message)]
+        # The loaded line Mode, not the wall Mode's ~180 ohm.
+        assert 20.0 < line.z0_ohm[0].real < 80.0
+        assert line.n_rf[0] > 2.5

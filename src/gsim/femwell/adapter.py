@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 __all__ = [
     "boundary_facets_on_rect",
     "boundary_field_ratio",
+    "electrode_current",
     "elementwise_epsilon",
     "epsilon_by_region",
     "field_fraction_outside",
@@ -609,19 +610,13 @@ def z0_power_current(
         Complex characteristic impedance in ohms.
 
     Raises:
-        ValueError: When both current definitions are asked for at once,
-            when there is nothing to integrate over, or when the
-            integral comes out zero.
+        ValueError: When both current definitions are asked for at once
+            or there is nothing to integrate over (from
+            :func:`electrode_current`), or when the integral comes out
+            zero.
     """
     skfem = require_skfem()
     from skfem.helpers import cross
-
-    if current_elements is not None and current_facets is not None:
-        raise ValueError(
-            "Give the signal current as elements to integrate the conduction "
-            "current over, or as facets to integrate the field around, not "
-            "both."
-        )
 
     basis = mode.basis
 
@@ -635,18 +630,77 @@ def z0_power_current(
         H=basis.interpolate(mode.H),
     )
 
-    if current_facets is not None:
-        current = _contour_current(mode, current_facets)
-    else:
-        current = _conduction_current(
-            mode,
-            frequency_hz=frequency_hz,
-            sigma_s_per_m=sigma_s_per_m,
-            current_elements=current_elements,
-        )
+    current = electrode_current(
+        mode,
+        frequency_hz=frequency_hz,
+        sigma_s_per_m=sigma_s_per_m,
+        elements=current_elements,
+        facets=current_facets,
+    )
     if current == 0:
         raise ValueError("Zero longitudinal current over the selected conductor.")
     return complex(2.0 * power / (abs(current) ** 2))
+
+
+def electrode_current(
+    mode: Any,
+    *,
+    frequency_hz: float,
+    sigma_s_per_m: ArrayLike | None = None,
+    elements: ArrayLike | None = None,
+    facets: ArrayLike | None = None,
+) -> complex:
+    """Longitudinal current one conductor of a Mode carries.
+
+    The current definition :func:`z0_power_current` divides the power
+    by, on its own, so that a second conductor's current can be read the
+    same way and compared with the first's: the line Mode's signal and
+    return electrodes carry equal and opposite currents, the Mode
+    between both electrodes together and the shielding wall has them
+    alike (:func:`gsim.common.modes.common_mode_fraction`).
+
+    A conductor meshed as a Region carries the conduction current
+    ``integral sigma E_z dA`` over its *elements*; a perfect conductor
+    left out of the meshed domain carries Ampere's contour integral of
+    ``H`` around its *facets*. Both land in the same scale, and both
+    sign conventions are consistent from one conductor to the next —
+    the conduction integral through ``E_z``, the contour through the
+    boundary normal that points into every conductor alike — so two
+    conductors' currents read the same way are comparable.
+
+    Args:
+        mode: A femwell ``Mode`` from :func:`solve_modes`.
+        frequency_hz: RF frequency of the solve in Hz.
+        sigma_s_per_m: Conductivity per mesh element in S/m; the Mode's
+            own epsilon implies it when omitted. Unused with *facets*.
+        elements: Element indices (or boolean mask) of the conductor,
+            for the conduction integral. Omitted with *facets*, every
+            conductive element is taken.
+        facets: Facets of a closed contour around the conductor, from
+            :func:`boundary_facets_on_rect`, for the contour integral.
+
+    Returns:
+        The complex current, in the um-coordinate scale
+        :func:`z0_power_current` divides out.
+
+    Raises:
+        ValueError: When both definitions are asked for at once, or when
+            there is nothing to integrate over.
+    """
+    if elements is not None and facets is not None:
+        raise ValueError(
+            "Give the conductor's current as elements to integrate the "
+            "conduction current over, or as facets to integrate the field "
+            "around, not both."
+        )
+    if facets is not None:
+        return _contour_current(mode, facets)
+    return _conduction_current(
+        mode,
+        frequency_hz=frequency_hz,
+        sigma_s_per_m=sigma_s_per_m,
+        current_elements=elements,
+    )
 
 
 def _conduction_current(

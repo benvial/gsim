@@ -391,3 +391,38 @@ class TestJunctionBranchLookup:
     def test_a_sweep_without_admittances_says_how_to_get_them(self, biased):
         with pytest.raises(ValueError, match="admittance"):
             biased.rf.junction_branch()
+
+
+class TestCurrentBalance:
+    """The femwell Route tells the line Mode from the wall Mode (ticket 23).
+
+    A shielded line has two propagating Modes, and a lossy loaded line
+    at an undepleted Bias can leave the default rule with the wrong one:
+    both electrodes at one potential, their currents alike, returning
+    through the Window wall. femwell reads no gap voltage, so the Stage
+    checks the two electrode currents against each other instead.
+    """
+
+    def test_alike_currents_are_reported_as_the_wall_mode(self, biased):
+        with pytest.warns(UserWarning, match="window wall") as record:
+            biased.rf._check_current_balance(
+                0.075 + 0j, 0.0751 + 0j, freq_hz=10e9, n_eff=2.0262 - 6.6e-7j
+            )
+        message = str(record[0].message)
+        assert "rf stage" in message
+        assert "10 GHz" in message
+        assert "n_guess" in message
+        assert "bias_v" in message
+
+    def test_opposite_currents_are_the_line_mode(self, biased):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            biased.rf._check_current_balance(
+                0.156 + 0j, -0.157 + 0j, freq_hz=10e9, n_eff=2.9 - 1.4e-3j
+            )
+
+    def test_no_current_at_all_is_not_a_wall_mode(self, biased):
+        """A reading of NaN is no reading, and no warning."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            biased.rf._check_current_balance(0j, 0j, freq_hz=10e9, n_eff=2.0 + 0j)
