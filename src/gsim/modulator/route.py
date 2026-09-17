@@ -17,7 +17,7 @@ onto the Staircase representation of the same physics.
 A Stage holds a Route as an object — a :class:`Route` — and asks it the
 handful of things a Stage needs: is the Backend here, solve Modes on a
 meshed simulation, how much field sits on the Window wall, read the
-selected Mode. Each Backend answers through its own adapter
+selected Mode. Each Backend answers through its own Route
 (:mod:`gsim.modulator.femwell_route`, :mod:`gsim.modulator.palace_route`);
 a test answers through a fake one. Nothing here imports a Backend at
 module scope: a Study that never selects a Route pays for neither.
@@ -57,7 +57,7 @@ DEFAULT_PALACE_STRIPS: int = 5
 class Route(ABC):
     """What an EM Stage asks of the Backend answering it.
 
-    One instance serves one Stage run: an adapter may keep what it learns
+    One instance serves one Stage run: a route may keep what it learns
     early in the run (a resolved binary, a declared impedance path) for
     the readings later in it.
 
@@ -158,7 +158,6 @@ class Route(ABC):
         num_modes: int,
         target: float | None,
         order: int,
-        metallic_boundaries: bool,
         verbose: bool,
         stage_name: str,
         epsilon: ArrayLike | None = None,
@@ -172,7 +171,6 @@ class Route(ABC):
             target: Effective-index guess centering the eigenvalue
                 search, or ``None`` for the Backend's own.
             order: Finite-element order, where the Backend has one.
-            metallic_boundaries: Whether the Window wall is a conductor.
             verbose: Stream the Backend's own output.
             stage_name: Stage asking, named in any warning.
             epsilon: A continuous per-element permittivity replacing the
@@ -235,21 +233,21 @@ class Route(ABC):
         """
 
 
-#: The adapter behind each Route name. A test registers a fake here.
+#: The implementation behind each Route name. A test registers a fake here.
 ROUTES: dict[str, type[Route]] = {}
 
 
 def route_for(name: EMRoute) -> Route:
-    """A fresh adapter for one Route, for one Stage run.
+    """A fresh instance of one Route, for one Stage run.
 
     Args:
         name: The Route, as the Stage's ``route`` setting spells it.
 
     Returns:
-        A new adapter instance.
+        A new Route instance.
 
     Raises:
-        ValueError: When no adapter is registered under that name.
+        ValueError: When no route is registered under that name.
     """
     if name not in ROUTES:
         from gsim.modulator.femwell_route import FemwellRoute
@@ -258,9 +256,9 @@ def route_for(name: EMRoute) -> Route:
         ROUTES.setdefault(FemwellRoute.name, FemwellRoute)
         ROUTES.setdefault(PalaceRoute.name, PalaceRoute)
     try:
-        adapter = ROUTES[name]
+        route = ROUTES[name]
     except KeyError:
         raise ValueError(
             f"No route is registered under {name!r}; known routes are {sorted(ROUTES)}."
         ) from None
-    return adapter()
+    return route()

@@ -10,13 +10,13 @@ solver.
 
 Everything that turns a Carrier map into per-Strip averages lives here:
 
-- :func:`staircase_profile` bins a sampled one-dimensional profile into N
+- :func:`staircase_profile` averages a sampled one-dimensional profile over N
   equal-width Strips, each carrying the exact average of the
   piecewise-linear interpolant over it.
 - :func:`strip_averages_from_nodes` reduces a scattered two-dimensional
   node cloud (e.g. a :class:`gsim.tcad.results.CarrierMap`) to that
   one-dimensional profile first — the tested, reusable mesh-transfer
-  step — and bins it.
+  step — and averages it over the Strips.
 - :func:`build_staircase_cross_section` does the whole job in one call: a
   Carrier map, a strip count and the Junction extent in, a meshable
   Staircase cross-section out — the strip Regions, their material
@@ -102,7 +102,7 @@ SURROUND_TOL_UM: float = 1e-9
 
 #: Fraction of the sampled extent within which two nodes count as one
 #: column of the mesh, when no explicit tolerance is given. Node columns
-#: are what a 2D cloud is averaged over before it is binned into Strips.
+#: are what a 2D cloud is averaged over before it is averaged over Strips.
 COLUMN_TOL_FRACTION: float = 1e-6
 
 #: Drawn length of a Staircase along the propagation direction (um).
@@ -223,7 +223,7 @@ def staircase_profile(
     h_min: float | None = None,
     h_max: float | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Bin a sampled 1D profile into N equal-width piecewise-constant strips.
+    """Average a sampled 1D profile over N equal-width piecewise-constant Strips.
 
     The samples are interpreted as a piecewise-linear function of ``h``; each
     strip value is the exact average of that interpolant over the strip, so
@@ -231,7 +231,7 @@ def staircase_profile(
     ``n_bins`` converges to the continuous profile.
 
     Args:
-        h: Sample coordinates along the binning axis (um), any order.
+        h: Sample coordinates along the Strip axis (um), any order.
         values: Sample values (e.g. carrier concentration, sigma, Delta n).
         n_bins: Number of strips (>= 1).
         h_min: Window start; defaults to ``min(h)``.

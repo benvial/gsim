@@ -26,7 +26,7 @@ __all__ = ["FemwellRoute"]
 
 
 class FemwellRoute(Route):
-    """The femwell adapter of the Route interface."""
+    """The Route interface on femwell."""
 
     name: ClassVar[EMRoute] = "femwell"
     conductor_model: ClassVar[ConductorModel] = "volume"
@@ -108,7 +108,6 @@ class FemwellRoute(Route):
         num_modes: int,
         target: float | None,
         order: int,
-        metallic_boundaries: bool,
         verbose: bool,  # noqa: ARG002 - femwell has nothing to stream
         stage_name: str,  # noqa: ARG002 - nothing to warn about
         epsilon: ArrayLike | None = None,
@@ -139,7 +138,7 @@ class FemwellRoute(Route):
             wavelength_um=c0 / freq_hz * 1e6,
             num_modes=num_modes,
             order=order,
-            metallic_boundaries=metallic_boundaries,
+            metallic_boundaries=sim.metallic_boundaries,
             n_guess=target,
         )
 

@@ -306,7 +306,7 @@ class OpticalStage(EMStage):
         """
         if self.n_strips is not None:
             return int(self.n_strips)
-        if self.route_adapter().continuous_materials:
+        if self.resolved_route().continuous_materials:
             return None
         return DEFAULT_PALACE_STRIPS
 
@@ -548,7 +548,7 @@ class OpticalStage(EMStage):
         return epsilon
 
     def _check_strip_coverage(
-        self, adapter: Route, mode: Any, bias_v: float, span: tuple[float, float]
+        self, route: Route, mode: Any, bias_v: float, span: tuple[float, float]
     ) -> None:
         """Warn when the Mode mostly sits off the carrier-bearing Strips.
 
@@ -560,9 +560,7 @@ class OpticalStage(EMStage):
         Route that cannot measure the fraction answers NaN and has
         already said why.
         """
-        fraction = adapter.strip_fraction_outside(
-            mode, span, stage_name=self.stage_name
-        )
+        fraction = route.strip_fraction_outside(mode, span, stage_name=self.stage_name)
         if np.isnan(fraction) or fraction <= self.strip_field_tol:
             return
         warnings.warn(
@@ -636,7 +634,7 @@ class OpticalStage(EMStage):
             )
         return responses
 
-    def _solve_continuous(self, adapter: Route) -> OpticalSweep:
+    def _solve_continuous(self, route: Route) -> OpticalSweep:
         """Solve the drawn device with a continuous ``eps(x, y)``.
 
         One mesh serves the whole sweep: the geometry does not move with
@@ -644,7 +642,7 @@ class OpticalStage(EMStage):
         imply.
 
         Args:
-            adapter: The Route answering this run; one that carries
+            route: The Route answering this run; one that carries
                 continuous materials.
         """
         import meshio
@@ -664,22 +662,21 @@ class OpticalStage(EMStage):
 
         solved: list[tuple[float, complex, float]] = []
         for point in responses.points:
-            modes = adapter.solve(
+            modes = route.solve(
                 sim,
                 freq_hz=c0 / (self.wavelength_um * 1e-6),
                 num_modes=self.num_modes,
                 target=self.n_guess,
                 order=self.order,
-                metallic_boundaries=self.metallic_boundaries,
                 verbose=self._is_verbose(),
                 stage_name=self.stage_name,
                 epsilon=self._element_epsilon(mesh, base_epsilon, point.carriers),
             )
-            mode, ratio = self.select_mode(modes, adapter, at=f"V = {point.bias_v:g}")
+            mode, ratio = self.select_mode(modes, route, at=f"V = {point.bias_v:g}")
             solved.append((point.bias_v, complex(mode.n_eff), ratio))
         return self._sweep_from(responses.contact, solved)
 
-    def _solve_staircase(self, adapter: Route) -> OpticalSweep:
+    def _solve_staircase(self, route: Route) -> OpticalSweep:
         """Solve the Staircase of every Bias point, on the Route.
 
         Each Bias point gets its own Staircase, and its own mesh under its
@@ -688,7 +685,7 @@ class OpticalStage(EMStage):
         meshed stack rather than from an array handed in per solve.
 
         Args:
-            adapter: The Route answering this run.
+            route: The Route answering this run.
         """
         from scipy.constants import speed_of_light as c0
 
@@ -698,7 +695,7 @@ class OpticalStage(EMStage):
         verbose = self._is_verbose()
         if self.n_strips is None:
             warnings.warn(
-                f"The {self.stage_name} stage's {adapter.name} route cannot carry "
+                f"The {self.stage_name} stage's {route.name} route cannot carry "
                 "a continuous permittivity, so it is solving a staircase "
                 f"of {DEFAULT_PALACE_STRIPS} strips instead of the "
                 "continuous eps(x, y) a route carrying one would have used. "
@@ -710,7 +707,7 @@ class OpticalStage(EMStage):
         solved: list[tuple[float, complex, float]] = []
         for index, point in enumerate(responses.points):
             staircase = self.staircase(point)
-            adapter.check_staircase(
+            route.check_staircase(
                 staircase,
                 window=self.mode_window(),
                 window_z=self.mode_window_z(),
@@ -721,20 +718,17 @@ class OpticalStage(EMStage):
             sim = self.staircase_simulation(staircase, output_dir=point_dir)
             sim.mesh(**self.mesh)
 
-            modes = adapter.solve(
+            modes = route.solve(
                 sim,
                 freq_hz=c0 / (self.wavelength_um * 1e-6),
                 num_modes=self.num_modes,
                 target=self.n_guess,
                 order=self.order,
-                metallic_boundaries=self.metallic_boundaries,
                 verbose=verbose,
                 stage_name=self.stage_name,
             )
-            mode, ratio = self.select_mode(modes, adapter, at=f"V = {point.bias_v:g}")
-            self._check_strip_coverage(
-                adapter, mode, point.bias_v, staircase.strip_span
-            )
+            mode, ratio = self.select_mode(modes, route, at=f"V = {point.bias_v:g}")
+            self._check_strip_coverage(route, mode, point.bias_v, staircase.strip_span)
             solved.append((point.bias_v, complex(mode.n_eff), ratio))
         return self._sweep_from(responses.contact, solved)
 
@@ -742,7 +736,7 @@ class OpticalStage(EMStage):
         """Solve the Mode at every Bias point, on the selected Route."""
         # Before the charge solve and before meshing: a user whose Route
         # cannot run should pay nothing to find that out.
-        adapter = self.check_route()
+        route = self.check_route()
         if self.effective_n_strips() is None:
-            return self._solve_continuous(adapter)
-        return self._solve_staircase(adapter)
+            return self._solve_continuous(route)
+        return self._solve_staircase(route)

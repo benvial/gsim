@@ -1,7 +1,7 @@
-"""Hermetic tests for Strip binning and the node-to-strip transfer.
+"""Hermetic tests for the Strip averages and the node-to-strip transfer.
 
 Everything that reduces a Carrier map to per-Strip averages is under
-test here: the one-dimensional binning, the two-dimensional node cloud
+test here: the one-dimensional Strip averages, the two-dimensional node cloud
 reduced onto it, and the Strips a Staircase draws from the result.
 """
 
@@ -25,7 +25,7 @@ from tests._helpers import fake_coupling
 
 
 class TestStaircaseProfile:
-    def test_single_bin_recovers_average(self):
+    def test_single_strip_recovers_average(self):
         # N=1 must recover the exact average of the piecewise-linear profile.
         h = np.array([0.0, 1.0, 2.0])
         v = np.array([0.0, 2.0, 0.0])  # triangle, mean = 1.0
@@ -40,7 +40,7 @@ class TestStaircaseProfile:
         assert len(edges) == 6
         assert means == pytest.approx(np.full(5, 7.5))
 
-    def test_bins_partition_window(self):
+    def test_strips_partition_window(self):
         h = np.linspace(-1.0, 1.0, 21)
         v = h**2
         edges, _means = staircase_profile(h, v, n_bins=4, h_min=-0.5, h_max=0.5)
@@ -56,7 +56,7 @@ class TestStaircaseProfile:
         def l2_error(n_bins: int) -> float:
             edges, means = staircase_profile(h, v, n_bins=n_bins)
             approx = np.interp(h, edges[:-1], means, left=means[0], right=means[-1])
-            # Evaluate staircase exactly: index of bin per sample.
+            # Evaluate staircase exactly: index of Strip per sample.
             idx = np.clip(np.searchsorted(edges, h, side="right") - 1, 0, n_bins - 1)
             approx = means[idx]
             return float(np.sqrt(np.trapezoid((approx - v) ** 2, h)))

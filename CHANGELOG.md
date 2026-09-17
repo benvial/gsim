@@ -3,8 +3,8 @@
 ## Unreleased
 
 - The modulator's EM Stages reach their Backend through one Route interface (`gsim.modulator.route.Route`) with a
-  femwell and a Palace adapter (`FemwellRoute`, `PalaceRoute`); a Stage no longer tests which Route it is on. Each Route
-  reads the selected RF Mode in one call — index, characteristic impedance and whether it is the wall Mode
+  femwell and a Palace implementation (`FemwellRoute`, `PalaceRoute`); a Stage no longer tests which Route it is on.
+  Each Route reads the selected RF Mode in one call — index, characteristic impedance and whether it is the wall Mode
   (`gsim.common.modes.LineReading`) — given the electrodes as `gsim.common.modes.Conductor` descriptors, which is also
   how a conductor is now named to the femwell current integrals: `z0_power_current` and `electrode_current` take
   `conductor=` and `mesh=` in place of `sigma_s_per_m`, `current_elements` and `current_facets`, and
@@ -16,7 +16,7 @@
   one typed strip input per Stage (`OpticalStripMaterial` or `RFStripMaterial`) and a `StaircaseDrawing` record; the
   plasma-dispersion, mobility, wavelength, index, permittivity and frequency keyword arguments are gone. Its Strips are
   a typed `Strips` record, its drawn layers are public, `stack()` takes no target, `unloaded()` switches the carriers
-  off, and the one-dimensional binning `staircase_profile` lives in the Staircase module rather than in
+  off, and the one-dimensional Strip averaging `staircase_profile` lives in the Staircase module rather than in
   `gsim.common.carriers`. `RFLineParams` records the Bias and signal Contact it was solved at and resamples itself
   (`resampled`); the RF Stage's `solved_bias_v` is gone. `Stage.seed` hands a Stage a result without a solve;
   `Stage.reset` is removed. A Carrier map's `potential_v` and `net_doping_cm3` are optional.

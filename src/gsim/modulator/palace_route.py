@@ -789,7 +789,7 @@ def conductor_clearance(
 
 
 class PalaceRoute(Route):
-    """The Palace adapter of the Route interface.
+    """The Route interface on Palace.
 
     Keeps, across one Stage run, the binary it resolved, the index its
     impedance path was declared under, and the last run's results.
@@ -800,7 +800,7 @@ class PalaceRoute(Route):
     continuous_materials: ClassVar[bool] = False
 
     def __init__(self) -> None:
-        """A fresh adapter: nothing resolved, nothing declared, nothing run."""
+        """A fresh route: nothing resolved, nothing declared, nothing run."""
         self._binary: Path | None = None
         self._index: int | None = None
         self._last: PalaceSolve | None = None
@@ -890,7 +890,6 @@ class PalaceRoute(Route):
         num_modes: int,
         target: float | None,
         order: int,  # noqa: ARG002 - Palace's element order is its own
-        metallic_boundaries: bool,  # noqa: ARG002 - the simulation carries it
         verbose: bool,
         stage_name: str,
         epsilon: ArrayLike | None = None,

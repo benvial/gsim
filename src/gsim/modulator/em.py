@@ -123,30 +123,30 @@ class EMStage(Stage):
     # Route
     # ------------------------------------------------------------------
 
-    def route_adapter(self) -> Route:
-        """A fresh adapter for the selected Route, for one run.
+    def resolved_route(self) -> Route:
+        """A fresh instance of the selected Route, for one run.
 
         Returns:
-            The adapter, its Backend not yet checked.
+            The Route, its Backend not yet checked.
         """
         return route_for(self.route)
 
     def check_route(self) -> Route:
-        """The Route's adapter, its Backend checked.
+        """The selected Route, its Backend checked.
 
         Called before the charge solve and before meshing, so a user
         whose Route cannot run pays only for the error message.
 
         Returns:
-            The adapter for this run.
+            The Route for this run.
 
         Raises:
             ImportError: When the femwell extra is not installed.
             RuntimeError: When no Palace binary is available.
         """
-        adapter = self.route_adapter()
-        adapter.require(stage_name=self.stage_name)
-        return adapter
+        route = self.resolved_route()
+        route.require(stage_name=self.stage_name)
+        return route
 
     # ------------------------------------------------------------------
     # Staircase
@@ -381,7 +381,7 @@ class EMStage(Stage):
         )
 
     def select_mode(
-        self, modes: Sequence[Any], adapter: Route, *, at: str
+        self, modes: Sequence[Any], route: Route, *, at: str
     ) -> tuple[Any, float]:
         """Select the physical Mode of one solve, and check its Window.
 
@@ -392,7 +392,7 @@ class EMStage(Stage):
 
         Args:
             modes: Every Mode the Route solved.
-            adapter: The Route that solved them.
+            route: The Route that solved them.
             at: Where the solve was, for the warning (``"f = 10 GHz"``,
                 ``"V = 2"``).
 
@@ -403,7 +403,7 @@ class EMStage(Stage):
         from gsim.common.modes import select_line_mode
 
         mode = select_line_mode(modes, **self.selection())
-        ratio = adapter.boundary_ratio(mode)
+        ratio = route.boundary_ratio(mode)
         if not math.isnan(ratio) and ratio > self.boundary_field_tol:
             warnings.warn(
                 f"The {self.stage_name} stage's mode at {at} carries "

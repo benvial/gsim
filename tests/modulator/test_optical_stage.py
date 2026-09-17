@@ -238,7 +238,7 @@ class TestConductorClearance:
     of the domain (ADR 0003). When the Window cuts one, that outline runs
     along the Window's own wall and the Palace binary aborts with no
     message at all — deterministically, on this geometry. femwell meshes
-    it, so the refusal is the Palace adapter's and not the Stage's.
+    it, so the refusal is the Palace route's and not the Stage's.
     """
 
     WINDOW = (CENTER_Y - 2.0, CENTER_Y + 2.0)
@@ -301,7 +301,7 @@ class TestConductorClearance:
             )
 
     def test_the_stage_hands_every_staircase_to_the_adapter(self, biased, fake_route):
-        """With its Window, before meshing it: the check is the adapter's."""
+        """With its Window, before meshing it: the check is the route's."""
         biased.optical(route="palace", n_strips=2, n_guess=2.9)
 
         biased.optical.run()

@@ -148,7 +148,7 @@ class FakeRoute(Route):
 
     Registered under the ``"palace"`` name by the ``fake_route`` fixture,
     so a Stage configured with ``route="palace"`` reaches it through the
-    registry the way it reaches a real adapter. Every call the Stage
+    registry the way it reaches a real route. Every call the Stage
     makes is recorded on the class, because the Stage builds a fresh
     instance per run.
     """
@@ -228,7 +228,7 @@ class FakeRoute(Route):
 
 @pytest.fixture
 def fake_route(monkeypatch):
-    """The fake adapter, registered as the ``"palace"`` Route for one test."""
+    """The fake route, registered as the ``"palace"`` Route for one test."""
     FakeRoute.reset()
     monkeypatch.setitem(ROUTES, "palace", FakeRoute)
     return FakeRoute

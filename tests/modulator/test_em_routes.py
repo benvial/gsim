@@ -2,11 +2,11 @@
 
 Both EM Stages answer the same question through either Backend, and the
 choice is a Stage setting. What is hermetic about that choice — the
-default, the values accepted, the registry an adapter is found in, what
+default, the values accepted, the registry a route is found in, what
 a strip count means on each Stage, the Staircase the optical Stage
 builds when it is routed to Palace, and the error a user selecting a
 Route they cannot run gets — is under test here, as is everything the
-Palace adapter does around a Palace run without the binary: the crash
+Palace route does around a Palace run without the binary: the crash
 salvage, the abort report, the impedance paths and the readings off
 Palace's tables. The Routes actually agreeing on a number is the
 runtime-gated ``test_palace_route_runtime.py``.
@@ -49,7 +49,7 @@ class TestRouteRegistry:
 
     def test_a_registered_fake_is_what_the_stage_gets(self, biased, fake_route):
         biased.rf(route="palace")
-        assert isinstance(biased.rf.route_adapter(), fake_route)
+        assert isinstance(biased.rf.resolved_route(), fake_route)
 
     def test_the_adapters_say_what_they_can_express(self):
         from gsim.modulator import FemwellRoute, PalaceRoute
@@ -777,7 +777,7 @@ class TestNativeImpedance:
 
 
 class TestPalaceRoutePreparesTheLine:
-    """The Palace adapter sizes the paths from the electrodes, not by hand."""
+    """The Palace route sizes the paths from the electrodes, not by hand."""
 
     def _meshed(self, biased, **settings):
         biased.rf(route="palace", frequencies_hz=[10e9], n_strips=3, **settings)
@@ -791,11 +791,11 @@ class TestPalaceRoutePreparesTheLine:
 
         sim, staircase = self._meshed(biased)
         signal, return_ = biased.rf.line_conductors(staircase)
-        adapter = PalaceRoute()
+        route = PalaceRoute()
 
-        adapter.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
+        route.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
 
-        assert adapter.impedance_index == 1
+        assert route.impedance_index == 1
         (path,) = sim.mode_paths
         (h_lo, h_hi), (v_lo, v_hi) = signal.extent
         # The voltage path leaves the signal electrode's inner face at
@@ -815,12 +815,12 @@ class TestPalaceRoutePreparesTheLine:
         biased.rf(window=(signal.extent[0][0] + 0.5, signal.extent[0][1] + 10.0))
         sim = biased.rf.simulation(staircase)
         sim.mesh(**biased.rf.mesh)
-        adapter = PalaceRoute()
+        route = PalaceRoute()
 
         with pytest.warns(UserWarning, match="read off the saved fields instead"):
-            adapter.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
+            route.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
 
-        assert adapter.impedance_index is None
+        assert route.impedance_index is None
         assert sim.mode_paths == []
 
     def test_a_line_without_a_single_return_is_read_off_the_fields(self, biased):
@@ -828,9 +828,41 @@ class TestPalaceRoutePreparesTheLine:
 
         sim, staircase = self._meshed(biased)
         signal, _ = biased.rf.line_conductors(staircase)
-        adapter = PalaceRoute()
+        route = PalaceRoute()
 
         with pytest.warns(UserWarning, match="no single return electrode"):
-            adapter.prepare_line(sim, signal=signal, return_=None, stage_name="rf")
+            route.prepare_line(sim, signal=signal, return_=None, stage_name="rf")
 
-        assert adapter.impedance_index is None
+        assert route.impedance_index is None
+
+
+class TestFemwellRouteReadsTheWallOffTheSimulation:
+    """The metallic-boundary flag has one channel: the simulation."""
+
+    @pytest.mark.parametrize("wall", [True, False])
+    def test_the_solve_uses_the_simulation_flag(self, monkeypatch, wall):
+        from types import SimpleNamespace
+
+        from gsim.modulator import FemwellRoute
+
+        seen = {}
+
+        def fake_solve_modes(_mesh_path, **kwargs):
+            seen.update(kwargs)
+            return []
+
+        monkeypatch.setattr("gsim.femwell.adapter.solve_modes", fake_solve_modes)
+        sim = SimpleNamespace(mesh_path="mesh.msh", metallic_boundaries=wall)
+
+        FemwellRoute().solve(
+            sim,
+            freq_hz=1e9,
+            num_modes=1,
+            target=None,
+            order=1,
+            verbose=False,
+            stage_name="rf",
+            epsilon=np.ones(1),
+        )
+
+        assert seen["metallic_boundaries"] is wall

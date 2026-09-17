@@ -171,7 +171,7 @@ class TestConductorModel:
         assert not biased.rf.has_run
 
     def test_the_default_is_read_off_the_adapter(self, biased, fake_route):
-        """Whatever adapter answers the Route, its model is the default."""
+        """Whatever route answers the Route, its model is the default."""
         biased.rf(route="palace")
         assert biased.rf.effective_conductor_model() == fake_route.conductor_model
         fake_route.conductor_model = "volume"
@@ -329,7 +329,7 @@ class TestSignalConductor:
 
 
 def run_rf(study, fake_route, *, modes_at, **settings):
-    """Run the RF Stage on the fake adapter, with the solves scripted."""
+    """Run the RF Stage on the fake route, with the solves scripted."""
     fake_route.modes_at = modes_at
     study.rf(route="palace", **settings)
     return study.rf.run()

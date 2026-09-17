@@ -357,10 +357,10 @@ def native_solve(tmp_path_factory):
     staircase = stage.staircase()
     sim = stage.simulation(staircase)
     sim.mesh(**stage.mesh)
-    adapter = PalaceRoute()
+    route = PalaceRoute()
     signal, return_ = stage.line_conductors(staircase)
-    adapter.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
-    index = adapter.impedance_index
+    route.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
+    index = route.impedance_index
     assert index is not None
     solve = solve_palace_modes(
         sim,
@@ -370,7 +370,7 @@ def native_solve(tmp_path_factory):
         target=RF_GATE_N_GUESS,
         save=4,
     )
-    mode, _ratio = stage.select_mode(solve.modes, adapter, at="f = 10 GHz")
+    mode, _ratio = stage.select_mode(solve.modes, route, at="f = 10 GHz")
     h_span, v_span = signal.extent
     reading = native_line_impedance(solve.results, mode, index=index)
     native = None if reading is None else reading.z0_ohm

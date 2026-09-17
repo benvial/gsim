@@ -35,7 +35,7 @@ rather than the quasi-TEM one. Meshed as perfect conductors — the
 ``"pec"`` model — their interior is left out of the domain and their
 outline carries the boundary condition, which both Routes express
 identically and neither is derailed by. Each Route therefore carries its
-own default, and the Stage reads it off the adapter.
+own default, and the Stage reads it off the route.
 
 The Window's outer wall is metallic on both Routes, which makes it a
 third conductor: beside the line Mode between the two electrodes, the
@@ -272,7 +272,7 @@ class RFStage(EMStage):
         """How this run expresses the electrode metal (ADR 0003).
 
         Returns:
-            The configured model, or the one the selected Route's adapter
+            The configured model, or the one the selected Route
             expresses by default: ``"volume"`` on femwell, which carries
             the metal's own conductivity, and ``"pec"`` on Palace, whose
             eigenvalue search returns a metal Region's own modes rather
@@ -280,7 +280,7 @@ class RFStage(EMStage):
         """
         if self.conductor_model is not None:
             return self.conductor_model
-        return self.route_adapter().conductor_model
+        return self.resolved_route().conductor_model
 
     def staircase(self) -> StaircaseCrossSection:
         """Reduce the Bias point's Carrier map to a meshable Staircase.
@@ -546,25 +546,25 @@ class RFStage(EMStage):
         return signal, return_
 
     def _solve_line(
-        self, sim: BoundaryModeSim, staircase: StaircaseCrossSection, adapter: Route
+        self, sim: BoundaryModeSim, staircase: StaircaseCrossSection, route: Route
     ) -> tuple[list[complex], list[complex]]:
         """Solve the meshed Staircase at every frequency, on the Route.
 
-        One loop for both Routes: the adapter solves, the shared
+        One loop for both Routes: the route solves, the shared
         selection picks the line Mode and checks its Window, the
-        adapter reads the selected Mode, and the Stage says so when the
+        route reads the selected Mode, and the Stage says so when the
         reading is the wall Mode's.
 
         Args:
             sim: The meshed Staircase simulation.
             staircase: The Staircase it was built from.
-            adapter: The Route answering this run.
+            route: The Route answering this run.
 
         Returns:
             ``(n_eff, z0_ohm)``, one entry per configured frequency.
         """
         signal, return_ = self.line_conductors(staircase)
-        adapter.prepare_line(
+        route.prepare_line(
             sim, signal=signal, return_=return_, stage_name=self.stage_name
         )
         verbose = self._is_verbose()
@@ -572,20 +572,17 @@ class RFStage(EMStage):
         n_eff: list[complex] = []
         z0_ohm: list[complex] = []
         for freq in self.frequencies_hz:
-            modes = adapter.solve(
+            modes = route.solve(
                 sim,
                 freq_hz=freq,
                 num_modes=self.num_modes,
                 target=self._guess_for(n_eff),
                 order=self.order,
-                metallic_boundaries=self.metallic_boundaries,
                 verbose=verbose,
                 stage_name=self.stage_name,
             )
-            mode, _ratio = self.select_mode(
-                modes, adapter, at=f"f = {freq / 1e9:g} GHz"
-            )
-            reading = adapter.read_line(
+            mode, _ratio = self.select_mode(modes, route, at=f"f = {freq / 1e9:g} GHz")
+            reading = route.read_line(
                 sim,
                 mode,
                 freq_hz=freq,
@@ -599,28 +596,28 @@ class RFStage(EMStage):
         return n_eff, z0_ohm
 
     def check_route(self) -> Route:
-        """The Route's adapter, its Backend and this Stage's settings checked.
+        """The selected Route, its Backend and this Stage's settings checked.
 
         Before the charge solve and before meshing: a user whose Route
         cannot run, or whose settings the Route cannot honour, should
         pay nothing to find that out. Every check reads settings only.
 
         Returns:
-            The adapter for this run.
+            The Route for this run.
         """
-        adapter = super().check_route()
-        adapter.check_line_settings(
+        route = super().check_route()
+        route.check_line_settings(
             conductor_model=self.effective_conductor_model(),
             metallic_boundaries=self.metallic_boundaries,
             order=self.order,
             stage_name=self.stage_name,
         )
-        return adapter
+        return route
 
     def _solve_staircase(
         self,
         staircase: StaircaseCrossSection,
-        adapter: Route,
+        route: Route,
         *,
         bias_v: float,
         output_dir: Path | None = None,
@@ -636,7 +633,7 @@ class RFStage(EMStage):
 
         sim = self.simulation(staircase, output_dir=output_dir)
         sim.mesh(**self.mesh)
-        n_eff, z0_ohm = self._solve_line(sim, staircase, adapter)
+        n_eff, z0_ohm = self._solve_line(sim, staircase, route)
         self._check_continuity(n_eff)
 
         return line_params_from_neff(
@@ -667,12 +664,12 @@ class RFStage(EMStage):
         """
         if self._unloaded_result is not None and not force:
             return self._unloaded_result
-        adapter = self.check_route()
+        route = self.check_route()
         output_dir = self._require_study().stage_dir(self.stage_name) / "unloaded"
         output_dir.mkdir(parents=True, exist_ok=True)
         line = self._solve_staircase(
             self.unloaded_staircase(),
-            adapter,
+            route,
             bias_v=self.bias_point().bias_v,
             output_dir=output_dir,
             unloaded=True,
@@ -760,6 +757,6 @@ class RFStage(EMStage):
 
     def _solve(self) -> RFLineParams:
         """Mesh the Staircase and solve the line Mode at every frequency."""
-        adapter = self.check_route()
+        route = self.check_route()
         point = self.bias_point()
-        return self._solve_staircase(self.staircase(), adapter, bias_v=point.bias_v)
+        return self._solve_staircase(self.staircase(), route, bias_v=point.bias_v)
