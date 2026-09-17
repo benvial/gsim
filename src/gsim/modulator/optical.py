@@ -791,7 +791,7 @@ class OpticalStage(EMStage):
                 binary=palace_binary(binary, stage_name=self.stage_name),
                 target=self.n_guess if self.n_guess is not None else 0.0,
                 verbose=verbose,
-            )
+            ).modes
 
         import meshio
 

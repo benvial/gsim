@@ -21,7 +21,6 @@ selects a Route pays for neither.
 from __future__ import annotations
 
 import math
-import shutil
 import signal
 import subprocess
 import warnings
@@ -31,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from gsim.palace import BoundaryModeSim
+    from gsim.palace.results import PalaceTextResults
 
 __all__ = [
     "DEFAULT_PALACE_STRIPS",
@@ -41,6 +41,7 @@ __all__ = [
     "EMRoute",
     "ImpedancePaths",
     "PalaceMode",
+    "PalaceSolve",
     "containment_unmeasurable",
     "declare_impedance_paths",
     "field_line_impedance",
@@ -89,6 +90,20 @@ class PalaceMode:
 
     n_eff: complex
     mode_id: int
+
+
+@dataclass(frozen=True)
+class PalaceSolve:
+    """One Palace ``BoundaryMode`` run: its Modes and the tables it wrote.
+
+    Attributes:
+        modes: The solved Modes, in Palace's own mode order.
+        results: The run's text results, off which a declared impedance
+            path's reading is taken.
+    """
+
+    modes: list[PalaceMode]
+    results: PalaceTextResults
 
 
 def _palace_hint(stage_name: str) -> str:
@@ -184,12 +199,14 @@ def solve_palace_modes(
     target: float = 0.0,
     save: int = 0,
     verbose: bool = False,
-) -> list[PalaceMode]:
+) -> PalaceSolve:
     """Solve one ``BoundaryMode`` problem with Palace on an existing mesh.
 
     The simulation must already be meshed. Meshing is the Route-neutral
     part of a solve, so a caller comparing the two Routes can mesh once
-    and hand the same simulation to both.
+    and hand the same simulation to both. The simulation owns its run
+    directory: it clears the previous run's tables before this one and
+    hands back this run's.
 
     Args:
         sim: A meshed ``BoundaryModeSim``.
@@ -200,14 +217,14 @@ def solve_palace_modes(
         binary: Palace executable, from :func:`require_route` or
             :func:`require_palace_binary`.
         save: Number of Modes whose fields are written to ParaView, in
-            mode order. A Stage reading fields back — the RF Stage, for
-            its characteristic impedance — asks for every Mode it might
-            select, because which one that is is not known until they
-            are all solved.
+            mode order. A Stage reading fields back — the RF Stage, when
+            no impedance path could be declared — asks for every Mode it
+            might select, because which one that is is not known until
+            they are all solved.
         verbose: Stream Palace's output.
 
     Returns:
-        The solved Modes, in Palace's own mode order.
+        The solved Modes and the run's results.
 
     Raises:
         RuntimeError: When Palace returns no mode table, or when the
@@ -215,8 +232,6 @@ def solve_palace_modes(
             through :func:`_abort_report` rather than as the raw exit
             status.
     """
-    from gsim.palace.results import load_text_results
-
     sim.set_boundary_mode(
         freq=float(freq_hz),
         num_modes=int(num_modes),
@@ -224,37 +239,30 @@ def solve_palace_modes(
         save=int(save),
     )
     sim.write_config(photonic=True)
-    # A previous frequency's results must not survive into this run:
-    # should Palace crash, the salvage below reads this directory back,
-    # and a stale mode table would be mistaken for this frequency's.
-    if sim.output_dir is not None:
-        shutil.rmtree(_palace_output_dir(sim.output_dir), ignore_errors=True)
     try:
-        results: Any = sim.run_local(palace_executable=binary, verbose=verbose)
-        text = results if hasattr(results, "modes") else load_text_results(results)
+        text = sim.run_local(palace_executable=binary, verbose=verbose)
     except (RuntimeError, subprocess.CalledProcessError) as err:
-        text = _salvage_mode_table(sim, err, freq_hz=freq_hz, num_modes=num_modes)
-        if text is None:
+        salvaged = _salvage_mode_table(sim, err, freq_hz=freq_hz, num_modes=num_modes)
+        if salvaged is None:
             if isinstance(err, subprocess.CalledProcessError):
                 raise RuntimeError(
                     _abort_report(err, sim=sim, binary=binary, freq_hz=freq_hz)
                 ) from err
             raise
+        text = salvaged
     modes = getattr(text, "modes", {})
     if not modes:
         raise RuntimeError(
             f"Palace produced no mode table at f = {freq_hz:g} Hz; its output "
             f"is in {sim.output_dir}."
         )
-    return [
-        PalaceMode(n_eff=complex(modes[mode_id]["n_eff"]), mode_id=int(mode_id))
-        for mode_id in sorted(modes)
-    ]
-
-
-def _palace_output_dir(output_dir: Path | str) -> Path:
-    """Where a run's Palace solver output lands under *output_dir*."""
-    return Path(output_dir) / "output" / "palace"
+    return PalaceSolve(
+        modes=[
+            PalaceMode(n_eff=complex(modes[mode_id]["n_eff"]), mode_id=int(mode_id))
+            for mode_id in sorted(modes)
+        ],
+        results=text,
+    )
 
 
 def _death_signal(returncode: int) -> int | None:
@@ -313,9 +321,7 @@ def _abort_report(
             signal_note = f" (signal {signum})"
 
     output_dir = sim.output_dir
-    wrote_output = output_dir is not None and any(
-        _palace_output_dir(output_dir).glob("*")
-    )
+    wrote_output = bool(sim.last_run_files)
 
     # MPI closes its error blocks with a line of dashes, so the last
     # *worded* line is the one that says anything.
@@ -354,7 +360,7 @@ def _abort_report(
 
 def _salvage_mode_table(
     sim: BoundaryModeSim, err: Exception, *, freq_hz: float, num_modes: int
-) -> Any | None:
+) -> PalaceTextResults | None:
     """Read a crashed Palace run's mode table back, if it is complete.
 
     Palace 0.17 intermittently corrupts its heap while shutting down a
@@ -363,8 +369,8 @@ def _salvage_mode_table(
     is non-deterministic on an identical mesh and config, so a run that
     exits abnormally may still have answered the question it was asked —
     and the answer on disk is used rather than thrown away, which is what
-    lets a gate depend on a live solve at all. The output directory was
-    cleared before the run, so anything readable now is this run's.
+    lets a gate depend on a live solve at all. The simulation clears its
+    run directory before each run, so what it reads back is this run's.
 
     Args:
         sim: The simulation that was run.
@@ -377,15 +383,11 @@ def _salvage_mode_table(
         The parsed text results when the table is complete, else ``None``
         so the caller re-raises.
     """
-    from gsim.palace.results import load_text_results
-
-    if sim.output_dir is None:
-        return None
     try:
-        text = load_text_results(Path(sim.output_dir))
+        text = sim.read_results()
     except Exception:
         return None
-    if len(getattr(text, "modes", {})) < num_modes:
+    if text is None or len(getattr(text, "modes", {})) < num_modes:
         return None
     warnings.warn(
         f"Palace exited abnormally at f = {freq_hz:g} Hz but its complete "
@@ -615,14 +617,13 @@ def mesh_extent(sim: BoundaryModeSim) -> Extent:
 
 def declare_impedance_paths(
     sim: BoundaryModeSim, paths: ImpedancePaths, *, nsamples: int = 100
-) -> None:
-    """Register the paths as the solve's one postprocessing port.
+) -> int:
+    """Register the paths as a postprocessing path of the solve.
 
-    A ``BoundaryMode`` port is postprocessing only — it loads nothing
-    and leaves the eigenproblem as it was — and its entry index is its
-    declaration order across every port on the simulation. The port
-    declared here must therefore be the only one, so that it is entry
-    ``1``, which is where :func:`native_line_impedance` reads.
+    A ``BoundaryMode`` path is postprocessing only — it loads nothing
+    and leaves the eigenproblem as it was. The simulation says which
+    index Palace will report it under, and that index is what
+    :func:`native_line_impedance` reads.
 
     Args:
         sim: The simulation about to be solved; meshed or not, since the
@@ -630,22 +631,13 @@ def declare_impedance_paths(
         paths: What :func:`line_impedance_paths` sized.
         nsamples: Quadrature order of each line integral.
 
-    Raises:
-        ValueError: When the simulation already carries another port,
-            which would push the line's entry off index ``1``.
+    Returns:
+        The index Palace reports the line's impedance under.
     """
-    others = [port.name for port in sim.ports if port.name != IMPEDANCE_PORT]
-    others += [cpw.name for cpw in sim.cpw_ports]
-    if others:
-        raise ValueError(
-            f"The simulation already carries ports {others}, so the line's "
-            "impedance paths would not be Palace's postprocessing entry 1. "
-            "Declare them on a simulation with no other ports."
-        )
-    sim.add_port(
+    return sim.add_impedance_path(
         IMPEDANCE_PORT,
-        voltage_path=[list(point) for point in paths.voltage],
-        current_path=[list(point) for point in paths.current],
+        voltage=[list(point) for point in paths.voltage],
+        current=[list(point) for point in paths.current],
         nsamples=nsamples,
     )
 
@@ -660,7 +652,7 @@ MIN_VOLTAGE_POWER_RATIO: float = 1e-2
 
 
 def native_line_impedance(
-    sim: Any, mode: PalaceMode, *, stage_name: str
+    results: PalaceTextResults, mode: PalaceMode, *, index: int, stage_name: str
 ) -> complex | None:
     """The selected Mode's impedance off Palace's own ``mode-Z.csv``.
 
@@ -677,8 +669,9 @@ def native_line_impedance(
     running between the two electrodes, and the Stage is told so.
 
     Args:
-        sim: The simulation that was run, holding its output directory.
+        results: The run's text results.
         mode: The selected Mode.
+        index: The postprocessing index the path was declared under.
         stage_name: Stage asking, named in the warning.
 
     Returns:
@@ -691,21 +684,13 @@ def native_line_impedance(
             :data:`MIN_VOLTAGE_POWER_RATIO` of the Mode's power.
     """
     from gsim.common.modes import wall_mode_hint
-    from gsim.palace.results import load_text_results
 
-    output_dir = getattr(sim, "output_dir", None)
-    if output_dir is None:
-        return None
-    # This run's tables and nothing else: the solver's own directory is
-    # the one cleared before each run, and reading the simulation
-    # directory instead would let a table left at its top level shadow
-    # every frequency of the sweep.
-    try:
-        text = load_text_results(_palace_output_dir(output_dir))
-    except FileNotFoundError:
-        return None
-    z_pv = text.characteristic_impedance(index=1, mode=mode.mode_id, quantity="Z_PV")
-    z_vi = text.characteristic_impedance(index=1, mode=mode.mode_id, quantity="Z_VI")
+    z_pv = results.characteristic_impedance(
+        index=index, mode=mode.mode_id, quantity="Z_PV"
+    )
+    z_vi = results.characteristic_impedance(
+        index=index, mode=mode.mode_id, quantity="Z_VI"
+    )
     if z_pv is None or z_vi is None or z_pv <= 0.0 or z_vi <= 0.0:
         return None
     z_pi = z_vi * z_vi / z_pv
@@ -743,7 +728,8 @@ def field_line_impedance(
     raising in the middle of a frequency sweep.
 
     Args:
-        sim: The simulation that was run, holding its output directory.
+        sim: The simulation that was run, which reads its saved fields
+            back.
         mode: The selected Mode, whose ``mode_id`` names its saved
             fields.
         h_span: ``(min, max)`` of the signal conductor along the
@@ -755,20 +741,16 @@ def field_line_impedance(
         The complex characteristic impedance in ohms, or NaN when the
         fields could not be read.
     """
-    from gsim.palace.mode_fields import load_boundary_mode_field
     from gsim.palace.mode_fields import z0_power_current as palace_z0
 
-    output_dir = sim.output_dir
     try:
-        if output_dir is None:
-            raise RuntimeError("the simulation has no output directory.")  # noqa: TRY301
-        field = load_boundary_mode_field(output_dir, mode_id=mode.mode_id)
+        field = sim.read_mode_field(mode.mode_id)
         z0 = palace_z0(field, h_span=h_span, v_span=v_span)
     except Exception as err:
         warnings.warn(
             f"The {stage_name} stage's palace route could not read mode "
             f"{mode.mode_id}'s saved fields, so its characteristic impedance "
-            f"comes back NaN: {err} Palace's output is in {output_dir}.",
+            f"comes back NaN: {err} Palace's output is in {sim.output_dir}.",
             stacklevel=2,
         )
         return complex(math.nan, math.nan)
@@ -782,8 +764,10 @@ def field_line_impedance(
 
 def palace_line_impedance(
     sim: BoundaryModeSim,
+    solve: PalaceSolve,
     mode: PalaceMode,
     *,
+    index: int | None,
     h_span: tuple[float, float],
     v_span: tuple[float, float],
     stage_name: str,
@@ -791,15 +775,18 @@ def palace_line_impedance(
     """Characteristic impedance of a Palace Mode.
 
     Palace's own answer first: the power-current impedance its
-    postprocessing paths measured (:func:`native_line_impedance`), which
-    is on disk whenever the solve declared them. A result directory
-    without the tables — an older one, or a solve configured without
-    paths — falls back to the saved fields
+    postprocessing paths measured (:func:`native_line_impedance`), read
+    off this run's tables under the index the path was declared at. A
+    run without the tables — a solve that declared no path, or an older
+    Palace — falls back to the saved fields
     (:func:`field_line_impedance`), whose NaN contract stands.
 
     Args:
-        sim: The simulation that was run, holding its output directory.
+        sim: The simulation that was run.
+        solve: The run, holding its results.
         mode: The selected Mode.
+        index: The postprocessing index the impedance path was declared
+            under, or ``None`` when none could be declared.
         h_span: ``(min, max)`` of the signal conductor along the
             Cross-section's in-plane axis (um), for the fallback.
         v_span: ``(min, max)`` along its vertical axis (um), likewise.
@@ -809,9 +796,12 @@ def palace_line_impedance(
         The characteristic impedance in ohms: real off the tables, complex
         off the fields, NaN when neither could be read.
     """
-    native = native_line_impedance(sim, mode, stage_name=stage_name)
-    if native is not None:
-        return native
+    if index is not None:
+        native = native_line_impedance(
+            solve.results, mode, index=index, stage_name=stage_name
+        )
+        if native is not None:
+            return native
     return field_line_impedance(
         sim, mode, h_span=h_span, v_span=v_span, stage_name=stage_name
     )

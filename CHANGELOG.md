@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `BoundaryModeSim` owns its run and its postprocessing paths. `add_impedance_path(name, voltage=..., current=...)`
+  declares the line integrals Palace evaluates on a solved Mode and returns the index the impedance is reported under;
+  `run_local()` clears the previous run's tables, runs, and returns this run's `PalaceTextResults`; `read_results()`,
+  `last_run_files` and `read_mode_field()` read that run back. The boundary-mode simulation takes no 3D ports any more:
+  `add_port`, `add_cpw_port`, `add_wave_port` and `add_terminal` refuse, and the `ports`, `cpw_ports`, `wave_ports` and
+  `terminals` lists are gone from it. `PortConfig` and `CPWPortConfig` go back to describing a 3D excitation port only —
+  the `voltage_path`, `current_path`, `nsamples`, `center`, `orientation`, `width` and `order` fields, the path
+  derivation from a port's geometry, and the matching `add_port` / `add_cpw_port` keyword arguments are removed. Mode
+  paths are `(h, v)` cross-section coordinates; nothing is projected from layout coordinates.
+
 - Removed: the pre-TCAD analytic Junction cluster and the Palace 2D TW-MZM notebook that was its only user (ADR 0006).
   `gsim.common.stack` no longer exports the doping-geometry builders (`make_doping_profile`, `make_pn_junction_profile`,
   `make_segmented_junction_profile`, `select_junction_mode`, `PNJunctionConfig.select_mode`), the one-dimensional Drude

@@ -813,10 +813,11 @@ class RFStage(EMStage):
         chosen — cannot be had here. The impedance can: the solve
         declares the voltage and current paths of the line, sized from
         the Staircase (:meth:`impedance_paths`), and Palace integrates
-        the selected Mode's impedance along them itself. The solve also
-        saves every Mode it might select, so a result directory whose
-        tables are missing still answers off the saved fields, through
-        the same Marks-Williams integral the femwell Route runs.
+        the selected Mode's impedance along them itself, reported under
+        the index the simulation assigned. When the paths cannot be
+        declared, the solve saves every Mode it might select instead and
+        answers off the saved fields, through the same Marks-Williams
+        integral the femwell Route runs.
 
         Args:
             sim: The meshed Staircase simulation.
@@ -840,6 +841,7 @@ class RFStage(EMStage):
         executable = palace_binary(binary, stage_name=self.stage_name)
         verbose = self._is_verbose()
         h_span, v_span = staircase.electrode_extent(self.signal_electrode())
+        index: int | None = None
         try:
             paths = self.impedance_paths(sim, staircase)
         except ValueError as err:
@@ -852,29 +854,32 @@ class RFStage(EMStage):
                 stacklevel=2,
             )
         else:
-            declare_impedance_paths(sim, paths)
+            index = declare_impedance_paths(sim, paths)
 
         n_eff: list[complex] = []
         z0_ohm: list[complex] = []
         for freq in self.frequencies_hz:
             guess = self._guess_for(n_eff)
-            modes = solve_palace_modes(
+            solve = solve_palace_modes(
                 sim,
                 freq_hz=freq,
                 num_modes=self.num_modes,
                 binary=executable,
                 target=guess if guess is not None else 0.0,
-                # Which Mode is the line Mode is not known until they are
-                # all solved, so every one of them is saved.
-                save=self.num_modes,
+                # Fields are needed only when the impedance has to be read
+                # off them; which Mode is the line Mode is not known until
+                # they are all solved, so every one of them is saved then.
+                save=0 if index is not None else self.num_modes,
                 verbose=verbose,
             )
-            mode = self._pick_line_mode(modes, freq)
+            mode = self._pick_line_mode(solve.modes, freq)
             n_eff.append(complex(mode.n_eff))
             z0_ohm.append(
                 palace_line_impedance(
                     sim,
+                    solve,
                     mode,
+                    index=index,
                     h_span=h_span,
                     v_span=v_span,
                     stage_name=self.stage_name,

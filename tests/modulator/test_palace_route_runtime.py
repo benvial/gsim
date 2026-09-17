@@ -359,8 +359,8 @@ def native_solve(tmp_path_factory):
     sim = stage.simulation(staircase)
     sim.mesh(**stage.mesh)
     paths = stage.impedance_paths(sim, staircase)
-    declare_impedance_paths(sim, paths)
-    modes = solve_palace_modes(
+    index = declare_impedance_paths(sim, paths)
+    solve = solve_palace_modes(
         sim,
         freq_hz=10e9,
         num_modes=4,
@@ -368,9 +368,9 @@ def native_solve(tmp_path_factory):
         target=RF_GATE_N_GUESS,
         save=4,
     )
-    mode = stage._pick_line_mode(modes, 10e9)
+    mode = stage._pick_line_mode(solve.modes, 10e9)
     h_span, v_span = staircase.electrode_extent(stage.signal_electrode())
-    native = native_line_impedance(sim, mode, stage_name="rf")
+    native = native_line_impedance(solve.results, mode, index=index, stage_name="rf")
     fields = field_line_impedance(
         sim, mode, h_span=h_span, v_span=v_span, stage_name="rf"
     )

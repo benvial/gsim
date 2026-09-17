@@ -19,6 +19,7 @@ import pytest
 from pydantic import ValidationError
 
 from gsim.modulator import DEFAULT_PALACE_STRIPS, OpticalStage, RFStage
+from gsim.palace.results import PalaceTextResults
 
 from .conftest import SLAB
 
@@ -215,6 +216,62 @@ class TestSavedFieldsAreTheSelectedMode:
             )
 
 
+def mode_table(n_modes: int) -> PalaceTextResults:
+    """A run's results carrying a complete ``mode-kn.csv`` of *n_modes* Modes."""
+    rows = [
+        {
+            "m": str(m),
+            "Re{kn} (1/m)": f"{4.2e7 + m:.6e}",
+            "Im{kn} (1/m)": "-1.0e2",
+            "Re{n_eff}": f"{2.0 + 0.1 * m:.6e}",
+            "Im{n_eff}": "-1.0e-5",
+        }
+        for m in range(1, n_modes + 1)
+    ]
+    return PalaceTextResults(
+        files={}, csv_tables={"mode-kn.csv": rows}, json_data={}, text_data={}
+    )
+
+
+class FakeSim:
+    """A boundary-mode simulation whose run is scripted.
+
+    ``run_local`` leaves whatever *leaves* says on the run — the results
+    the sim then reads back — and raises *raises* if given, the way a
+    crashed or aborted Palace does after (or before) writing its tables.
+    """
+
+    def __init__(self, output_dir, *, leaves=None, raises=None, stale=None):
+        self.output_dir = output_dir
+        self._leaves = leaves
+        self._raises = raises
+        self._results = stale
+        self.solved = []
+
+    def set_boundary_mode(self, **kwargs):
+        self.solved.append(kwargs)
+
+    def write_config(self, **_kwargs):
+        pass
+
+    def run_local(self, **_kwargs):
+        # The real sim clears its run directory before running.
+        self._results = self._leaves
+        if self._raises is not None:
+            raise self._raises
+        return self._results
+
+    def read_results(self):
+        return self._results
+
+    @property
+    def last_run_files(self):
+        return {"mode-kn.csv": self.output_dir / "mode-kn.csv"} if self._results else {}
+
+    def read_mode_field(self, mode_id):
+        raise FileNotFoundError(f"no saved fields for mode {mode_id}")
+
+
 class TestCrashedRunSalvage:
     """Palace 0.17 can corrupt its heap on shutdown, after answering.
 
@@ -222,28 +279,13 @@ class TestCrashedRunSalvage:
     an answer, not a failure; a truncated or absent table stays one.
     """
 
-    class _Sim:
-        def __init__(self, output_dir):
-            self.output_dir = output_dir
-
-    @staticmethod
-    def _write_mode_table(output_dir, n_modes: int) -> None:
-        palace_dir = output_dir / "output" / "palace"
-        palace_dir.mkdir(parents=True)
-        rows = ["m, Re{kn} (1/m), Im{kn} (1/m), Re{n_eff}, Im{n_eff}"]
-        rows += [
-            f"{m}, {4.2e7 + m:.6e}, -1.0e2, {2.0 + 0.1 * m:.6e}, -1.0e-5"
-            for m in range(1, n_modes + 1)
-        ]
-        (palace_dir / "mode-kn.csv").write_text("\n".join(rows) + "\n")
-
     def test_a_complete_table_is_used_and_the_crash_reported(self, tmp_path):
         from gsim.modulator.route import _salvage_mode_table
 
-        self._write_mode_table(tmp_path, 4)
+        sim = FakeSim(tmp_path, stale=mode_table(4))
         with pytest.warns(UserWarning, match="exited abnormally"):
             text = _salvage_mode_table(
-                self._Sim(tmp_path),
+                sim,
                 RuntimeError("free(): corrupted unsorted chunks"),
                 freq_hz=10e9,
                 num_modes=4,
@@ -255,45 +297,24 @@ class TestCrashedRunSalvage:
     def test_a_truncated_table_is_not_an_answer(self, tmp_path):
         from gsim.modulator.route import _salvage_mode_table
 
-        self._write_mode_table(tmp_path, 2)
+        sim = FakeSim(tmp_path, stale=mode_table(2))
         assert (
-            _salvage_mode_table(
-                self._Sim(tmp_path), RuntimeError("boom"), freq_hz=10e9, num_modes=4
-            )
+            _salvage_mode_table(sim, RuntimeError("boom"), freq_hz=10e9, num_modes=4)
             is None
         )
 
     def test_no_output_at_all_is_not_an_answer(self, tmp_path):
         from gsim.modulator.route import _salvage_mode_table
 
+        sim = FakeSim(tmp_path)
         assert (
-            _salvage_mode_table(
-                self._Sim(tmp_path), RuntimeError("boom"), freq_hz=10e9, num_modes=4
-            )
+            _salvage_mode_table(sim, RuntimeError("boom"), freq_hz=10e9, num_modes=4)
             is None
         )
 
 
 class TestSolvingThroughACrash:
     """What ``solve_palace_modes`` does around a run that exits abnormally."""
-
-    class _CrashingSim:
-        """A sim whose run writes a mode table and then fails."""
-
-        def __init__(self, output_dir, n_modes: int | None):
-            self.output_dir = output_dir
-            self._n_modes = n_modes
-
-        def set_boundary_mode(self, **_kwargs):
-            pass
-
-        def write_config(self, **_kwargs):
-            pass
-
-        def run_local(self, **_kwargs):
-            if self._n_modes is not None:
-                TestCrashedRunSalvage._write_mode_table(self.output_dir, self._n_modes)
-            raise RuntimeError("free(): corrupted unsorted chunks")
 
     def _solve(self, sim, num_modes: int = 4):
         from gsim.modulator.route import solve_palace_modes
@@ -303,21 +324,30 @@ class TestSolvingThroughACrash:
         )
 
     def test_a_crash_that_still_answered_is_an_answer(self, tmp_path):
+        crash = RuntimeError("free(): corrupted unsorted chunks")
         with pytest.warns(UserWarning, match="exited abnormally"):
-            modes = self._solve(self._CrashingSim(tmp_path, 4))
+            solve = self._solve(FakeSim(tmp_path, leaves=mode_table(4), raises=crash))
 
-        assert [mode.mode_id for mode in modes] == [1, 2, 3, 4]
+        assert [mode.mode_id for mode in solve.modes] == [1, 2, 3, 4]
+        assert solve.results.modes[4]["n_eff"].real == pytest.approx(2.4)
 
     def test_a_crash_that_answered_nothing_is_raised(self, tmp_path):
+        crash = RuntimeError("free(): corrupted unsorted chunks")
         with pytest.raises(RuntimeError, match="corrupted unsorted chunks"):
-            self._solve(self._CrashingSim(tmp_path, None))
+            self._solve(FakeSim(tmp_path, raises=crash))
 
     def test_a_previous_runs_table_is_not_salvaged_as_this_ones(self, tmp_path):
-        """The output directory is cleared before the run, not after it."""
-        TestCrashedRunSalvage._write_mode_table(tmp_path, 4)
-
+        """The sim clears its run before running, so a stale table is gone."""
+        crash = RuntimeError("free(): corrupted unsorted chunks")
         with pytest.raises(RuntimeError, match="corrupted unsorted chunks"):
-            self._solve(self._CrashingSim(tmp_path, None))
+            self._solve(FakeSim(tmp_path, stale=mode_table(4), raises=crash))
+
+    def test_a_clean_run_hands_back_its_modes_and_results(self, tmp_path):
+        sim = FakeSim(tmp_path, leaves=mode_table(2))
+        solve = self._solve(sim, num_modes=2)
+        assert [mode.n_eff.real for mode in solve.modes] == pytest.approx([2.1, 2.2])
+        assert solve.results is sim.read_results()
+        assert sim.solved[-1]["save"] == 1
 
 
 class TestAbortedBinaryIsReported:
@@ -331,27 +361,14 @@ class TestAbortedBinaryIsReported:
     means the runtime rather than the model.
     """
 
-    class _AbortingSim:
-        """A sim whose binary dies without writing anything."""
-
-        def __init__(self, output_dir, *, returncode: int, stderr: str = ""):
-            self.output_dir = output_dir
-            self._returncode = returncode
-            self._stderr = stderr
-
-        def set_boundary_mode(self, **_kwargs):
-            pass
-
-        def write_config(self, **_kwargs):
-            pass
-
-        def run_local(self, *, palace_executable, **_kwargs):
-            raise subprocess.CalledProcessError(
-                self._returncode,
-                [str(palace_executable), "-np", "1", "config.json"],
-                output="",
-                stderr=self._stderr,
-            )
+    @staticmethod
+    def _abort(returncode: int, stderr: str = "") -> subprocess.CalledProcessError:
+        return subprocess.CalledProcessError(
+            returncode,
+            ["/opt/somewhere/palace", "-np", "1", "config.json"],
+            output="",
+            stderr=stderr,
+        )
 
     def _solve(self, sim):
         from gsim.modulator.route import solve_palace_modes
@@ -366,7 +383,7 @@ class TestAbortedBinaryIsReported:
 
     def test_the_report_names_the_binary_and_blames_the_runtime(self, tmp_path):
         with pytest.raises(RuntimeError) as excinfo:
-            self._solve(self._AbortingSim(tmp_path, returncode=134))
+            self._solve(FakeSim(tmp_path, raises=self._abort(134)))
         message = str(excinfo.value)
         assert "/opt/somewhere/palace" in message
         assert "exit status 134" in message
@@ -380,9 +397,7 @@ class TestAbortedBinaryIsReported:
         """Exit 1 is Palace refusing the run itself; its stderr says why."""
         with pytest.raises(RuntimeError) as excinfo:
             self._solve(
-                self._AbortingSim(
-                    tmp_path, returncode=1, stderr="Invalid configuration\n"
-                )
+                FakeSim(tmp_path, raises=self._abort(1, "Invalid configuration\n"))
             )
         message = str(excinfo.value)
         assert "exit status 1." in message
@@ -391,35 +406,26 @@ class TestAbortedBinaryIsReported:
 
     def test_the_raw_error_is_chained_not_lost(self, tmp_path):
         with pytest.raises(RuntimeError) as excinfo:
-            self._solve(self._AbortingSim(tmp_path, returncode=134))
+            self._solve(FakeSim(tmp_path, raises=self._abort(134)))
         assert isinstance(excinfo.value.__cause__, subprocess.CalledProcessError)
         assert excinfo.value.__cause__.returncode == 134
 
     def test_a_segfault_is_named_as_one(self, tmp_path):
         with pytest.raises(RuntimeError, match="SIGSEGV"):
-            self._solve(self._AbortingSim(tmp_path, returncode=139))
+            self._solve(FakeSim(tmp_path, raises=self._abort(139)))
 
     def test_the_last_worded_stderr_line_is_quoted(self, tmp_path):
         """MPI ends its error blocks with a dashed rule; quote past it."""
+        stderr = "noise\nopal_shmem_base_select failed\n" + "-" * 40 + "\n"
         with pytest.raises(RuntimeError, match="opal_shmem_base_select failed"):
-            self._solve(
-                self._AbortingSim(
-                    tmp_path,
-                    returncode=134,
-                    stderr="noise\nopal_shmem_base_select failed\n" + "-" * 40 + "\n",
-                )
-            )
+            self._solve(FakeSim(tmp_path, raises=self._abort(134, stderr)))
 
     def test_partial_output_is_not_blamed_on_the_runtime(self, tmp_path):
         """A truncated table means the solver ran; the runtime did start."""
-
-        class _PartialSim(self._AbortingSim):
-            def run_local(self, *, palace_executable, **_kwargs):
-                TestCrashedRunSalvage._write_mode_table(self.output_dir, 2)
-                super().run_local(palace_executable=palace_executable)
-
         with pytest.raises(RuntimeError) as excinfo:
-            self._solve(_PartialSim(tmp_path, returncode=134))
+            self._solve(
+                FakeSim(tmp_path, leaves=mode_table(2), raises=self._abort(134))
+            )
         message = str(excinfo.value)
         assert "any solver output" not in message
         assert "partial solver output" in message
@@ -527,184 +533,185 @@ class TestImpedancePaths:
 
 
 class TestDeclaringThePaths:
-    def test_the_paths_become_the_sims_only_postprocessing_port(self, biased):
+    def test_the_paths_become_a_mode_path_of_the_sim(self, biased):
         from gsim.modulator.route import declare_impedance_paths
 
         sim = biased.rf.simulation()
         paths = impedance_paths()
 
-        declare_impedance_paths(sim, paths)
+        index = declare_impedance_paths(sim, paths)
 
-        assert len(sim.ports) == 1
-        port = sim.ports[0]
-        assert port.voltage_path == [list(p) for p in paths.voltage]
-        assert port.current_path == [list(p) for p in paths.current]
+        assert index == 1
+        (path,) = sim.mode_paths
+        assert path.voltage_path == [list(p) for p in paths.voltage]
+        assert path.current_path == [list(p) for p in paths.current]
         # Two-dimensional points: cross-section coordinates, not layout.
-        assert all(len(p) == 2 for p in port.voltage_path)
+        assert all(len(p) == 2 for p in path.voltage_path)
 
     def test_declaring_twice_replaces_rather_than_stacks(self, biased):
         from gsim.modulator.route import declare_impedance_paths
 
         sim = biased.rf.simulation()
 
-        declare_impedance_paths(sim, impedance_paths())
-        declare_impedance_paths(sim, impedance_paths())
+        first = declare_impedance_paths(sim, impedance_paths())
+        second = declare_impedance_paths(sim, impedance_paths())
 
-        assert len(sim.ports) == 1
+        assert len(sim.mode_paths) == 1
+        assert first == second == 1
 
-    def test_another_port_on_the_sim_is_refused(self, biased):
-        """Entry 1 is where the impedance is read, so nothing may precede it."""
+    def test_the_index_is_where_the_sim_put_it(self, biased):
+        """A path declared after another is read under its own index."""
         from gsim.modulator.route import declare_impedance_paths
 
         sim = biased.rf.simulation()
-        sim.add_port("probe", voltage_path=[[-20.0, 0.1], [-20.0, 0.2]])
+        sim.add_impedance_path("probe", voltage=[[-20.0, 0.1], [-20.0, 0.2]])
 
-        with pytest.raises(ValueError, match=r"already carries ports \['probe'\]"):
-            declare_impedance_paths(sim, impedance_paths())
+        assert declare_impedance_paths(sim, impedance_paths()) == 2
 
 
 #: ``mode -> (Z_PV, Z_VI)`` of the canned ``mode-Z.csv``.
 NATIVE_TABLE = {1: (100.0, 80.0), 2: (200.0, 120.0)}
 
 
+def impedance_tables(rows=None, *, z_vi: bool = True, index: int = 1):
+    """A run's results carrying a ``mode-Z.csv`` under postprocessing *index*."""
+    rows = NATIVE_TABLE if rows is None else rows
+    table = []
+    for m, (z_pv, z_vi_) in rows.items():
+        row = {
+            "m": str(m),
+            f"Z_PV[{index}] (Ohm)": str(z_pv),
+            f"L_PV[{index}] (H/m)": "1e-7",
+            f"C_PV[{index}] (F/m)": "1e-10",
+        }
+        if z_vi:
+            row[f"Z_VI[{index}] (Ohm)"] = str(z_vi_)
+            row[f"L_VI[{index}] (H/m)"] = "1e-7"
+            row[f"C_VI[{index}] (F/m)"] = "1e-10"
+        table.append(row)
+    return PalaceTextResults(
+        files={}, csv_tables={"mode-Z.csv": table}, json_data={}, text_data={}
+    )
+
+
 class TestNativeImpedance:
     """Reading the selected Mode's impedance off Palace's own tables."""
 
-    class _Sim:
-        def __init__(self, output_dir):
-            self.output_dir = output_dir
-
-    @staticmethod
-    def _write_tables(
-        output_dir, *, rows=None, z_vi: bool = True, where="output/palace"
-    ) -> None:
-        palace_dir = output_dir / where
-        palace_dir.mkdir(parents=True, exist_ok=True)
-        rows = NATIVE_TABLE if rows is None else rows
-        header = "m, Z_PV[1] (Ohm), L_PV[1] (H/m), C_PV[1] (F/m)"
-        lines = [f"{m}, {z_pv}, 1e-7, 1e-10" for m, (z_pv, _) in rows.items()]
-        if z_vi:
-            header += ", Z_VI[1] (Ohm), L_VI[1] (H/m), C_VI[1] (F/m)"
-            lines = [
-                f"{m}, {z_pv}, 1e-7, 1e-10, {z_vi_}, 1e-7, 1e-10"
-                for m, (z_pv, z_vi_) in rows.items()
-            ]
-        (palace_dir / "mode-Z.csv").write_text(header + "\n" + "\n".join(lines) + "\n")
-
-    def test_it_is_the_power_current_impedance_of_the_selected_mode(self, tmp_path):
+    def test_it_is_the_power_current_impedance_of_the_selected_mode(self):
         """``Z_VI^2 / Z_PV`` is ``2P/|I|^2``: the definition both Routes use."""
         from gsim.modulator.route import PalaceMode, native_line_impedance
 
-        self._write_tables(tmp_path)
-
         z0 = native_line_impedance(
-            self._Sim(tmp_path), PalaceMode(2.1 - 1e-5j, 2), stage_name="rf"
+            impedance_tables(), PalaceMode(2.1 - 1e-5j, 2), index=1, stage_name="rf"
         )
 
         assert z0 == pytest.approx(120.0**2 / 200.0)
 
-    def test_a_gap_carrying_no_voltage_is_reported(self, tmp_path):
+    def test_it_reads_under_the_index_the_path_was_declared_at(self):
+        from gsim.modulator.route import PalaceMode, native_line_impedance
+
+        results = impedance_tables(index=3)
+        assert (
+            native_line_impedance(results, PalaceMode(2.0, 1), index=1, stage_name="rf")
+            is None
+        )
+        assert native_line_impedance(
+            results, PalaceMode(2.0, 1), index=3, stage_name="rf"
+        ) == pytest.approx(80.0**2 / 100.0)
+
+    def test_a_gap_carrying_no_voltage_is_reported(self):
         """``|V| |I| << 2P``: the electrodes sit at one potential."""
         from gsim.modulator.route import PalaceMode, native_line_impedance
 
-        self._write_tables(tmp_path, rows={1: (2.5e-8, 2.1e-3)})
-
         with pytest.warns(UserWarning, match="between them and the window wall"):
             z0 = native_line_impedance(
-                self._Sim(tmp_path), PalaceMode(2.03 - 6e-7j, 1), stage_name="rf"
+                impedance_tables({1: (2.5e-8, 2.1e-3)}),
+                PalaceMode(2.03 - 6e-7j, 1),
+                index=1,
+                stage_name="rf",
             )
 
         # The impedance itself is still the power-current one.
         assert z0 == pytest.approx(2.1e-3**2 / 2.5e-8)
 
-    def test_a_lossy_line_mode_is_not_reported(self, tmp_path):
+    def test_a_lossy_line_mode_is_not_reported(self):
         """``Z_PV / Z_PI`` of 0.4 is a lossy line, not a wall mode."""
         import warnings
 
         from gsim.modulator.route import PalaceMode, native_line_impedance
 
-        self._write_tables(tmp_path, rows={1: (1.63, 2.62)})
-
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             native_line_impedance(
-                self._Sim(tmp_path), PalaceMode(31.9 - 31.9j, 1), stage_name="rf"
+                impedance_tables({1: (1.63, 2.62)}),
+                PalaceMode(31.9 - 31.9j, 1),
+                index=1,
+                stage_name="rf",
             )
 
-    def test_a_loop_enclosing_no_current_is_no_answer(self, tmp_path):
+    def test_a_loop_enclosing_no_current_is_no_answer(self):
         """``Z_VI = 0`` would make the impedance zero, which is no reading."""
         from gsim.modulator.route import PalaceMode, native_line_impedance
 
-        self._write_tables(tmp_path, rows={1: (100.0, 0.0)})
-
         assert (
             native_line_impedance(
-                self._Sim(tmp_path), PalaceMode(2.0, 1), stage_name="rf"
+                impedance_tables({1: (100.0, 0.0)}),
+                PalaceMode(2.0, 1),
+                index=1,
+                stage_name="rf",
             )
             is None
         )
 
-    def test_a_table_left_beside_the_run_is_not_this_runs(self, tmp_path):
-        """Only the solver's own directory is cleared per run, so only it is read."""
-        from gsim.modulator.route import PalaceMode, native_line_impedance
-
-        self._write_tables(tmp_path, where=".")
-
-        assert (
-            native_line_impedance(
-                self._Sim(tmp_path), PalaceMode(2.0, 1), stage_name="rf"
-            )
-            is None
-        )
-
-    def test_no_table_is_no_answer(self, tmp_path):
+    def test_no_table_is_no_answer(self):
         from gsim.modulator.route import PalaceMode, native_line_impedance
 
         assert (
             native_line_impedance(
-                self._Sim(tmp_path), PalaceMode(2.0, 1), stage_name="rf"
+                mode_table(2), PalaceMode(2.0, 1), index=1, stage_name="rf"
             )
             is None
         )
 
-    def test_a_table_without_the_current_is_no_answer(self, tmp_path):
+    def test_a_table_without_the_current_is_no_answer(self):
         """``Z_PV`` alone is a different definition, not a fallback."""
         from gsim.modulator.route import PalaceMode, native_line_impedance
 
-        self._write_tables(tmp_path, z_vi=False)
-
         assert (
             native_line_impedance(
-                self._Sim(tmp_path), PalaceMode(2.0, 1), stage_name="rf"
+                impedance_tables(z_vi=False),
+                PalaceMode(2.0, 1),
+                index=1,
+                stage_name="rf",
             )
             is None
         )
 
-    def test_a_mode_the_table_does_not_carry_is_no_answer(self, tmp_path):
+    def test_a_mode_the_table_does_not_carry_is_no_answer(self):
         from gsim.modulator.route import PalaceMode, native_line_impedance
-
-        self._write_tables(tmp_path)
 
         assert (
             native_line_impedance(
-                self._Sim(tmp_path), PalaceMode(2.0, 3), stage_name="rf"
+                impedance_tables(), PalaceMode(2.0, 3), index=1, stage_name="rf"
             )
             is None
         )
 
     def test_the_route_prefers_the_native_value(self, tmp_path):
-        """With the table on disk, no field file is read and nothing warns."""
+        """With the table in the run's results, no field file is read."""
         import warnings
 
-        from gsim.modulator.route import PalaceMode, palace_line_impedance
+        from gsim.modulator.route import PalaceMode, PalaceSolve, palace_line_impedance
 
-        self._write_tables(tmp_path)
-
+        mode = PalaceMode(2.0, 1)
+        solve = PalaceSolve(modes=[mode], results=impedance_tables())
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             z0 = palace_line_impedance(
-                self._Sim(tmp_path),
-                PalaceMode(2.0, 1),
+                FakeSim(tmp_path),
+                solve,
+                mode,
+                index=1,
                 h_span=(-22.6, -20.6),
                 v_span=(0.0, 0.5),
                 stage_name="rf",
@@ -713,16 +720,20 @@ class TestNativeImpedance:
         assert z0 == pytest.approx(80.0**2 / 100.0)
         assert z0.imag == 0.0
 
-    def test_without_the_table_the_fields_are_read_and_their_absence_reported(
+    def test_without_a_declared_path_the_fields_are_read_and_their_absence_reported(
         self, tmp_path
     ):
         """The fallback and its NaN contract stay."""
-        from gsim.modulator.route import PalaceMode, palace_line_impedance
+        from gsim.modulator.route import PalaceMode, PalaceSolve, palace_line_impedance
 
+        mode = PalaceMode(2.0, 1)
+        solve = PalaceSolve(modes=[mode], results=impedance_tables())
         with pytest.warns(UserWarning, match="could not read mode 1's saved fields"):
             z0 = palace_line_impedance(
-                self._Sim(tmp_path),
-                PalaceMode(2.0, 1),
+                FakeSim(tmp_path),
+                solve,
+                mode,
+                index=None,
                 h_span=(-22.6, -20.6),
                 v_span=(0.0, 0.5),
                 stage_name="rf",
@@ -743,9 +754,11 @@ class TestTheStageDeclaresThePaths:
         def fake_extent(_sim):
             return ((-30.0, -10.0), (-3.0, 2.0))
 
-        def fake_solve(sim, **_kwargs):
-            seen["ports"] = list(sim.ports)
-            return [route.PalaceMode(n_eff=2.0 - 1e-3j, mode_id=1)]
+        def fake_solve(sim, **kwargs):
+            seen["paths"] = list(sim.mode_paths)
+            seen["save"] = kwargs["save"]
+            mode = route.PalaceMode(n_eff=2.0 - 1e-3j, mode_id=1)
+            return route.PalaceSolve(modes=[mode], results=mode_table(1))
 
         monkeypatch.setattr(route, "mesh_extent", fake_extent)
         monkeypatch.setattr(route, "solve_palace_modes", fake_solve)
@@ -761,16 +774,18 @@ class TestTheStageDeclaresThePaths:
 
         assert n_eff == [2.0 - 1e-3j]
         assert z0 == [50.0]
-        (port,) = seen["ports"]
+        (path,) = seen["paths"]
         (h_lo, h_hi), (v_lo, v_hi) = staircase.electrode_extent(
             biased.rf.signal_electrode()
         )
         # The voltage path leaves the signal electrode's inner face at
         # its mid-height; the loop surrounds that electrode.
-        assert port.voltage_path[0][1] == pytest.approx(0.5 * (v_lo + v_hi))
-        loop_h = [p[0] for p in port.current_path]
+        assert path.voltage_path[0][1] == pytest.approx(0.5 * (v_lo + v_hi))
+        loop_h = [p[0] for p in path.current_path]
         assert min(loop_h) < h_lo
         assert max(loop_h) > h_hi
+        # Palace's tables answer, so no fields need saving.
+        assert seen["save"] == 0
 
     def test_paths_that_cannot_be_sized_leave_the_solve_to_the_fields(
         self, biased, monkeypatch
@@ -783,9 +798,11 @@ class TestTheStageDeclaresThePaths:
 
         seen: dict[str, list] = {}
 
-        def fake_solve(sim, **_kwargs):
-            seen["ports"] = list(sim.ports)
-            return [route.PalaceMode(n_eff=2.0 - 1e-3j, mode_id=1)]
+        def fake_solve(sim, **kwargs):
+            seen["paths"] = list(sim.mode_paths)
+            seen["save"] = kwargs["save"]
+            mode = route.PalaceMode(n_eff=2.0 - 1e-3j, mode_id=1)
+            return route.PalaceSolve(modes=[mode], results=mode_table(1))
 
         # The mesh stops short of the signal electrode's outer face.
         monkeypatch.setattr(
@@ -808,4 +825,7 @@ class TestTheStageDeclaresThePaths:
 
         assert n_eff == [2.0 - 1e-3j]
         assert z0 == [50.0]
-        assert seen["ports"] == []
+        assert seen["paths"] == []
+        # Every Mode is saved: which one the fields are read for is not
+        # known until they are all solved.
+        assert seen["save"] == biased.rf.num_modes

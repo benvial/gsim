@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from gsim.palace import BoundaryModeSim, DrivenSim
 from gsim.palace.base import _recommend_parallel
 
@@ -81,6 +83,16 @@ def test_recommend_parallel_respects_explicit_processes(monkeypatch):
     assert threads == 16  # serial run defaults threads to cores
 
 
+def _write_mode_table(output_dir) -> None:
+    """What a boundary-mode Palace leaves behind: one mode table."""
+    postpro_dir = output_dir / "output" / "palace"
+    postpro_dir.mkdir(parents=True, exist_ok=True)
+    (postpro_dir / "mode-kn.csv").write_text(
+        "m, Re{kn} (1/m), Im{kn} (1/m), Re{n_eff}, Im{n_eff}\n"
+        "1, 4.2e7, -1.0e2, 2.1, -1.0e-5\n"
+    )
+
+
 def test_run_local_boundarymode_defaults_to_single_rank(monkeypatch, tmp_path):
     """BoundaryModeSim.run_local() without args uses -np 1 and -nt <cpus>."""
     _setup_local_palace(monkeypatch, tmp_path)
@@ -94,6 +106,7 @@ def test_run_local_boundarymode_defaults_to_single_rank(monkeypatch, tmp_path):
 
     def _fake_run(cmd, **_kwargs):
         captured["cmd"] = cmd
+        _write_mode_table(output_dir)
         return SimpleNamespace(stdout="", stderr="", returncode=0)
 
     monkeypatch.setattr("subprocess.run", _fake_run)
@@ -104,7 +117,8 @@ def test_run_local_boundarymode_defaults_to_single_rank(monkeypatch, tmp_path):
 
     result = sim.run_local(verbose=False)
 
-    assert isinstance(result, dict)
+    # A boundary-mode run hands back its own mode tables.
+    assert result.modes[1]["n_eff"].real == pytest.approx(2.1)
     cmd = cast(list[str], captured["cmd"])
     assert "-np" in cmd
     assert "1" in cmd[cmd.index("-np") + 1 :][:1]
@@ -124,6 +138,7 @@ def test_run_local_explicit_large_processes_warns(monkeypatch, tmp_path, caplog)
 
     def _fake_run(cmd, **_kwargs):
         captured["cmd"] = cmd
+        _write_mode_table(output_dir)
         return SimpleNamespace(stdout="", stderr="", returncode=0)
 
     monkeypatch.setattr("subprocess.run", _fake_run)
