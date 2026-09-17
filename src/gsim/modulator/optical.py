@@ -30,13 +30,13 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field
 
-from gsim.common.stack.staircase import DEFAULT_SI_INDEX
+from gsim.common.stack.staircase import DEFAULT_SI_INDEX, OpticalStripMaterial
 from gsim.modulator.em import EMStage
 from gsim.modulator.route import DEFAULT_PALACE_STRIPS, require_route
 
@@ -201,7 +201,6 @@ class OpticalStage(EMStage):
     """
 
     stage_name: ClassVar[str] = "optical"
-    stack_kind: ClassVar[Literal["rf", "optical"]] = "optical"
 
     n_strips: int | None = Field(default=None, ge=1)
     strip_index: float | None = Field(default=None, gt=0.0)
@@ -444,11 +443,17 @@ class OpticalStage(EMStage):
             electrodes=None,
             span=span,
             surroundings=self.surroundings(span),
-            # The coefficients are the carriers Stage's, but the
-            # wavelength they are read at is this Stage's: the model's own
-            # is where it was fitted, not where the Mode is solved.
-            wavelength_um=self.wavelength_um,
-            n0=self.unperturbed_index(),
+        )
+
+    def strip_material(self) -> OpticalStripMaterial:
+        """This Stage's wavelength and the Strips' unperturbed index.
+
+        The coefficients are the carriers Stage's, but the wavelength they
+        are read at is this Stage's: the model's own is where it was
+        fitted, not where the Mode is solved.
+        """
+        return OpticalStripMaterial(
+            wavelength_um=self.wavelength_um, index=self.unperturbed_index()
         )
 
     def staircase_simulation(
@@ -796,7 +801,7 @@ class OpticalStage(EMStage):
         modes: Sequence[Any] = solve_modes(
             sim.mesh_path,
             epsilon=epsilon_by_region(
-                mesh, staircase.stack("optical"), wavelength_um=self.wavelength_um
+                mesh, staircase.stack(), wavelength_um=self.wavelength_um
             ),
             wavelength_um=self.wavelength_um,
             num_modes=self.num_modes,

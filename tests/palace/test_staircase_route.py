@@ -17,10 +17,13 @@ import numpy as np
 import pytest
 
 from gsim.common.stack.staircase import (
+    RFStripMaterial,
+    StaircaseDrawing,
     build_staircase_cross_section,
     strip_averages_from_nodes,
 )
 from gsim.palace import BoundaryModeSim
+from tests._helpers import fake_coupling
 
 RIB_CENTER_Y = -20.0
 RIB_WIDTH = 0.4
@@ -53,11 +56,12 @@ def _build_staircase_device(n_strips=N_STRIPS):
         junction=(float(y[0]), float(y[-1])),
         zmin=0.0,
         zmax=0.22,
+        response=fake_coupling,
+        material=RFStripMaterial(),
         electrodes=None,
-        base_layer=(40, 0),
-        component=comp,
+        drawing=StaircaseDrawing(base_layer=(40, 0), component=comp),
     )
-    return comp, staircase.stack("rf"), staircase
+    return comp, staircase.stack(), staircase
 
 
 @pytest.fixture(scope="module")
@@ -103,7 +107,7 @@ class TestStaircaseDomains:
         # strip averages must preserve that asymmetry end to end.
         _sim, _config, staircase = staircase_sim
         sigma = staircase.strips.conductivity_s_per_m
-        assert sigma[0] > sigma[-1]  # mu_n > mu_p: n-side more conductive
+        assert sigma[0] > sigma[-1]  # electrons conduct better: n-side first
 
 
 class TestMetallicWindow:

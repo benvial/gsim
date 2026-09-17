@@ -12,8 +12,15 @@ import pytest
 from gsim.common.stack.staircase import (
     DEFAULT_STRIP_LAYER,
     ElectrodeSpec,
+    OpticalStripMaterial,
+    RFStripMaterial,
+    StaircaseDrawing,
     build_staircase_cross_section,
 )
+from tests._helpers import fake_coupling
+
+#: The optical Stage's strip input, at the wavelength the fixtures solve at.
+OPTICAL = OpticalStripMaterial(wavelength_um=1.55, index=3.4757)
 
 CENTER = -20.0
 HALF_WIDTH = 0.3
@@ -58,6 +65,8 @@ def build(**kwargs):
         junction=JUNCTION,
         zmin=0.0,
         zmax=RIB_HEIGHT,
+        response=fake_coupling,
+        material=RFStripMaterial(),
     )
     params.update(kwargs)
     return build_staircase_cross_section(carrier_map(), **params)
@@ -92,30 +101,52 @@ class TestOneCall:
 
 
 class TestBothMaterialResponses:
-    def test_strips_carry_the_rf_and_the_optical_response(self):
-        strips = build().strips
+    def test_strips_carry_the_coupling_evaluated_on_their_averages(self):
+        staircase = build()
+        strips = staircase.strips
         assert strips.count == 5
-        assert strips.conductivity_s_per_m.size == 5
-        assert strips.permittivity.size == 5
-        assert np.all(strips.conductivity_s_per_m > 0)
-        assert np.all(strips.index_shift < 0)  # free carriers lower the index
+        expected = fake_coupling(strips.electrons_cm3, strips.holes_cm3)
+        np.testing.assert_allclose(
+            strips.conductivity_s_per_m, expected.conductivity_s_per_m
+        )
+        np.testing.assert_allclose(strips.index_shift, expected.index_shift)
+        np.testing.assert_allclose(strips.absorption_cm, expected.absorption_cm)
+
+    def test_the_coupling_is_the_one_handed_in(self):
+        """A different coupling, a different Staircase — same drawing."""
+
+        def twice(n_cm3, p_cm3):
+            base = fake_coupling(n_cm3, p_cm3)
+            base.conductivity_s_per_m = 2.0 * base.conductivity_s_per_m
+            return base
+
+        one = build()
+        two = build(response=twice)
+        np.testing.assert_allclose(
+            two.strips.conductivity_s_per_m, 2.0 * one.strips.conductivity_s_per_m
+        )
+        np.testing.assert_allclose(two.strips.edges_um, one.strips.edges_um)
 
     def test_the_rf_stack_carries_conductivity(self):
         staircase = build()
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
         sigmas = [
             material_of(stack, name).conductivity for name in staircase.strip_names
         ]
         assert sigmas == pytest.approx(list(staircase.strips.conductivity_s_per_m))
+        # The lattice permittivity is the RF input's, on every Strip.
+        assert np.all(staircase.strips.permittivity == RFStripMaterial().permittivity)
 
     def test_the_optical_stack_carries_the_perturbed_permittivity(self):
-        staircase = build(electrodes=None)
-        stack = staircase.stack("optical")
+        staircase = build(electrodes=None, material=OPTICAL)
+        stack = staircase.stack()
         for i, name in enumerate(staircase.strip_names):
             props = material_of(stack, name)
             expected = complex(staircase.strips.permittivity[i])
             assert props.permittivity == pytest.approx(expected.real)
             assert props.loss_tangent > 0
+            # Free carriers lower the index below the unperturbed one.
+            assert expected.real < OPTICAL.index**2
 
     def test_the_extinction_is_built_at_the_solve_wavelength(self):
         """kappa = alpha lambda / 4 pi, and lambda is the solve's.
@@ -126,8 +157,10 @@ class TestBothMaterialResponses:
         the fit wavelength inflates the loss of every strip whenever the
         two differ.
         """
-        fitted = build(electrodes=None).strips
-        solved = build(electrodes=None, wavelength_um=1.31).strips
+        fitted = build(electrodes=None, material=OPTICAL).strips
+        solved = build(
+            electrodes=None, material=OpticalStripMaterial(wavelength_um=1.31)
+        ).strips
 
         # alpha is the model's answer and does not move with the solve.
         assert solved.absorption_cm == pytest.approx(fitted.absorption_cm)
@@ -137,16 +170,13 @@ class TestBothMaterialResponses:
         ):
             assert at_solve.imag == pytest.approx(at_fit.imag * 1.31 / 1.55)
 
-    def test_the_solve_wavelength_defaults_to_the_fitted_one(self):
-        """Omitting it keeps the model's own wavelength, as before."""
-        assert build(electrodes=None).strips.permittivity == pytest.approx(
-            build(electrodes=None, wavelength_um=1.55).strips.permittivity
-        )
-
-    def test_both_stacks_share_one_component(self):
+    def test_the_stack_is_built_once(self):
         staircase = build(electrodes=None)
-        assert staircase.stack("rf") is not staircase.stack("optical")
-        assert staircase.stack("rf") is staircase.stack("rf")
+        assert staircase.stack() is staircase.stack()
+
+    def test_the_material_says_which_stage_the_staircase_is_for(self):
+        assert isinstance(build().material, RFStripMaterial)
+        assert build(material=OPTICAL).material is OPTICAL
 
 
 class TestUnloaded:
@@ -174,8 +204,8 @@ class TestUnloaded:
         loaded = build()
         bare = loaded.unloaded()
         for name in bare.strip_names:
-            assert material_of(bare.stack("rf"), name).conductivity == 0.0
-            assert material_of(loaded.stack("rf"), name).conductivity > 0.0
+            assert material_of(bare.stack(), name).conductivity == 0.0
+            assert material_of(loaded.stack(), name).conductivity > 0.0
 
 
 class TestElectrodes:
@@ -212,7 +242,7 @@ class TestConductorModel:
 
     def test_a_volume_electrode_is_a_region_of_lossy_metal(self):
         staircase = build()
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
 
         assert staircase.conductor_model == "volume"
         for name in staircase.electrode_names:
@@ -224,7 +254,7 @@ class TestConductorModel:
         outline, and no conductivity is what makes that outline perfect
         rather than a surface impedance."""
         staircase = build(electrodes=ElectrodeSpec(conductor_model="pec"))
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
 
         assert staircase.conductor_model == "pec"
         for name in staircase.electrode_names:
@@ -233,8 +263,10 @@ class TestConductorModel:
 
     def test_a_pec_electrode_needs_no_optical_permittivity(self):
         """A perfect conductor carries no permittivity to be asked for."""
-        staircase = build(electrodes=ElectrodeSpec(conductor_model="pec"))
-        stack = staircase.stack("optical")
+        staircase = build(
+            electrodes=ElectrodeSpec(conductor_model="pec"), material=OPTICAL
+        )
+        stack = staircase.stack()
         assert stack.layers[staircase.electrode_names[0]].layer_type == "conductor"
 
     def test_the_model_does_not_move_the_drawn_metal(self):
@@ -270,15 +302,17 @@ class TestElectrodeExtent:
 
 class TestOpticalElectrodes:
     def test_an_rf_electrode_is_refused_by_an_optical_stack(self):
-        staircase = build()
+        staircase = build(material=OPTICAL)
         with pytest.raises(ValueError, match="optical_permittivity"):
-            staircase.stack("optical")
+            staircase.stack()
 
     def test_the_optical_metal_permittivity_is_used_when_given(self):
         # Aluminium near 1.55 um: n = 1.44, k = 16.0.
         eps = complex((1.44 - 16.0j) ** 2)
-        staircase = build(electrodes=ElectrodeSpec(optical_permittivity=eps))
-        stack = staircase.stack("optical")
+        staircase = build(
+            electrodes=ElectrodeSpec(optical_permittivity=eps), material=OPTICAL
+        )
+        stack = staircase.stack()
 
         props = material_of(stack, staircase.electrode_names[0])
         assert props.permittivity == pytest.approx(eps.real)
@@ -286,7 +320,7 @@ class TestOpticalElectrodes:
 
     def test_the_rf_stack_is_unaffected(self):
         staircase = build()
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
         assert material_of(stack, staircase.electrode_names[0]).conductivity > 1e6
 
 
@@ -315,6 +349,32 @@ class TestStripCount:
             )
         assert errors[0] > errors[1] > errors[2]
         assert errors[-1] < 0.01
+
+
+class TestDrawing:
+    """The drawing defaults reach the drawn Regions."""
+
+    def test_the_defaults_are_the_ones_every_stage_uses(self):
+        drawing = StaircaseDrawing()
+        assert drawing.base_layer == DEFAULT_STRIP_LAYER
+        assert drawing.name_prefix == "strip_"
+        assert drawing.axis == "x"
+        assert drawing.substrate_thickness == 2.0
+        assert drawing.component is None
+
+    def test_a_drawing_record_names_and_places_the_strips(self):
+        import gdsfactory as gf
+
+        comp = gf.Component()
+        staircase = build(
+            n_strips=2,
+            drawing=StaircaseDrawing(
+                base_layer=(77, 3), name_prefix="bin_", component=comp
+            ),
+        )
+        assert staircase.component is comp
+        assert staircase.strip_names == ["bin_0", "bin_1"]
+        assert staircase.layers["bin_1"].gds_layer == (77, 4)
 
 
 class TestDrawnGeometry:
@@ -388,4 +448,4 @@ def test_builds_without_any_solver_runtime(monkeypatch):
     for name in ("devsim", "femwell", "skfem", "gmsh"):
         monkeypatch.setitem(sys.modules, name, None)
     staircase = build(n_strips=3)
-    assert staircase.stack("rf").layers
+    assert staircase.stack().layers

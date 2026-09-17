@@ -7,20 +7,22 @@ native ``BoundaryMode`` pipeline. The Strips, the extent they tile, the
 substrate under them and the plane cut through the middle of them are the
 same decisions in both Stages, so they are made once here.
 
-What differs is the material response the Strips carry — the plasma
-dispersion at the optical wavelength, or the Drude conductivity up to the
-top RF frequency — and that stays with the Stage that knows about it.
+What differs is the material each Stage adds to a Strip — the optical
+wavelength and unperturbed index, or the RF lattice permittivity and top
+frequency — and that is the one typed value each Stage answers
+:meth:`EMStage.strip_material` with. The coupling itself is the carriers
+Stage's, handed to the Staircase whole.
 """
 
 from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
 
-from gsim.common.stack.staircase import STRIP_LENGTH_UM
+from gsim.common.stack.staircase import STRIP_LENGTH_UM, StaircaseDrawing
 from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
 from gsim.modulator.route import EMRoute
 from gsim.modulator.stage import Stage
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
     from gsim.common.stack.staircase import (
         ElectrodeSpec,
         StaircaseCrossSection,
+        StripMaterial,
         SurroundingRegion,
     )
     from gsim.palace import BoundaryModeSim
@@ -42,9 +45,9 @@ __all__ = ["EMStage"]
 class EMStage(Stage):
     """A Stage that solves an EM Mode on a Staircase.
 
-    Subclasses declare which material response of the Staircase they
-    stack in :attr:`stack_kind`, and add the settings their own physics
-    needs on top of the ones here.
+    Subclasses say what they add to a Strip's material in
+    :meth:`strip_material`, and add the settings their own physics needs
+    on top of the ones here.
 
     Attributes:
         route: Backend answering this Stage — ``"femwell"`` (the default)
@@ -58,9 +61,6 @@ class EMStage(Stage):
         mesh: Keyword arguments forwarded to the mesh pipeline.
         airbox: Background region around what the Stage meshes.
     """
-
-    #: Which material response of a Staircase this Stage stacks.
-    stack_kind: ClassVar[Literal["rf", "optical"]] = "optical"
 
     route: EMRoute = "femwell"
     strip_span: tuple[float, float] | None = None
@@ -130,6 +130,15 @@ class EMStage(Stage):
             )
         return clipped
 
+    def strip_material(self) -> StripMaterial:
+        """What this Stage adds to a Strip's material.
+
+        The optical wavelength and unperturbed index, or the RF lattice
+        permittivity and top frequency: the one typed value the
+        Staircase builder takes per Stage. Implemented by each EM Stage.
+        """
+        raise NotImplementedError
+
     def build_staircase(
         self,
         carriers: CarrierMap,
@@ -138,14 +147,13 @@ class EMStage(Stage):
         electrodes: ElectrodeSpec | None,
         surroundings: Sequence[SurroundingRegion] = (),
         span: tuple[float, float] | None = None,
-        **response: Any,
     ) -> StaircaseCrossSection:
         """Reduce a Carrier map to a meshable Staircase.
 
         The Strips tile :meth:`strip_extent`, sit at the Junction's own
-        height, and take the carriers Stage's plasma-dispersion
-        coefficients and mobilities — so both EM Stages read the one
-        coupling, evaluated on strip averages.
+        height, and take the carriers Stage's coupling whole — so both EM
+        Stages read the one coupling, evaluated on strip averages — with
+        this Stage's own :meth:`strip_material` added.
 
         Args:
             carriers: The Bias point's Carrier map.
@@ -157,9 +165,6 @@ class EMStage(Stage):
                 background medium.
             span: The extent to tile, when the caller has already
                 resolved it; :meth:`strip_extent` decides otherwise.
-            **response: What this Stage's own physics adds to the Strip
-                materials — the optical wavelength and unperturbed index,
-                or the RF permittivity and top frequency.
 
         Returns:
             The Staircase Cross-section, drawn on its own component.
@@ -174,16 +179,11 @@ class EMStage(Stage):
             junction=span if span is not None else self.strip_extent(carriers),
             zmin=junction.z[0],
             zmax=junction.z[1],
-            length=STRIP_LENGTH_UM,
+            response=study.carriers.response,
+            material=self.strip_material(),
             electrodes=electrodes,
             surroundings=surroundings,
-            dispersion=study.carriers.dispersion,
-            mu_n_cm2=study.carriers.mu_n_cm2,
-            mu_p_cm2=study.carriers.mu_p_cm2,
-            axis="x",
-            value=STRIP_LENGTH_UM / 2.0,
-            substrate_thickness=self.substrate_thickness_um,
-            **response,
+            drawing=StaircaseDrawing(substrate_thickness=self.substrate_thickness_um),
         )
 
     def build_staircase_simulation(
@@ -223,7 +223,7 @@ class EMStage(Stage):
 
         sim = BoundaryModeSim()
         sim.set_output_dir(output_dir)
-        sim.set_stack(staircase.stack(self.stack_kind))
+        sim.set_stack(staircase.stack())
         sim.set_geometry(staircase.component)
         sim.set_airbox(**self.airbox)
         sim.set_cross_section(

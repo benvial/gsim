@@ -57,7 +57,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -68,6 +68,7 @@ from gsim.common.stack.staircase import (
     DEFAULT_ELECTRODES,
     ConductorModel,
     ElectrodeSpec,
+    RFStripMaterial,
 )
 from gsim.modulator.em import EMStage
 from gsim.modulator.route import require_route
@@ -191,7 +192,6 @@ class RFStage(EMStage):
     """
 
     stage_name: ClassVar[str] = "rf"
-    stack_kind: ClassVar[Literal["rf", "optical"]] = "rf"
 
     #: The unloaded solve's cached result, dropped with the loaded one.
     _unloaded_result: RFLineParams | None = PrivateAttr(default=None)
@@ -342,6 +342,16 @@ class RFStage(EMStage):
         """
         return self.staircase().unloaded()
 
+    def strip_material(self) -> RFStripMaterial:
+        """The Strip lattice permittivity, valid up to the top frequency.
+
+        The Strip materials are valid up to the highest requested
+        frequency, which is what the solve asks of them.
+        """
+        return RFStripMaterial(
+            permittivity=self.strip_permittivity, fmax_hz=max(self.frequencies_hz)
+        )
+
     def _staircase_for(self, carriers: CarrierMap) -> StaircaseCrossSection:
         """The Staircase this Stage meshes, built from one Carrier map."""
         # Resolved once: the check and the Strips have to agree on which
@@ -355,8 +365,6 @@ class RFStage(EMStage):
             electrodes=replace(
                 self.electrodes, conductor_model=self.effective_conductor_model()
             ),
-            permittivity=self.strip_permittivity,
-            fmax=max(self.frequencies_hz),
         )
 
     def _check_strip_resolution(self, extent: tuple[float, float]) -> None:
@@ -676,7 +684,7 @@ class RFStage(EMStage):
             z0_power_current,
         )
 
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
         mesh_path = sim.mesh_path
         mesh = meshio.read(str(mesh_path))
         signal = self.signal_electrode()

@@ -133,7 +133,7 @@ class TestStaircase:
         staircase = biased.rf.staircase()
 
         assert staircase.component is not biased.component
-        assert set(staircase.strip_names) <= set(staircase.stack("rf").layers)
+        assert set(staircase.strip_names) <= set(staircase.stack().layers)
 
 
 class TestConductorModel:
@@ -144,7 +144,7 @@ class TestConductorModel:
         assert biased.rf.effective_conductor_model() == "volume"
         staircase = biased.rf.staircase()
         assert staircase.conductor_model == "volume"
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
         assert stack.layers[staircase.electrode_names[0]].layer_type == "dielectric"
 
     def test_the_palace_route_meshes_the_metal_as_a_perfect_conductor(self, biased):
@@ -154,7 +154,7 @@ class TestConductorModel:
         assert biased.rf.effective_conductor_model() == "pec"
         staircase = biased.rf.staircase()
         assert staircase.conductor_model == "pec"
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
         assert stack.layers[staircase.electrode_names[0]].layer_type == "conductor"
 
     @pytest.mark.parametrize("route", ["femwell", "palace"])
@@ -234,7 +234,7 @@ class TestStripMaterials:
 
         from gsim.common.stack.materials import MaterialProperties
 
-        props = biased.rf.staircase().stack("rf").materials["strip_0"]
+        props = biased.rf.staircase().stack().materials["strip_0"]
         material = (
             props
             if isinstance(props, MaterialProperties)

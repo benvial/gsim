@@ -100,7 +100,7 @@ class TestOpticalStaircase:
         assert np.all(eps.imag <= 0.0)
 
     def test_it_resolves_to_a_meshable_optical_stack(self, staircase):
-        stack = staircase.stack("optical")
+        stack = staircase.stack()
         assert set(staircase.strip_names) <= set(stack.layers)
 
     def test_the_strip_span_is_overridable(self, biased):

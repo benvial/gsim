@@ -13,17 +13,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from gsim.common.carriers import (
-    PlasmaDispersionModel,
-    carrier_absorption_cm,
-    carrier_conductivity,
-    carrier_index_shift,
-)
 from gsim.common.stack.staircase import (
+    OpticalStripMaterial,
+    RFStripMaterial,
+    StaircaseDrawing,
     build_staircase_cross_section,
     staircase_profile,
     strip_averages_from_nodes,
 )
+from tests._helpers import fake_coupling
 
 
 class TestStaircaseProfile:
@@ -205,7 +203,9 @@ def _build(carriers, n_strips, **kwargs):
         zmin=0.0,
         zmax=0.22,
         electrodes=None,
-        base_layer=(40, 0),
+        response=fake_coupling,
+        material=RFStripMaterial(),
+        drawing=StaircaseDrawing(base_layer=(40, 0)),
     )
     params.update(kwargs)
     return build_staircase_cross_section(carriers, **params)
@@ -228,7 +228,7 @@ class TestDrawnStripsRF:
             [-0.2, 0.2], lambda h: np.full(h.size, 1e18), np.zeros_like
         )
         staircase = _build(carriers, 1)
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
 
         # One region spanning the window with the uniform-model conductivity.
         assert staircase.strip_names == ["strip_0"]
@@ -236,7 +236,7 @@ class TestDrawnStripsRF:
         assert spec.gds_layer == (40, 0)
         assert spec.zmin == 0.0
         assert spec.zmax == pytest.approx(0.22)
-        expected_sigma = carrier_conductivity(1e18, 0.0)
+        expected_sigma = float(fake_coupling(1e18, 0.0).conductivity_s_per_m)
         assert staircase.strips.conductivity_s_per_m[0] == pytest.approx(expected_sigma)
         assert _material(stack, "strip_0").conductivity == pytest.approx(expected_sigma)
 
@@ -246,7 +246,7 @@ class TestDrawnStripsRF:
         rise = lambda h: 1e18 * (h - edges[0]) / (edges[-1] - edges[0])  # noqa: E731
         fall = lambda h: 1e18 - rise(h)  # noqa: E731
         staircase = _build(_carriers(edges, rise, fall), n)
-        stack = staircase.stack("rf")
+        stack = staircase.stack()
 
         assert len(staircase.strip_names) == n
         centres = 0.5 * (edges[1:] + edges[:-1])
@@ -256,7 +256,7 @@ class TestDrawnStripsRF:
         # Linear profiles: each strip average is the value at its centre.
         np.testing.assert_allclose(
             staircase.strips.conductivity_s_per_m,
-            carrier_conductivity(rise(centres), fall(centres)),
+            fake_coupling(rise(centres), fall(centres)).conductivity_s_per_m,
             rtol=1e-6,
         )
 
@@ -269,21 +269,22 @@ class TestDrawnStripsRF:
 
 
 class TestDrawnStripsOptical:
-    def test_plasma_dispersion_permittivity_and_loss(self):
-        model = PlasmaDispersionModel.nedeljkovic_1550()
+    def test_perturbed_permittivity_and_loss(self):
         n0 = 3.4757
         carriers = _carriers(
             [-0.1, 0.1],
             lambda h: np.full(h.size, 1e18),
             lambda h: np.full(h.size, 1e18),
         )
-        staircase = _build(carriers, 1, dispersion=model, n0=n0)
-        material = _material(staircase.stack("optical"), "strip_0")
-        dn = carrier_index_shift(1e18, 1e18, model=model)
-        dalpha = carrier_absorption_cm(1e18, 1e18, model=model)
+        staircase = _build(
+            carriers, 1, material=OpticalStripMaterial(wavelength_um=1.55, index=n0)
+        )
+        material = _material(staircase.stack(), "strip_0")
+        coupled = fake_coupling(1e18, 1e18)
+        dn = float(coupled.index_shift)
         # Carrier-depressed index: eps_re < n0^2, loss tangent positive.
         assert material.permittivity == pytest.approx((n0 + dn) ** 2, rel=1e-3)
         assert material.permittivity < n0**2
         assert material.loss_tangent > 0.0
-        assert dalpha > 0.0
+        assert float(coupled.absorption_cm) > 0.0
         np.testing.assert_allclose(staircase.strips.index_shift, [dn])
