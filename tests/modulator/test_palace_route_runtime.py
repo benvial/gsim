@@ -83,8 +83,6 @@ def depletion_carriers(bias_v: float) -> CarrierMap:
         region=["n_rib" if side else "p_rib" for side in n_side],
         electrons_cm3=np.where(n_side & ~depleted, DOPING_CM3, DEPLETED_CM3),
         holes_cm3=np.where(~n_side & ~depleted, DOPING_CM3, DEPLETED_CM3),
-        potential_v=np.zeros(yy.size),
-        net_doping_cm3=np.zeros(yy.size),
     )
 
 
@@ -110,8 +108,6 @@ def graded_carriers(bias_v: float = 0.0) -> CarrierMap:
         region=["n_rib" if side else "p_rib" for side in n_side],
         electrons_cm3=DEPLETED_CM3 + DOPING_CM3 * depletion * n_side,
         holes_cm3=DEPLETED_CM3 + DOPING_CM3 * depletion * ~n_side,
-        potential_v=np.zeros(yy.size),
-        net_doping_cm3=np.zeros(yy.size),
     )
 
 
@@ -131,11 +127,12 @@ def study_at(tmp_path, *, biases=(0.0,), carriers=depletion_carriers) -> Study:
         plane="x=0",
         output_dir=tmp_path,
     )
-    study.charge._result = BiasSweepResult(
-        contact="cathode",
-        points=[BiasPoint(bias_v=v, carriers=carriers(v)) for v in biases],
+    study.charge.seed(
+        BiasSweepResult(
+            contact="cathode",
+            points=[BiasPoint(bias_v=v, carriers=carriers(v)) for v in biases],
+        )
     )
-    study.charge._has_run = True
     return study
 
 

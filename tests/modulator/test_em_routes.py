@@ -38,8 +38,7 @@ class TestRouteSelection:
             stage()(route="comsol")
 
     def test_changing_the_route_invalidates_the_stage(self, biased):
-        biased.rf._result = object()
-        biased.rf._has_run = True
+        biased.rf.seed(object())
         biased.rf(route="palace")
         assert biased.rf.has_run is False
 

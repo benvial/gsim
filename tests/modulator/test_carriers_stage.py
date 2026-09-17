@@ -30,8 +30,6 @@ def carrier_map(scale: float = 1.0) -> CarrierMap:
         region=["n_rib", "n_rib", "p_rib"],
         electrons_cm3=N_CM3 * scale,
         holes_cm3=P_CM3 * scale,
-        potential_v=np.zeros(3),
-        net_doping_cm3=np.zeros(3),
     )
 
 

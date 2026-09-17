@@ -101,8 +101,6 @@ def graded_carriers(bias_v: float) -> CarrierMap:
         ],
         electrons_cm3=electrons,
         holes_cm3=holes,
-        potential_v=np.zeros(yy.size),
-        net_doping_cm3=np.zeros(yy.size),
     )
 
 
@@ -121,11 +119,12 @@ def study_at(output_dir) -> Study:
         plane="x=0",
         output_dir=output_dir,
     )
-    study.charge._result = BiasSweepResult(
-        contact="cathode",
-        points=[BiasPoint(bias_v=v, carriers=graded_carriers(v)) for v in BIASES],
+    study.charge.seed(
+        BiasSweepResult(
+            contact="cathode",
+            points=[BiasPoint(bias_v=v, carriers=graded_carriers(v)) for v in BIASES],
+        )
     )
-    study.charge._has_run = True
     return study
 
 

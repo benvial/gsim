@@ -92,19 +92,18 @@ def carriers_at(bias_v: float) -> CarrierMap:
         region=["n_rib" if side else "p_rib" for side in n_side],
         electrons_cm3=np.where(depleted | ~n_side, 1e10, 1e18),
         holes_cm3=np.where(depleted | n_side, 1e10, 1e18),
-        potential_v=np.zeros(yy.size),
-        net_doping_cm3=np.zeros(yy.size),
     )
 
 
 @pytest.fixture
 def biased(study):
     """A Study whose charge Stage already holds a two-point sweep."""
-    study.charge._result = BiasSweepResult(
-        contact="cathode",
-        points=[BiasPoint(bias_v=v, carriers=carriers_at(v)) for v in (0.0, 2.0)],
+    study.charge.seed(
+        BiasSweepResult(
+            contact="cathode",
+            points=[BiasPoint(bias_v=v, carriers=carriers_at(v)) for v in (0.0, 2.0)],
+        )
     )
-    study.charge._has_run = True
     return study
 
 

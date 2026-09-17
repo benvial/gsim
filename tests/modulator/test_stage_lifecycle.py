@@ -136,3 +136,38 @@ class TestForcedRerun:
         upstream.run(force=True)
 
         assert downstream.has_run is False
+
+
+class TestSeeding:
+    """A result reaches a Stage without a solve through one public operation."""
+
+    def test_a_seeded_result_reads_as_solved(self):
+        stage = CountingStage()
+        stage.seed("canned")
+        assert stage.has_run is True
+        assert stage.result == "canned"
+        assert stage.run() == "canned"
+        assert not hasattr(stage, "_solves")
+
+    def test_seeding_records_no_elapsed_time(self):
+        stage = CountingStage()
+        stage.run()
+        stage.seed("canned")
+        assert stage.elapsed_s is None
+
+    def test_seeding_drops_every_downstream_result(self):
+        upstream, downstream = wired_stages()
+        upstream.run()
+        downstream.run()
+
+        upstream.seed("canned")
+
+        assert upstream.has_run is True
+        assert downstream.has_run is False
+
+    def test_re_configuring_drops_a_seeded_result_too(self):
+        stage = CountingStage()
+        stage.seed("canned")
+        stage(value=2)
+        assert stage.has_run is False
+        assert stage.run() == "solved 2"

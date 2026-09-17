@@ -22,8 +22,6 @@ def _empty_carriers():
         region=["r"],
         electrons_cm3=zeros,
         holes_cm3=zeros,
-        potential_v=zeros,
-        net_doping_cm3=zeros,
     )
 
 

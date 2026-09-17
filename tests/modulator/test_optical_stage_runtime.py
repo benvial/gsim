@@ -55,8 +55,6 @@ def depletion_carriers(bias_v: float) -> CarrierMap:
         region=["p_rib" if side else "n_rib" for side in ~n_side],
         electrons_cm3=electrons,
         holes_cm3=holes,
-        potential_v=np.zeros(yy.size),
-        net_doping_cm3=np.zeros(yy.size),
     )
 
 
@@ -87,8 +85,7 @@ def solved(tmp_path_factory):
     """The optical Stage run across a synthetic Bias sweep."""
     study = build_study(tmp_path_factory.mktemp("modulator-optical"))
     biases = [0.0, 2.0]
-    study.charge._result = canned_sweep(biases)
-    study.charge._has_run = True
+    study.charge.seed(canned_sweep(biases))
     return study, study.optical.run()
 
 
@@ -167,8 +164,7 @@ class TestSolvedModes:
 class TestWindowTooSmall:
     def test_a_clipped_mode_warns_naming_the_stage(self, tmp_path):
         study = build_study(tmp_path)
-        study.charge._result = canned_sweep([0.0])
-        study.charge._has_run = True
+        study.charge.seed(canned_sweep([0.0]))
         # A window barely wider than the rib cannot hold the mode's tails.
         study.optical(mode_margin_um=0.45, z_above_um=0.15, z_below_um=0.15)
 
@@ -182,8 +178,7 @@ class TestRegionsOffTheWindow:
     def test_a_pad_clipped_out_of_the_window_is_not_an_error(self, tmp_path):
         """The optical Window is a box around the rib, not the doped slab."""
         study = build_study(tmp_path)
-        study.charge._result = canned_sweep([0.0])
-        study.charge._has_run = True
+        study.charge.seed(canned_sweep([0.0]))
         # Tight enough that both contact pads fall outside the mesh.
         study.optical(mode_margin_um=0.25, z_above_um=0.15, z_below_um=0.15)
 
@@ -194,8 +189,7 @@ class TestRegionsOffTheWindow:
 
     def test_a_named_region_off_the_window_is_reported(self, tmp_path):
         study = build_study(tmp_path)
-        study.charge._result = canned_sweep([0.0])
-        study.charge._has_run = True
+        study.charge.seed(canned_sweep([0.0]))
         study.optical(
             mode_margin_um=0.25,
             z_above_um=0.15,
@@ -208,8 +202,7 @@ class TestRegionsOffTheWindow:
 
     def test_a_window_holding_no_doped_region_is_reported(self, tmp_path):
         study = build_study(tmp_path)
-        study.charge._result = canned_sweep([0.0])
-        study.charge._has_run = True
+        study.charge.seed(canned_sweep([0.0]))
         # A box in the cladding, well above the rib.
         study.optical(window=(CENTER_Y - 1.0, CENTER_Y + 1.0), window_z=(1.0, 2.0))
 
@@ -248,8 +241,7 @@ class TestStaircaseWavelength:
     def _staircase_loss(output_dir, wavelength_um: float) -> float:
         """Modal loss (dB/cm) of the Staircase solved at one wavelength."""
         study = build_study(output_dir)
-        study.charge._result = canned_sweep([0.0])
-        study.charge._has_run = True
+        study.charge.seed(canned_sweep([0.0]))
         study.optical(
             route="femwell",
             wavelength_um=wavelength_um,
@@ -295,8 +287,7 @@ class TestStripsTooNarrowForTheMode:
 
     def test_strips_narrower_than_the_mode_warn_naming_the_extent(self, tmp_path):
         study = build_study(tmp_path)
-        study.charge._result = canned_sweep([0.0])
-        study.charge._has_run = True
+        study.charge.seed(canned_sweep([0.0]))
         # A tenth of the guide: the mode is overwhelmingly outside it.
         study.optical(
             route="femwell",
@@ -310,8 +301,7 @@ class TestStripsTooNarrowForTheMode:
 
     def test_the_default_extent_does_not_warn(self, tmp_path):
         study = build_study(tmp_path)
-        study.charge._result = canned_sweep([0.0])
-        study.charge._has_run = True
+        study.charge.seed(canned_sweep([0.0]))
         study.optical(route="femwell", n_strips=4, n_guess=2.9)
 
         with warnings.catch_warnings(record=True) as caught:

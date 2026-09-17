@@ -326,24 +326,23 @@ class TestStaircaseWavelength:
         z = np.linspace(0.0, RIB_HEIGHT, 5)
         hh, zz = (a.ravel() for a in np.meshgrid(h, z))
         n_side = hh < JUNCTION_Y
-        study.charge._result = BiasSweepResult(
-            contact="cathode",
-            points=[
-                BiasPoint(
-                    bias_v=0.0,
-                    carriers=CarrierMap(
-                        x_um=hh,
-                        y_um=zz,
-                        region=["n_rib" if side else "p_rib" for side in n_side],
-                        electrons_cm3=np.where(n_side, 1e18, 1e10),
-                        holes_cm3=np.where(n_side, 1e10, 1e18),
-                        potential_v=np.zeros(hh.size),
-                        net_doping_cm3=np.zeros(hh.size),
-                    ),
-                )
-            ],
+        study.charge.seed(
+            BiasSweepResult(
+                contact="cathode",
+                points=[
+                    BiasPoint(
+                        bias_v=0.0,
+                        carriers=CarrierMap(
+                            x_um=hh,
+                            y_um=zz,
+                            region=["n_rib" if side else "p_rib" for side in n_side],
+                            electrons_cm3=np.where(n_side, 1e18, 1e10),
+                            holes_cm3=np.where(n_side, 1e10, 1e18),
+                        ),
+                    )
+                ],
+            )
         )
-        study.charge._has_run = True
         study.optical(route="femwell", n_strips=4, wavelength_um=wavelength_um)
         return study.optical.staircase(study.carriers.run().points[0]).strips
 

@@ -159,9 +159,23 @@ class Stage(BaseModel):
         for stage in self._downstream:
             stage.invalidate()
 
-    def reset(self) -> None:
-        """Alias of :meth:`invalidate`, for callers forcing a re-solve."""
-        self.invalidate()
+    def seed(self, result: Any) -> None:
+        """Hold *result* as if this Stage had just solved it.
+
+        The one way a result reaches a Stage without a solve: a test
+        canning an upstream answer, or a caller replaying one it has
+        already paid for. Every downstream Stage's result is dropped
+        first, exactly as a real run drops it, because they read what is
+        being replaced.
+
+        Args:
+            result: The result to hold for the current settings.
+        """
+        for stage in self._downstream:
+            stage.invalidate()
+        self._result = result
+        self._has_run = True
+        self._elapsed_s = None
 
     def run(self, *, force: bool = False) -> Any:
         """Solve this Stage, or return what it already solved.

@@ -25,8 +25,6 @@ def tiny_map() -> CarrierMap:
         region=["n_rib"],
         electrons_cm3=zeros,
         holes_cm3=zeros,
-        potential_v=zeros,
-        net_doping_cm3=zeros,
     )
 
 

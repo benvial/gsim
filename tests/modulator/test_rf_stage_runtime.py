@@ -76,8 +76,6 @@ def depletion_carriers(bias_v: float) -> CarrierMap:
         region=["n_rib" if side else "p_rib" for side in n_side],
         electrons_cm3=electrons,
         holes_cm3=holes,
-        potential_v=np.zeros(yy.size),
-        net_doping_cm3=np.zeros(yy.size),
     )
 
 
@@ -119,8 +117,7 @@ def build_study(output_dir, biases=(0.0, DEPLETED_V)):
         device=Device(p_regions=["p_rib", "p_pad"], n_regions=["n_rib", "n_pad"]),
         output_dir=output_dir,
     )
-    study.charge._result = canned_sweep(list(biases))
-    study.charge._has_run = True
+    study.charge.seed(canned_sweep(list(biases)))
     return study
 
 

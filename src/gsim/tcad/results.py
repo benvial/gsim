@@ -25,14 +25,21 @@ BIAS_TOL_V: float = 1e-9
 class CarrierMap(BaseModel):
     """Node-wise solution fields on the cross-section mesh.
 
+    The concentrations are what every downstream consumer reads. The
+    potential and the net doping are diagnostics the charge solve reports
+    alongside them; a map built anywhere else — a canned sweep, a
+    synthetic profile — leaves them out.
+
     Attributes:
         x_um: In-plane node coordinates (um).
         y_um: Vertical node coordinates (um).
         region: Per-node mesh region name.
         electrons_cm3: Electron concentration n(x, y) (cm^-3).
         holes_cm3: Hole concentration p(x, y) (cm^-3).
-        potential_v: Electrostatic potential (V).
-        net_doping_cm3: Net doping (donors - acceptors, cm^-3).
+        potential_v: Electrostatic potential (V), when the solve
+            reported it.
+        net_doping_cm3: Net doping (donors - acceptors, cm^-3), when the
+            solve reported it.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -42,8 +49,8 @@ class CarrierMap(BaseModel):
     region: list[str]
     electrons_cm3: NDArray[np.float64]
     holes_cm3: NDArray[np.float64]
-    potential_v: NDArray[np.float64]
-    net_doping_cm3: NDArray[np.float64]
+    potential_v: NDArray[np.float64] | None = None
+    net_doping_cm3: NDArray[np.float64] | None = None
 
 
 class BiasPoint(BaseModel):

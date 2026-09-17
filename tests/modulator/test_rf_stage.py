@@ -162,8 +162,7 @@ class TestConductorModel:
         assert biased.rf.staircase().conductor_model == model
 
     def test_changing_the_model_invalidates_the_result(self, biased):
-        biased.rf._result = object()
-        biased.rf._has_run = True
+        biased.rf.seed(object())
         biased.rf(conductor_model="pec")
         assert not biased.rf.has_run
 
@@ -364,19 +363,21 @@ class TestJunctionBranchLookup:
         from tests._helpers import series_rc_admittance
 
         y_per_m = series_rc_admittance(freq_hz, r_s_ohm_m, c_j_f_per_m)
-        sweep: BiasSweepResult = study.charge._result
-        study.charge._result = sweep.model_copy(
-            update={
-                "points": [
-                    point.model_copy(
-                        update={
-                            "admittance_s_per_cm": complex(y_per_m) / 1e2,
-                            "admittance_freq_hz": freq_hz,
-                        }
-                    )
-                    for point in sweep.points
-                ]
-            }
+        sweep: BiasSweepResult = study.charge.result
+        study.charge.seed(
+            sweep.model_copy(
+                update={
+                    "points": [
+                        point.model_copy(
+                            update={
+                                "admittance_s_per_cm": complex(y_per_m) / 1e2,
+                                "admittance_freq_hz": freq_hz,
+                            }
+                        )
+                        for point in sweep.points
+                    ]
+                }
+            )
         )
 
     def test_the_branch_is_read_at_the_stages_bias_point(self, biased):
