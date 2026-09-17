@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- The modulator's EM Stages reach their Backend through one Route interface (`gsim.modulator.route.Route`) with a
+  femwell and a Palace adapter (`FemwellRoute`, `PalaceRoute`); a Stage no longer tests which Route it is on. Each Route
+  reads the selected RF Mode in one call — index, characteristic impedance and whether it is the wall Mode
+  (`gsim.common.modes.LineReading`) — given the electrodes as `gsim.common.modes.Conductor` descriptors, which is also
+  how a conductor is now named to the femwell current integrals: `z0_power_current` and `electrode_current` take
+  `conductor=` and `mesh=` in place of `sigma_s_per_m`, `current_elements` and `current_facets`, and
+  `boundary_facets_on_rect` becomes `boundary_facets_within`. The settings both EM Stages took separately — `num_modes`,
+  `min_index`, `boundary_field_tol`, `metallic_boundaries`, `order`, `n_guess` — are declared once on the shared EM
+  Stage with the same per-Stage defaults.
+
+- A Staircase (`gsim.common.stack.staircase`) is built from a Carrier map, the carriers Stage's coupling (`response=`),
+  one typed strip input per Stage (`OpticalStripMaterial` or `RFStripMaterial`) and a `StaircaseDrawing` record; the
+  plasma-dispersion, mobility, wavelength, index, permittivity and frequency keyword arguments are gone. Its Strips are
+  a typed `Strips` record, its drawn layers are public, `stack()` takes no target, `unloaded()` switches the carriers
+  off, and the one-dimensional binning `staircase_profile` lives in the Staircase module rather than in
+  `gsim.common.carriers`. `RFLineParams` records the Bias and signal Contact it was solved at and resamples itself
+  (`resampled`); the RF Stage's `solved_bias_v` is gone. `Stage.seed` hands a Stage a result without a solve;
+  `Stage.reset` is removed. A Carrier map's `potential_v` and `net_doping_cm3` are optional.
+
+- The charge-transport simulation declares semiconductor Interfaces apart from Contacts: `BoundaryModeSim.add_interface`
+  tags them as their own line groups (`mesh_groups["interface_lines"]`), and `ChargeTransportSim.contact_specs` lists
+  Contacts only, with `interface_specs` beside it.
+
 - `BoundaryModeSim` owns its run and its postprocessing paths. `add_impedance_path(name, voltage=..., current=...)`
   declares the line integrals Palace evaluates on a solved Mode and returns the index the impedance is reported under;
   `run_local()` clears the previous run's tables, runs, and returns this run's `PalaceTextResults`; `read_results()`,
