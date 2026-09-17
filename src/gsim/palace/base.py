@@ -478,11 +478,9 @@ class PalaceSimMixin:
         parallel-plate capacitance ``C = eps_s * A / W``, and applied as a
         lumped Impedance boundary on the shared P/N interface.
 
-        Use this when the depletion strip is too thin to resolve on the mesh
-        (the auto-selection in
-        :func:`gsim.common.stack.pn_junction.make_pn_junction_profile` picks this
-        regime); for well-resolved depletion regions prefer drawing them as
-        dielectric geometry (``mode="high_res"``) instead.
+        Use this when the depletion strip is too thin to resolve on the mesh;
+        for a well-resolved depletion region prefer drawing it as dielectric
+        geometry of its own instead.
 
         Args:
             junction: ``PNJunctionConfig`` or its dict form (doping

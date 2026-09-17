@@ -7,48 +7,19 @@ contact name, so DEVSIM's ``add_gmsh_contact`` can bind to it.
 
 from __future__ import annotations
 
-import gdsfactory as gf
 import meshio
 import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from gsim.common.cross_section import build_doped_cross_section
-from gsim.common.stack.pn_junction import PNJunctionConfig, make_pn_junction_profile
 from gsim.palace import BoundaryModeSim
 from gsim.palace.models import ContactSpec
+from tests._helpers import draw_pn_rib
 
 
 def _build_pn_device():
-    """Rib with adjacent P/N doped regions (capacitance mode: touching)."""
-    gf.gpdk.PDK.activate()
-    comp = gf.Component()
-    wg = comp << gf.c.rectangle((10.0, 0.4), centered=True, layer=(1, 0))
-    wg.y = -20.0
-    slab = comp << gf.c.rectangle((10.0, 100.0), centered=True, layer=(3, 0))
-    slab.y = -5.0
-    pn = make_pn_junction_profile(
-        comp,
-        length=10.0,
-        center_y=-20.0,
-        rib_width=0.4,
-        junction=PNJunctionConfig(na_cm3=1e19, nd_cm3=1e19),
-        p_region=("p_rib", (21, 0), 1.6e3),
-        n_region=("n_rib", (20, 0), 1.6e3),
-        junction_region=("junction", (22, 0)),
-        zmin=0.0,
-        zmax=0.22,
-        mode="capacitance",
-    )
-    stack, _section = build_doped_cross_section(
-        comp,
-        axis="x",
-        value=0.0,
-        substrate_thickness=2.0,
-        doping=pn,
-        verbose=False,
-    )
-    return comp, stack
+    """Rib with adjacent P/N doped regions (touching halves)."""
+    return draw_pn_rib()
 
 
 def _make_sim(tmp_path, contacts):

@@ -40,55 +40,11 @@
 
 ## PN Junction
 
-Depletion model after Sze & Ng, *Physics of Semiconductor Devices*, ch. 2,
-plus the 1D free-carrier plasma-dispersion model for the complex optical
-permittivity and the doping-profile geometry builders.
+Depletion model after Sze & Ng, *Physics of Semiconductor Devices*, ch. 2:
+the quick analytic path beside the charge-transport solve, and the
+reference its numeric `C(V)` is validated against.
 
 ::: gsim.common.stack.PNJunctionConfig
-    options:
-      show_source: false
-
-::: gsim.common.stack.make_pn_junction_profile
-    options:
-      show_source: false
-
-::: gsim.common.stack.make_segmented_junction_profile
-    options:
-      show_source: false
-
-::: gsim.common.stack.make_doping_profile
-    options:
-      show_source: false
-
-::: gsim.common.stack.junction_epsilon_profile
-    options:
-      show_source: false
-
-::: gsim.common.stack.carrier_profile_1d
-    options:
-      show_source: false
-
-::: gsim.common.stack.epsilon_eff_relative
-    options:
-      show_source: false
-
-::: gsim.common.stack.optical_params
-    options:
-      show_source: false
-
-::: gsim.common.stack.refractive_index
-    options:
-      show_source: false
-
-::: gsim.common.stack.drude_relaxation_times
-    options:
-      show_source: false
-
-::: gsim.common.stack.PNJunctionConfig
-    options:
-      show_source: false
-
-::: gsim.common.stack.make_pn_junction_profile
     options:
       show_source: false
 
@@ -105,10 +61,6 @@ permittivity and the doping-profile geometry builders.
       show_source: false
 
 ::: gsim.common.stack.junction_capacitance_per_area
-    options:
-      show_source: false
-
-::: gsim.common.stack.select_junction_mode
     options:
       show_source: false
 

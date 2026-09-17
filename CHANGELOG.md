@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Removed: the pre-TCAD analytic Junction cluster and the Palace 2D TW-MZM notebook that was its only user (ADR 0006).
+  `gsim.common.stack` no longer exports the doping-geometry builders (`make_doping_profile`, `make_pn_junction_profile`,
+  `make_segmented_junction_profile`, `select_junction_mode`, `PNJunctionConfig.select_mode`), the one-dimensional Drude
+  optics (`junction_epsilon_profile`, `carrier_profile_1d`, `epsilon_eff_relative`, `optical_params`,
+  `refractive_index`, `drude_relaxation_times`, `default_eps_bg_rel`) or their constants (`MU_N_CM2_VS`, `MU_P_CM2_VS`,
+  `M_CE_STAR`, `M_CH_STAR`, `SIGMA_NEGLIGIBLE_SM`), and `gsim.common.cross_section.build_optical_cross_section` is gone.
+  The modulator workflow carries one plasma dispersion — the carriers Stage's, with substitutable coefficients — and one
+  Staircase seam for every Stage. The Sze depletion model stays: `PNJunctionConfig`, `built_in_voltage`,
+  `depletion_width`, `depletion_extents`, `junction_capacitance_per_area`, `sim.set_pn_junction()` and
+  `gsim.tcad.compare_capacitance`.
+
 - The modulator RF Stage's Palace Route solves an electrode-loaded Staircase and reports its characteristic impedance. A
   Staircase's electrodes now carry a `conductor_model` (ADR 0003): `"volume"` meshes each as a Region of lossy metal,
   `"pec"` leaves its interior out of the meshed domain and makes its outline a perfect conductor. Palace's

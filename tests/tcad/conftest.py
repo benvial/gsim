@@ -14,8 +14,7 @@ import types
 import gdsfactory as gf
 import pytest
 
-from gsim.common.cross_section import build_doped_cross_section
-from gsim.common.stack.pn_junction import PNJunctionConfig, make_pn_junction_profile
+from tests._helpers import draw_pn_rib
 
 
 class FakeDevsim(types.ModuleType):
@@ -203,7 +202,6 @@ def build_padded_diode(
         ``(comp, stack, names)`` with ``names`` mapping roles to region
         names.
     """
-    import gdsfactory as gf
 
     from gsim.common.cross_section import build_doped_cross_section
     from gsim.common.stack.extractor import Layer
@@ -253,31 +251,4 @@ def build_padded_diode(
 
 def build_pn_device():
     """Rib with adjacent P/N doped regions on a doped cross-section stack."""
-    gf.gpdk.PDK.activate()
-    comp = gf.Component()
-    wg = comp << gf.c.rectangle((10.0, 0.4), centered=True, layer=(1, 0))
-    wg.y = -20.0
-    slab = comp << gf.c.rectangle((10.0, 100.0), centered=True, layer=(3, 0))
-    slab.y = -5.0
-    pn = make_pn_junction_profile(
-        comp,
-        length=10.0,
-        center_y=-20.0,
-        rib_width=0.4,
-        junction=PNJunctionConfig(na_cm3=1e19, nd_cm3=1e19),
-        p_region=("p_rib", (21, 0), 1.6e3),
-        n_region=("n_rib", (20, 0), 1.6e3),
-        junction_region=("junction", (22, 0)),
-        zmin=0.0,
-        zmax=0.22,
-        mode="capacitance",
-    )
-    stack, _section = build_doped_cross_section(
-        comp,
-        axis="x",
-        value=0.0,
-        substrate_thickness=2.0,
-        doping=pn,
-        verbose=False,
-    )
-    return comp, stack
+    return draw_pn_rib()
