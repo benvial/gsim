@@ -57,10 +57,19 @@ def optical_sweep(
     )
 
 
+#: Provenance the canned RF result carries, as the RF Stage records it.
+RF_BIAS_V = 2.0
+RF_SIGNAL_CONTACT = "cathode"
+
+
 def rf_params():
     """Canned RF line parameters, as the RF Stage would return them."""
     return line_params_from_neff(
-        np.asarray(RF_FREQS, dtype=np.float64), RF_N_EFF, z0_ohm=RF_Z0
+        np.asarray(RF_FREQS, dtype=np.float64),
+        RF_N_EFF,
+        z0_ohm=RF_Z0,
+        bias_v=RF_BIAS_V,
+        signal_contact=RF_SIGNAL_CONTACT,
     )
 
 
@@ -426,6 +435,33 @@ class TestTwoPortExport:
 
         assert "! length_m = 0.005" in path.read_text().splitlines()
 
+    def test_the_export_records_the_bias_and_contact_off_the_rf_result(
+        self, solved, tmp_path
+    ):
+        """The provenance is the record's, not the RF Stage's private state."""
+        path = solved.line.export_touchstone(tmp_path / "line.s2p")
+
+        lines = path.read_text().splitlines()
+        assert f"! signal contact: {RF_SIGNAL_CONTACT}" in lines
+        assert f"! bias_v = {RF_BIAS_V:g}" in lines
+
+    def test_a_result_without_provenance_records_none(
+        self, study, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            RFStage,
+            "_solve",
+            lambda _stage: line_params_from_neff(
+                np.asarray(RF_FREQS, dtype=np.float64), RF_N_EFF, z0_ohm=RF_Z0
+            ),
+        )
+
+        path = study.line.export_touchstone(tmp_path / "line.s2p")
+
+        text = path.read_text()
+        assert "signal contact" not in text
+        assert "bias_v" not in text
+
 
 class TestExportRoundTrip:
     """The handoff artifacts reassemble to the Study's own answers."""
@@ -506,6 +542,25 @@ class TestExportRoundTrip:
 
         with pytest.raises(ValueError, match=r"C_j.*1 V"):
             comparison.check()
+
+    def test_the_junction_columns_come_through_the_rf_stage(
+        self, exported, monkeypatch
+    ):
+        """The line Stage reads the EM Stages; the charge sweep is the RF Stage's."""
+        seen = []
+        branches = RFStage.junction_branches
+
+        def spy(stage):
+            seen.append(stage)
+            return branches(stage)
+
+        monkeypatch.setattr(RFStage, "junction_branches", spy)
+
+        comparison = exported.line.verify_exports(quiet=True)
+
+        assert seen == [exported.rf]
+        assert comparison.bias_v.tolist() == [0.0, 1.0, 2.0]
+        assert comparison.check() is comparison
 
     def test_a_nan_response_fails_the_check_rather_than_passing(self, exported):
         # NaN compares False against any tolerance; the gate must not

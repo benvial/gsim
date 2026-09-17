@@ -96,19 +96,6 @@ def _require_ascending(freq_hz: NDArray[np.float64], where: str) -> None:
         )
 
 
-def _interp_complex(
-    grid: NDArray[np.float64],
-    freq_hz: NDArray[np.float64],
-    values: NDArray[np.complex128],
-) -> NDArray[np.complex128]:
-    """Linear interpolation of a complex array, ends held."""
-    return np.asarray(
-        np.interp(grid, freq_hz, values.real)
-        + 1j * np.interp(grid, freq_hz, values.imag),
-        dtype=np.complex128,
-    )
-
-
 def line_smatrix(
     gamma_per_m: ArrayLike,
     z0_ohm: ArrayLike,
@@ -262,22 +249,30 @@ def sax_line_model(
         ValueError: When the length is not positive, the frequency axis
             is not ascending, or the arrays do not share it.
     """
+    from gsim.common.twmzm_report import line_params_from_gamma
+
     _require_positive_length(length_m)
     freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64)).copy()
     _require_ascending(freq, "freq_hz")
-    gamma = np.broadcast_to(
-        np.asarray(gamma_per_m, dtype=np.complex128), freq.shape
-    ).copy()
-    z_c = np.broadcast_to(np.asarray(z0_ohm, dtype=np.complex128), freq.shape).copy()
+    # The record copies its inputs and owns the resampling, so this model
+    # interpolates the way the line Stage's response grid does.
+    line = line_params_from_gamma(
+        freq,
+        np.broadcast_to(np.asarray(gamma_per_m, dtype=np.complex128), freq.shape),
+        z0_ohm=np.broadcast_to(np.asarray(z0_ohm, dtype=np.complex128), freq.shape),
+    )
 
     def model(
         *, f: ArrayLike | None = None
     ) -> dict[tuple[str, str], NDArray[np.complex128]]:
         """The line's S-matrix entries at frequencies ``f`` (Hz)."""
-        grid = freq if f is None else np.asarray(f, dtype=np.float64)
-        gamma_f = _interp_complex(grid, freq, gamma)
-        z0_f = _interp_complex(grid, freq, z_c)
-        s = line_smatrix(gamma_f, z0_f, length_m=length_m, z_ref_ohm=z_ref_ohm)
+        grid = None if f is None else np.asarray(f, dtype=np.float64)
+        at = line if grid is None else line.resampled(grid)
+        s = line_smatrix(
+            at.gamma_per_m, at.z0_ohm, length_m=length_m, z_ref_ohm=z_ref_ohm
+        )
+        if grid is not None and grid.ndim == 0:
+            s = s[0]
         return {
             ("o1", "o1"): s[..., 0, 0],
             ("o1", "o2"): s[..., 0, 1],

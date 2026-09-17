@@ -171,20 +171,21 @@ class TestSaxLineModel:
         np.testing.assert_allclose(sdict[("o2", "o2")], s[:, 1, 1], rtol=1e-12)
 
     def test_between_solved_points_the_line_parameters_interpolate(self):
-        gamma, z0 = lossy_line()
-        f_mid = 5.5e9
+        """The model resamples the way the line record does: the RF index,
+        the loss and the complex impedance each linearly in frequency."""
+        from gsim.common.twmzm_report import line_params_from_gamma
 
+        gamma, z0 = lossy_line()
+        f_mid = np.asarray([15e9, 30e9])
         model = sax_line_model(FREQ_HZ, gamma, z0, length_m=LENGTH_M, z_ref_ohm=Z_REF)
         sdict = model(f=f_mid)
 
-        gamma_mid = np.interp(f_mid, FREQ_HZ, gamma.real) + 1j * np.interp(
-            f_mid, FREQ_HZ, gamma.imag
+        at = line_params_from_gamma(FREQ_HZ, gamma, z0_ohm=z0).resampled(f_mid)
+        expected = line_smatrix(
+            at.gamma_per_m, at.z0_ohm, length_m=LENGTH_M, z_ref_ohm=Z_REF
         )
-        z0_mid = np.interp(f_mid, FREQ_HZ, z0.real) + 1j * np.interp(
-            f_mid, FREQ_HZ, z0.imag
-        )
-        expected = line_smatrix(gamma_mid, z0_mid, length_m=LENGTH_M, z_ref_ohm=Z_REF)
-        np.testing.assert_allclose(sdict[("o2", "o1")], expected[..., 1, 0])
+        np.testing.assert_allclose(sdict[("o2", "o1")], expected[:, 1, 0])
+        np.testing.assert_allclose(sdict[("o1", "o1")], expected[:, 0, 0])
 
     def test_a_scalar_frequency_gives_scalar_entries(self):
         gamma, z0 = lossy_line()

@@ -53,6 +53,12 @@ class RFLineParams(BaseModel):
         unloaded: Whether these are the bare electrode's parameters —
             the cross-section solved with every carrier switched off —
             rather than a Bias point's answer.
+        bias_v: The Bias the Cross-section was built at (V), when it was
+            built from a Bias point; ``None`` for parameters that came
+            from nowhere in particular (a hand-assembled line).
+        signal_contact: Name of the Contact the RF drive is applied to,
+            which names the conductor the impedance was read over;
+            ``None`` when no Contact was involved.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -62,6 +68,8 @@ class RFLineParams(BaseModel):
     alpha_rf_np_m: NDArray[np.float64]
     z0_ohm: NDArray[np.complex128]
     unloaded: bool = False
+    bias_v: float | None = None
+    signal_contact: str | None = None
 
     @model_validator(mode="after")
     def validate_shapes(self) -> Self:
@@ -91,6 +99,43 @@ class RFLineParams(BaseModel):
             self.freq_hz, gamma_per_m=self.gamma_per_m, z0_ohm=self.z0_ohm
         )
 
+    def resampled(self, freq_hz: ArrayLike) -> RFLineParams:
+        """These parameters on another frequency grid.
+
+        Linear interpolation of the index, the loss and the complex
+        impedance — its real and imaginary parts separately — onto
+        ``freq_hz``, with the end values held outside the solved range
+        rather than extrapolated. What the line Stage's response grid and
+        the SAX line model both read, so a frequency axis interpolates
+        one way everywhere.
+
+        Args:
+            freq_hz: Frequencies to sample at (Hz, ascending, 1D).
+
+        Returns:
+            The same line on the new grid, carrying the same Bias, signal
+            Contact and loaded/unloaded flag.
+
+        Raises:
+            ValueError: When the grid is not ascending.
+        """
+        grid = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64))
+        if grid.ndim != 1 or np.any(np.diff(grid) < 0.0):
+            raise ValueError("freq_hz must be a 1D ascending frequency grid.")
+        return RFLineParams(
+            freq_hz=grid,
+            n_rf=np.interp(grid, self.freq_hz, self.n_rf),
+            alpha_rf_np_m=np.interp(grid, self.freq_hz, self.alpha_rf_np_m),
+            z0_ohm=np.asarray(
+                np.interp(grid, self.freq_hz, self.z0_ohm.real)
+                + 1j * np.interp(grid, self.freq_hz, self.z0_ohm.imag),
+                dtype=np.complex128,
+            ),
+            unloaded=self.unloaded,
+            bias_v=self.bias_v,
+            signal_contact=self.signal_contact,
+        )
+
 
 def line_params_from_neff(
     freq_hz: ArrayLike,
@@ -98,6 +143,8 @@ def line_params_from_neff(
     *,
     z0_ohm: ArrayLike,
     unloaded: bool = False,
+    bias_v: float | None = None,
+    signal_contact: str | None = None,
 ) -> RFLineParams:
     """Build :class:`RFLineParams` from complex mode effective indices.
 
@@ -116,6 +163,8 @@ def line_params_from_neff(
             Marks-Williams extraction.
         unloaded: Flag the result as the bare electrode's — solved with
             the carriers switched off — rather than a Bias point's.
+        bias_v: The Bias the Cross-section was built at (V), if any.
+        signal_contact: The Contact the impedance was read over, if any.
 
     Returns:
         The RF line parameters.
@@ -129,11 +178,13 @@ def line_params_from_neff(
     )
     omega = 2.0 * np.pi * freq
     return RFLineParams(
-        freq_hz=freq,
-        n_rf=np.asarray(n_arr.real, dtype=np.float64),
+        freq_hz=freq.copy(),
+        n_rf=np.array(n_arr.real, dtype=np.float64),
         alpha_rf_np_m=np.asarray(np.abs(n_arr.imag) * omega / C0, dtype=np.float64),
-        z0_ohm=np.asarray(z0, dtype=np.complex128),
+        z0_ohm=np.array(z0, dtype=np.complex128),
         unloaded=unloaded,
+        bias_v=bias_v,
+        signal_contact=signal_contact,
     )
 
 
@@ -143,6 +194,8 @@ def line_params_from_gamma(
     *,
     z0_ohm: ArrayLike,
     unloaded: bool = False,
+    bias_v: float | None = None,
+    signal_contact: str | None = None,
 ) -> RFLineParams:
     """Build :class:`RFLineParams` from complex propagation constants.
 
@@ -157,6 +210,8 @@ def line_params_from_gamma(
         gamma_per_m: Complex propagation constant per frequency (1/m).
         z0_ohm: Characteristic impedance per frequency (complex allowed).
         unloaded: Flag the result as the bare electrode's.
+        bias_v: The Bias the Cross-section was built at (V), if any.
+        signal_contact: The Contact the impedance was read over, if any.
 
     Returns:
         The RF line parameters.
@@ -170,11 +225,13 @@ def line_params_from_gamma(
     )
     omega = 2.0 * np.pi * freq
     return RFLineParams(
-        freq_hz=freq,
+        freq_hz=freq.copy(),
         n_rf=np.asarray(np.abs(gamma.imag) * C0 / omega, dtype=np.float64),
-        alpha_rf_np_m=np.asarray(np.abs(gamma.real), dtype=np.float64),
-        z0_ohm=np.asarray(z0, dtype=np.complex128),
+        alpha_rf_np_m=np.array(np.abs(gamma.real), dtype=np.float64),
+        z0_ohm=np.array(z0, dtype=np.complex128),
         unloaded=unloaded,
+        bias_v=bias_v,
+        signal_contact=signal_contact,
     )
 
 

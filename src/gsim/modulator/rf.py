@@ -60,6 +60,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
+from numpy.typing import NDArray
 from pydantic import Field, PrivateAttr, field_validator
 
 from gsim.common.modes import LineModeRule
@@ -191,10 +192,6 @@ class RFStage(EMStage):
 
     stage_name: ClassVar[str] = "rf"
     stack_kind: ClassVar[Literal["rf", "optical"]] = "rf"
-
-    #: Bias the cached result was solved at, read through
-    #: :attr:`solved_bias_v`.
-    _solved_bias_v: float | None = PrivateAttr(default=None)
 
     #: The unloaded solve's cached result, dropped with the loaded one.
     _unloaded_result: RFLineParams | None = PrivateAttr(default=None)
@@ -512,11 +509,6 @@ class RFStage(EMStage):
             "between them. " + wall_mode_hint(self.stage_name),
             stacklevel=2,
         )
-
-    @property
-    def solved_bias_v(self) -> float | None:
-        """Bias the cached line parameters were solved at, or None."""
-        return self._solved_bias_v if self.has_run else None
 
     def _pick_line_mode(self, modes: Sequence[Any], freq_hz: float) -> Any:
         """Select the physical line Mode of one frequency, and check it.
@@ -911,10 +903,16 @@ class RFStage(EMStage):
         staircase: StaircaseCrossSection,
         binary: Path | None,
         *,
+        bias_v: float,
         output_dir: Path | None = None,
         unloaded: bool = False,
     ) -> RFLineParams:
-        """Mesh one Staircase and solve the line Mode at every frequency."""
+        """Mesh one Staircase and solve the line Mode at every frequency.
+
+        The result records the Bias the Staircase was built at and the
+        Contact its impedance was read over, so nothing downstream has to
+        ask this Stage what it solved.
+        """
         from gsim.common.twmzm_report import line_params_from_neff
 
         sim = self.simulation(staircase, output_dir=output_dir)
@@ -931,6 +929,8 @@ class RFStage(EMStage):
             n_eff,
             z0_ohm=z0_ohm,
             unloaded=unloaded,
+            bias_v=bias_v,
+            signal_contact=self.signal_contact_name(),
         )
 
     def run_unloaded(self, *, force: bool = False) -> RFLineParams:
@@ -958,6 +958,7 @@ class RFStage(EMStage):
         line = self._solve_staircase(
             self.unloaded_staircase(),
             binary,
+            bias_v=self.bias_point().bias_v,
             output_dir=output_dir,
             unloaded=True,
         )
@@ -981,6 +982,27 @@ class RFStage(EMStage):
         bias = self.bias_point().bias_v
         sweep: BiasSweepResult = self._require_study().charge.run()
         return sweep.point_at(bias, tol=BIAS_TOL_V).junction_branch()
+
+    def junction_branches(self) -> tuple[NDArray[np.float64], JunctionBranch]:
+        """The series-RC junction branch at every Bias point of the sweep.
+
+        The same reading as :meth:`junction_branch`, over the whole
+        sweep: what a consumer of the exported junction model compares
+        its file against. This Stage is where the charge sweep's
+        admittance is read into a shunt branch, so the line Stage asks
+        here rather than reading the charge Stage itself.
+
+        Returns:
+            ``(bias_v, branch)`` — the biases in sweep order (V) and a
+            :class:`~gsim.common.twmzm.JunctionBranch` of arrays over
+            them.
+
+        Raises:
+            ValueError: When a Bias point holds no small-signal
+                admittance, or one a series RC cannot represent.
+        """
+        sweep: BiasSweepResult = self._require_study().charge.run()
+        return sweep.voltages, sweep.junction_branch()
 
     def crosscheck(self, *, force: bool = False) -> LoadedLineComparison:
         """Both loaded-line routes side by side, at this Stage's Bias point.
@@ -1025,6 +1047,4 @@ class RFStage(EMStage):
         """Mesh the Staircase and solve the line Mode at every frequency."""
         binary = self._check_route()
         point = self.bias_point()
-        line = self._solve_staircase(self.staircase(), binary)
-        self._solved_bias_v = point.bias_v
-        return line
+        return self._solve_staircase(self.staircase(), binary, bias_v=point.bias_v)

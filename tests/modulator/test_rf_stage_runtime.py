@@ -172,9 +172,9 @@ class TestLineParameters:
         assert np.all(rlgc["C"] > 0.0)
 
     def test_the_bias_it_was_solved_at_is_reported(self, solved):
-        study, _, _ = solved
+        _, line, _ = solved
 
-        assert study.rf.solved_bias_v == DEPLETED_V
+        assert line.bias_v == DEPLETED_V
 
     def test_it_is_the_line_mode_not_the_wall_mode(self, solved):
         """Ticket 24: the fixture exercises the Mode the Stage exists for."""
@@ -437,7 +437,7 @@ class TestEndToEnd:
         assert study.charge.has_run is True
         assert line.freq_hz == pytest.approx(FREQS_HZ)
         assert np.all(line.n_rf > 1.0)
-        assert study.rf.solved_bias_v == DEPLETED_V
+        assert line.bias_v == DEPLETED_V
 
 
 class TestTwoPortExport:

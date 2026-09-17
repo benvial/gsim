@@ -393,6 +393,15 @@ class TestJunctionBranchLookup:
         with pytest.raises(ValueError, match="admittance"):
             biased.rf.junction_branch()
 
+    def test_the_whole_sweeps_branches_are_read_in_sweep_order(self, biased):
+        self.rc_sweep(biased)
+
+        bias_v, branch = biased.rf.junction_branches()
+
+        assert bias_v.tolist() == [0.0, 2.0]
+        np.testing.assert_allclose(branch.r_s_ohm_m, [8e-4, 8e-4], rtol=1e-9)
+        np.testing.assert_allclose(branch.c_j_f_per_m, [2.4e-10, 2.4e-10], rtol=1e-9)
+
 
 class TestCurrentBalance:
     """The femwell Route tells the line Mode from the wall Mode (ticket 23).

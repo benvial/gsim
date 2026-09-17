@@ -211,3 +211,67 @@ class TestLoadedLineComparison:
 
         with pytest.raises(ValueError, match="freq"):
             LoadedLineComparison(direct=_line(), assembled=long)
+
+
+class TestProvenance:
+    def test_line_params_carry_no_bias_or_contact_unless_given(self):
+        line = line_params_from_neff([10e9], [2.0 - 0.01j], z0_ohm=[50.0])
+        assert line.bias_v is None
+        assert line.signal_contact is None
+
+    def test_the_bias_and_the_contact_travel_with_the_record(self):
+        line = line_params_from_neff(
+            [10e9], [2.0 - 0.01j], z0_ohm=[50.0], bias_v=2.0, signal_contact="cathode"
+        )
+        assert line.bias_v == 2.0
+        assert line.signal_contact == "cathode"
+        from_gamma = line_params_from_gamma(
+            line.freq_hz, line.gamma_per_m, z0_ohm=line.z0_ohm, bias_v=2.0
+        )
+        assert from_gamma.bias_v == 2.0
+
+
+class TestResampling:
+    def _line(self):
+        return line_params_from_neff(
+            [10e9, 20e9, 40e9],
+            [3.2 - 0.004j, 3.1 - 0.010j, 3.0 - 0.020j],
+            z0_ohm=[46.0 + 1.0j, 44.0 + 0.5j, 42.0 + 0.2j],
+            bias_v=1.5,
+            signal_contact="cathode",
+        )
+
+    def test_the_solved_points_are_reproduced(self):
+        line = self._line()
+        same = line.resampled(line.freq_hz)
+        np.testing.assert_allclose(same.n_rf, line.n_rf)
+        np.testing.assert_allclose(same.alpha_rf_np_m, line.alpha_rf_np_m)
+        np.testing.assert_allclose(same.z0_ohm, line.z0_ohm)
+
+    def test_between_points_every_quantity_interpolates_linearly(self):
+        line = self._line()
+        mid = line.resampled([15e9, 30e9])
+        np.testing.assert_allclose(mid.n_rf, [3.15, 3.05])
+        np.testing.assert_allclose(
+            mid.alpha_rf_np_m,
+            np.interp([15e9, 30e9], line.freq_hz, line.alpha_rf_np_m),
+        )
+        # Real and imaginary parts of the impedance interpolate separately.
+        np.testing.assert_allclose(mid.z0_ohm, [45.0 + 0.75j, 43.0 + 0.35j])
+
+    def test_outside_the_solved_range_the_end_values_hold(self):
+        line = self._line()
+        clamped = line.resampled([1e9, 100e9])
+        np.testing.assert_allclose(clamped.n_rf, [3.2, 3.0])
+        np.testing.assert_allclose(clamped.z0_ohm, [46.0 + 1.0j, 42.0 + 0.2j])
+
+    def test_the_provenance_and_the_flag_travel_with_it(self):
+        line = self._line().model_copy(update={"unloaded": True})
+        resampled = line.resampled([12e9])
+        assert resampled.bias_v == 1.5
+        assert resampled.signal_contact == "cathode"
+        assert resampled.unloaded is True
+
+    def test_a_descending_grid_is_refused(self):
+        with pytest.raises(ValueError, match="ascending"):
+            self._line().resampled([20e9, 10e9])

@@ -347,8 +347,6 @@ class LineStage(Stage):
             The same parameters when no response grid is configured, and
             their linear interpolation onto that grid otherwise.
         """
-        from gsim.common.twmzm_report import RFLineParams
-
         if not np.all(np.isfinite(solved.z0_ohm)):
             warnings.warn(
                 f"The rf stage reported no characteristic impedance, so the "
@@ -375,16 +373,7 @@ class LineStage(Stage):
                 "frequencies with study.rf(frequencies_hz=[...]).",
                 stacklevel=2,
             )
-        return RFLineParams(
-            freq_hz=grid,
-            n_rf=np.interp(grid, solved_freq, solved.n_rf),
-            alpha_rf_np_m=np.interp(grid, solved_freq, solved.alpha_rf_np_m),
-            z0_ohm=np.asarray(
-                np.interp(grid, solved_freq, solved.z0_ohm.real)
-                + 1j * np.interp(grid, solved_freq, solved.z0_ohm.imag),
-                dtype=np.complex128,
-            ),
-        )
+        return solved.resampled(grid)
 
     # ------------------------------------------------------------------
     # Export
@@ -403,16 +392,18 @@ class LineStage(Stage):
         rf: RFLineParams = self._require_study().rf.run()
         return rf
 
-    def _export_provenance(self) -> list[str]:
-        """Comment lines recording what the exported two-port is."""
-        study = self._require_study()
-        lines = [
-            f"length_m = {self.length_m:g}",
-            f"signal contact: {study.rf.signal_contact_name()}",
-        ]
-        bias = study.rf.solved_bias_v
-        if bias is not None:
-            lines.append(f"bias_v = {bias:g}")
+    @staticmethod
+    def _export_provenance(rf: RFLineParams, *, length_m: float) -> list[str]:
+        """Comment lines recording what the exported two-port is.
+
+        Read off the RF result itself: the record carries the Contact
+        its impedance was read over and the Bias it was solved at.
+        """
+        lines = [f"length_m = {length_m:g}"]
+        if rf.signal_contact is not None:
+            lines.append(f"signal contact: {rf.signal_contact}")
+        if rf.bias_v is not None:
+            lines.append(f"bias_v = {rf.bias_v:g}")
         return lines
 
     def export_touchstone(
@@ -453,7 +444,7 @@ class LineStage(Stage):
                 z_ref_ohm=z_ref_ohm,
             ),
             z_ref_ohm=z_ref_ohm,
-            comments=self._export_provenance(),
+            comments=self._export_provenance(rf, length_m=self.length_m),
         )
 
     def sax_model(self, *, z_ref_ohm: complex = 50.0) -> SaxLineModel:
@@ -548,8 +539,9 @@ class LineStage(Stage):
 
         two_port = read_touchstone(touchstone)
         model = read_junction_model(junction)
-        sweep = study.charge.run()
-        branch = sweep.junction_branch()
+        # The RF Stage owns the reading of the charge sweep's admittance
+        # into a shunt branch; the line Stage reads the EM Stages only.
+        bias_v, branch = study.rf.junction_branches()
 
         comparison = ExportRoundTrip(
             touchstone_path=touchstone,
@@ -562,7 +554,7 @@ class LineStage(Stage):
                 z_gen_ohm=self.z_gen_ohm,
                 z_load_ohm=self.z_load_ohm,
             ),
-            bias_v=sweep.voltages,
+            bias_v=bias_v,
             r_s_internal_ohm_m=np.asarray(branch.r_s_ohm_m, dtype=np.float64),
             r_s_file_ohm_m=model.r_s_ohm_m,
             c_j_internal_f_per_m=np.asarray(branch.c_j_f_per_m, dtype=np.float64),
