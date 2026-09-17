@@ -170,24 +170,53 @@ class TestConductorModel:
         biased.rf(conductor_model="pec")
         assert not biased.rf.has_run
 
+    def test_the_default_is_read_off_the_adapter(self, biased, fake_route):
+        """Whatever adapter answers the Route, its model is the default."""
+        biased.rf(route="palace")
+        assert biased.rf.effective_conductor_model() == fake_route.conductor_model
+        fake_route.conductor_model = "volume"
+        assert biased.rf.effective_conductor_model() == "volume"
+
 
 class TestPerfectElectrodesNeedTheWall:
     """femwell has one perfect-conductor condition, for the whole boundary."""
 
-    def test_a_pec_electrode_without_the_wall_is_refused(self, biased):
+    def test_a_pec_electrode_without_the_wall_is_refused(self):
         """Off, the electrode hole would come out as an open slot."""
-        biased.rf(conductor_model="pec", metallic_boundaries=False)
-        with pytest.raises(ValueError, match="open slots"):
-            biased.rf._require_metallic_boundaries()
+        from gsim.modulator import FemwellRoute
 
-    def test_a_pec_electrode_with_the_wall_is_fine(self, biased):
-        biased.rf(conductor_model="pec", metallic_boundaries=True)
-        biased.rf._require_metallic_boundaries()
+        with pytest.raises(ValueError, match="open slots"):
+            FemwellRoute().check_line_settings(
+                conductor_model="pec",
+                metallic_boundaries=False,
+                order=2,
+                stage_name="rf",
+            )
+
+    def test_a_pec_electrode_with_the_wall_is_fine(self):
+        from gsim.modulator import FemwellRoute
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            FemwellRoute().check_line_settings(
+                conductor_model="pec",
+                metallic_boundaries=True,
+                order=2,
+                stage_name="rf",
+            )
 
     def test_a_volume_electrode_does_not_need_the_wall(self, biased):
         """A metal region is a conductor whatever the boundary is."""
+        from gsim.modulator import FemwellRoute
+
         biased.rf(conductor_model="volume", metallic_boundaries=False)
         assert biased.rf.effective_conductor_model() == "volume"
+        FemwellRoute().check_line_settings(
+            conductor_model="volume",
+            metallic_boundaries=False,
+            order=1,
+            stage_name="rf",
+        )
 
     def test_the_refusal_comes_before_anything_is_meshed(self, study, monkeypatch):
         """Settings the Route cannot honour cost no charge solve and no mesh."""
@@ -199,6 +228,25 @@ class TestPerfectElectrodesNeedTheWall:
         study.rf(route="femwell", conductor_model="pec", metallic_boundaries=False)
         with pytest.raises(ValueError, match="open slots"):
             study.rf.run()
+
+    def test_the_stage_hands_its_settings_to_the_adapter_first(
+        self, biased, fake_route, monkeypatch
+    ):
+        """Whatever the Route makes of them, the Stage asks before it meshes."""
+
+        def fail(*_args, **_kwargs):
+            raise AssertionError("nothing may be meshed before the check")
+
+        monkeypatch.setattr("gsim.palace.BoundaryModeSim.mesh", fail)
+        biased.rf(route="palace", conductor_model="pec", order=2)
+        with pytest.raises(AssertionError, match="before the check"):
+            biased.rf.run()
+
+        (checked,) = fake_route.made("check_line_settings")
+        assert checked["conductor_model"] == "pec"
+        assert checked["metallic_boundaries"] is True
+        assert checked["order"] == 2
+        assert fake_route.made("require") == [{"stage_name": "rf"}]
 
 
 class TestMetallicWall:
@@ -216,16 +264,28 @@ class TestMetallicWall:
 class TestContourOrder:
     """A perfect conductor's current is read off the field around it."""
 
-    def test_a_first_order_solve_of_a_pec_staircase_is_reported(self, biased):
-        biased.rf(conductor_model="pec", order=1)
-        with pytest.warns(UserWarning, match="biased high by tens of percent"):
-            biased.rf._check_contour_order()
+    def test_a_first_order_solve_of_a_pec_staircase_is_reported(self):
+        from gsim.modulator import FemwellRoute
 
-    def test_a_second_order_solve_is_not(self, biased):
-        biased.rf(conductor_model="pec", order=2)
+        with pytest.warns(UserWarning, match="biased high by tens of percent"):
+            FemwellRoute().check_line_settings(
+                conductor_model="pec",
+                metallic_boundaries=True,
+                order=1,
+                stage_name="rf",
+            )
+
+    def test_a_second_order_solve_is_not(self):
+        from gsim.modulator import FemwellRoute
+
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            biased.rf._check_contour_order()
+            FemwellRoute().check_line_settings(
+                conductor_model="pec",
+                metallic_boundaries=True,
+                order=2,
+                stage_name="rf",
+            )
 
 
 class TestStripMaterials:
@@ -268,35 +328,139 @@ class TestSignalConductor:
         assert biased.rf.signal_electrode() == "signal"
 
 
+def run_rf(study, fake_route, *, modes_at, **settings):
+    """Run the RF Stage on the fake adapter, with the solves scripted."""
+    fake_route.modes_at = modes_at
+    study.rf(route="palace", **settings)
+    return study.rf.run()
+
+
 class TestModeTracking:
-    def test_the_first_frequency_is_aimed_at_the_configured_guess(self, biased):
-        biased.rf(n_guess=2.5)
-        assert biased.rf._guess_for([]) == pytest.approx(2.5)
+    """Where each frequency's eigenvalue search is aimed, and what it finds."""
 
-    def test_later_frequencies_follow_the_mode_they_just_solved(self, biased):
-        biased.rf(n_guess=2.5)
-        assert biased.rf._guess_for([complex(3.9, -0.2)]) == pytest.approx(3.9)
+    def test_the_first_frequency_is_aimed_at_the_configured_guess(
+        self, biased, fake_route
+    ):
+        run_rf(biased, fake_route, modes_at=[3.9 - 0.2j], n_guess=2.5)
 
-    def test_tracking_is_switchable_off(self, biased):
-        biased.rf(n_guess=2.5, track_modes=False)
-        assert biased.rf._guess_for([complex(3.9, -0.2)]) == pytest.approx(2.5)
+        assert fake_route.made("solve")[0]["target"] == pytest.approx(2.5)
 
-    def test_a_dense_sweep_is_judged_on_its_own_spacing(self, biased):
+    def test_later_frequencies_follow_the_mode_they_just_solved(
+        self, biased, fake_route
+    ):
+        run_rf(
+            biased,
+            fake_route,
+            modes_at=[3.9 - 0.2j],
+            n_guess=2.5,
+            frequencies_hz=[10e9, 20e9],
+        )
+
+        targets = [call["target"] for call in fake_route.made("solve")]
+        assert targets == pytest.approx([2.5, 3.9])
+
+    def test_tracking_is_switchable_off(self, biased, fake_route):
+        run_rf(
+            biased,
+            fake_route,
+            modes_at=[3.9 - 0.2j],
+            n_guess=2.5,
+            frequencies_hz=[10e9, 20e9],
+            track_modes=False,
+        )
+
+        targets = [call["target"] for call in fake_route.made("solve")]
+        assert targets == pytest.approx([2.5, 2.5])
+
+    def test_a_dense_sweep_is_judged_on_its_own_spacing(self, biased, fake_route):
         """A step that is fine over a doubling is a jump over 1%."""
-        biased.rf(frequencies_hz=[40e9, 40.4e9])
+        indices = {40e9: [3.90 + 0j], 40.4e9: [3.70 + 0j]}
         with pytest.warns(UserWarning, match="jumps across the sweep"):
-            biased.rf._check_continuity([3.90 + 0j, 3.70 + 0j])
+            run_rf(
+                biased,
+                fake_route,
+                modes_at=lambda f: indices[f],
+                frequencies_hz=[40e9, 40.4e9],
+            )
 
-    def test_a_dispersing_index_is_not_reported_as_a_jump(self, biased):
-        biased.rf(frequencies_hz=[10e9, 20e9, 40e9])
+    def test_a_dispersing_index_is_not_reported_as_a_jump(self, biased, fake_route):
+        indices = {10e9: [3.90 + 0j], 20e9: [3.85 + 0j], 40e9: [3.80 + 0j]}
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            biased.rf._check_continuity([3.90 + 0j, 3.85 + 0j, 3.80 + 0j])
+            run_rf(
+                biased,
+                fake_route,
+                modes_at=lambda f: indices[f],
+                frequencies_hz=[10e9, 20e9, 40e9],
+            )
 
-    def test_an_index_that_steps_between_frequencies_is_reported(self, biased):
-        biased.rf(frequencies_hz=[10e9, 20e9, 40e9])
+    def test_an_index_that_steps_between_frequencies_is_reported(
+        self, biased, fake_route
+    ):
+        indices = {10e9: [3.90 + 0j], 20e9: [3.85 + 0j], 40e9: [1.4 + 0j]}
         with pytest.warns(UserWarning, match=r"20 -> 40 GHz"):
-            biased.rf._check_continuity([3.90 + 0j, 3.85 + 0j, 0.4 + 0j])
+            run_rf(
+                biased,
+                fake_route,
+                modes_at=lambda f: indices[f],
+                frequencies_hz=[10e9, 20e9, 40e9],
+            )
+
+
+class TestSolveLoop:
+    """One loop for both Routes: prepare, solve, select, read, per frequency."""
+
+    def test_the_line_is_prepared_once_with_both_electrodes(self, biased, fake_route):
+        run_rf(biased, fake_route, modes_at=[3.0 - 0.01j], frequencies_hz=[10e9, 20e9])
+
+        (prepared,) = fake_route.made("prepare_line")
+        assert prepared["signal"].name == "electrode_low"
+        assert prepared["return_"].name == "electrode_high"
+        assert prepared["signal"].model == "pec"
+        assert prepared["stage_name"] == "rf"
+
+    def test_every_frequency_is_solved_and_read_once(self, biased, fake_route):
+        line = run_rf(
+            biased, fake_route, modes_at=[3.0 - 0.01j], frequencies_hz=[10e9, 20e9]
+        )
+
+        assert [c["freq_hz"] for c in fake_route.made("solve")] == [10e9, 20e9]
+        assert [c["freq_hz"] for c in fake_route.made("read_line")] == [10e9, 20e9]
+        np.testing.assert_allclose(line.n_rf, [3.0, 3.0])
+        np.testing.assert_allclose(line.z0_ohm, [50.0, 50.0])
+
+    def test_the_selected_mode_is_the_one_read(self, biased, fake_route):
+        run_rf(
+            biased,
+            fake_route,
+            modes_at=[0.4 - 0.001j, 3.2 - 0.01j, 2.1 - 0.005j],
+            frequencies_hz=[10e9],
+        )
+
+        (read,) = fake_route.made("read_line")
+        assert read["mode"].n_eff == 3.2 - 0.01j
+
+    def test_the_reading_is_what_the_result_carries(self, biased, fake_route):
+        from gsim.common.modes import LineReading
+
+        fake_route.reading = lambda mode, freq_hz: LineReading(
+            n_eff=mode.n_eff, z0_ohm=complex(40.0 + freq_hz / 1e9), wall_mode=False
+        )
+        line = run_rf(
+            biased, fake_route, modes_at=[3.0 - 0.01j], frequencies_hz=[10e9, 20e9]
+        )
+        np.testing.assert_allclose(line.z0_ohm, [50.0, 60.0])
+
+    def test_a_squeezed_mode_warns_through_the_stage(self, biased, fake_route):
+        fake_route.boundary = 0.5
+        with pytest.warns(UserWarning, match="rf stage's mode.*window boundary"):
+            run_rf(biased, fake_route, modes_at=[3.0 - 0.01j])
+
+    def test_an_unmeasured_boundary_ratio_does_not_warn(self, biased, fake_route):
+        fake_route.boundary = float("nan")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            run_rf(biased, fake_route, modes_at=[3.0 - 0.01j])
 
 
 class TestWindow:
@@ -414,36 +578,50 @@ class TestJunctionBranchLookup:
         np.testing.assert_allclose(branch.c_j_f_per_m, [2.4e-10, 2.4e-10], rtol=1e-9)
 
 
-class TestCurrentBalance:
-    """The femwell Route tells the line Mode from the wall Mode (ticket 23).
+class TestWallModeWarning:
+    """The Stage says when the Route's reading is the wall Mode's (ADR 0005).
 
     A shielded line has two propagating Modes, and a lossy loaded line
     at an undepleted Bias can leave the default rule with the wrong one:
-    both electrodes at one potential, their currents alike, returning
-    through the Window wall. femwell reads no gap voltage, so the Stage
-    checks the two electrode currents against each other instead.
+    both electrodes at one potential, returning through the Window wall.
+    Which Route caught it, and how, is the reading's business; the
+    warning is the Stage's, and there is one of it.
     """
 
-    def test_alike_currents_are_reported_as_the_wall_mode(self, biased):
+    @staticmethod
+    def _reading(wall_mode, diagnostic=""):
+        from gsim.common.modes import LineReading
+
+        return lambda mode, freq_hz: LineReading(
+            n_eff=mode.n_eff,
+            z0_ohm=182.0 + 0j,
+            wall_mode=wall_mode,
+            diagnostic=diagnostic,
+        )
+
+    def test_a_wall_mode_reading_is_reported_with_the_way_out(self, biased, fake_route):
+        fake_route.reading = self._reading(
+            True,
+            "whose two electrodes carry currents 100% in common: the mode "
+            "between them and the window wall",
+        )
         with pytest.warns(UserWarning, match="window wall") as record:
-            biased.rf._check_current_balance(
-                0.075 + 0j, 0.0751 + 0j, freq_hz=10e9, n_eff=2.0262 - 6.6e-7j
-            )
+            run_rf(biased, fake_route, modes_at=[2.0262 - 6.6e-7j])
         message = str(record[0].message)
         assert "rf stage" in message
         assert "10 GHz" in message
         assert "n_guess" in message
         assert "bias_v" in message
 
-    def test_opposite_currents_are_the_line_mode(self, biased):
+    def test_a_line_mode_reading_is_not(self, biased, fake_route):
+        fake_route.reading = self._reading(False)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            biased.rf._check_current_balance(
-                0.156 + 0j, -0.157 + 0j, freq_hz=10e9, n_eff=2.9 - 1.4e-3j
-            )
+            run_rf(biased, fake_route, modes_at=[2.9 - 1.4e-3j])
 
-    def test_no_current_at_all_is_not_a_wall_mode(self, biased):
-        """A reading of NaN is no reading, and no warning."""
+    def test_a_reading_that_could_not_tell_is_not_a_wall_mode(self, biased, fake_route):
+        """No reading is no reading, and no warning."""
+        fake_route.reading = self._reading(None)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            biased.rf._check_current_balance(0j, 0j, freq_hz=10e9, n_eff=2.0 + 0j)
+            run_rf(biased, fake_route, modes_at=[2.0 + 0j])

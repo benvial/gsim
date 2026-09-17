@@ -195,11 +195,13 @@ def pn_phase_shifter(
     # rib alone leaves the pads to the surrounding Regions, which carry
     # the drawn material and no carriers.
     study.optical(
-        route=route,
-        wavelength_um=wavelength_um,
-        n_strips=n_strips if route == "palace" else None,
-        strip_span=layout.doped_span,
+        route=route, wavelength_um=wavelength_um, strip_span=layout.doped_span
     )
+    # The optical Stage keeps the continuous profile wherever its Route
+    # can carry one; where it cannot, the Stage says it needs a strip
+    # count, and the preset's is the one it gets.
+    if study.optical.effective_n_strips() is not None:
+        study.optical(n_strips=n_strips)
     # The RF Staircase tiles the doped slab rather than the rib alone:
     # the pads are part of the line the drive sees, and a Staircase that
     # stops at the rib puts the electrodes against it, dropping their

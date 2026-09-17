@@ -11,20 +11,20 @@ requested frequency.
 
 The Staircase is built here rather than by the caller: its Strips, their
 materials and the electrodes all follow from the device description and
-the carriers Stage's mobilities, so nothing outside assembles a second
+the carriers Stage's coupling, so nothing outside assembles a second
 component.
 
-Each frequency gives one complex effective index, from which the RF index
-and the RF loss follow, and one characteristic impedance from the
-Marks-Williams power-current integral over the signal conductor — the
-electrode on the Contact the RF drive is applied to, identified from the
-device description rather than passed as element indices.
-
-Either Backend can solve the Staircase, and either reports the
-impedance: the femwell Route reads its Mode's fields directly, and the
-Palace Route reads the selected Mode's saved fields back off disk and
-runs the same integral on them. Only femwell can check the Window while
-it selects, because that check happens before anything is saved.
+Each frequency gives one reading of the selected Mode, asked of the Route
+(:meth:`~gsim.modulator.route.Route.read_line`): its complex effective
+index, from which the RF index and the RF loss follow; its characteristic
+impedance by the Marks-Williams power-current definition over the signal
+conductor — the electrode on the Contact the RF drive is applied to,
+identified from the device description; and whether it is the line Mode
+or the wall Mode. The femwell Route reads the impedance from the Mode's
+fields and the diagnostic from the balance of the two electrode currents;
+the Palace Route reads both from Palace's own tables, falling back to the
+saved fields when the tables are absent. The Stage has one solve loop and
+one wall-Mode warning for both.
 
 What the two Routes can express of the electrode metal differs, and that
 is what ``conductor_model`` chooses between (ADR 0003). Meshed as
@@ -34,19 +34,17 @@ Palace's shift-and-invert search returns those metal-dominated modes
 rather than the quasi-TEM one. Meshed as perfect conductors — the
 ``"pec"`` model — their interior is left out of the domain and their
 outline carries the boundary condition, which both Routes express
-identically and neither is derailed by. The Palace Route therefore
-defaults to ``"pec"`` and the femwell Route, which can carry the metal's
-own loss, to ``"volume"``.
+identically and neither is derailed by. Each Route therefore carries its
+own default, and the Stage reads it off the adapter.
 
 The Window's outer wall is metallic on both Routes, which makes it a
 third conductor: beside the line Mode between the two electrodes, the
 shielded line has a Mode on which both electrodes sit at one potential
 and return their current through the wall. The index does not separate
 them, and at an undepleted Bias the loaded line Mode can fall outside
-the loss bound and leave the wall Mode as the slowest candidate. Each
-Route therefore checks the Mode it selected — femwell against the
-balance of its two electrode currents, Palace against the voltage its
-gap carries — and warns when it is the wall Mode (ADR 0005).
+the loss bound and leave the wall Mode as the slowest candidate. The
+Route's reading says which Mode was selected, and the Stage warns when
+it is the wall Mode (ADR 0005).
 
 The selected Route's runtime is checked before the Stage meshes, so a
 missing extra or a missing binary costs nothing but the error message.
@@ -71,17 +69,17 @@ from gsim.common.stack.staircase import (
     RFStripMaterial,
 )
 from gsim.modulator.em import EMStage
-from gsim.modulator.route import require_route
 from gsim.tcad.results import BIAS_TOL_V
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from gsim.common.modes import Conductor, LineReading
     from gsim.common.stack.staircase import StaircaseCrossSection
     from gsim.common.twmzm import JunctionBranch
     from gsim.common.twmzm_report import LoadedLineComparison, RFLineParams
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
-    from gsim.modulator.route import ImpedancePaths
+    from gsim.modulator.route import Route
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import BiasSweepResult, CarrierMap
 
@@ -95,12 +93,19 @@ MIN_STRIPS_ACROSS_RIB: int = 2
 class RFStage(EMStage):
     """The line parameters of the Traveling-wave electrode, versus frequency.
 
+    The settings every EM Stage takes — ``route``, ``num_modes``,
+    ``min_index``, ``boundary_field_tol``, ``metallic_boundaries``,
+    ``order``, ``n_guess``, the Window and the mesh — are documented on
+    :class:`~gsim.modulator.em.EMStage`; this Stage restates four
+    defaults. Four Modes are solved per frequency because the line Mode
+    is selected among them; the boundary-field tolerance is far looser
+    than an optical Window's, because the outer boundary is metallic and
+    carries the line's return field, so some field there is the
+    structure rather than a clipped tail; the index guess is the
+    slow-wave index rather than the solver's, because RF materials have
+    large conductive ``|Im(eps)|``.
+
     Attributes:
-        route: Backend answering this Stage — ``"femwell"`` (the default)
-            or ``"palace"``. Both solve the same Staircase on the same
-            mesh and both report the characteristic impedance; only
-            femwell reads its Mode's fields while it selects, so the
-            Palace Route reports NaN for the Window-containment ratio.
         conductor_model: How the electrode metal is expressed in the
             mesh (ADR 0003) — ``"volume"`` as Regions of lossy metal,
             ``"pec"`` as perfect conductors whose interior is left out of
@@ -128,19 +133,13 @@ class RFStage(EMStage):
             around the Junction; the Stage says so when the rib stops
             spanning :data:`MIN_STRIPS_ACROSS_RIB` Strips, and the answer
             is to raise ``n_strips`` with the span.
-        window: In-plane RF Window (um); the full Cross-section extent
-            when unset.
-        window_z: Vertical RF Window (um); the full extent when unset.
         electrodes: The drawn conductors of the Traveling-wave
             electrode, flanking the Strips.
         signal_contact: Contact the RF drive is applied to, naming the
             signal conductor; the charge Stage's swept Contact when
             unset.
-        num_modes: Number of Modes solved at each frequency, out of which
-            the physical line Mode is selected.
         rule: Candidate rule replacing the default one of
             :func:`gsim.common.modes.select_line_mode`.
-        min_index: Lower bound on ``Re(n_eff)`` for the default rule.
         max_loss_ratio: Upper bound on ``|Im(n_eff)| / Re(n_eff)`` for
             the default rule. Tighter here than the bound
             :func:`gsim.common.modes.select_line_mode` falls back to,
@@ -154,29 +153,6 @@ class RFStage(EMStage):
         strip_permittivity: Relative permittivity of the Strip lattice,
             which the carrier conductivity loads.
         substrate_thickness_um: Substrate below the Staircase (um).
-        boundary_field_tol: Warn above this boundary-field ratio, the
-            sign of a Window squeezing the Mode (ADR 0002). Far looser
-            than an optical Window's: the outer boundary is metallic and
-            carries the line's return field, so some field there is the
-            structure rather than a clipped tail.
-        metallic_boundaries: Enforce PEC on the outer boundary — the
-            usual condition for a shielded line solve. Both Routes
-            express it identically: femwell applies its perfect-conductor
-            condition to the domain boundary, and the Palace config puts
-            the outer wall under ``Boundaries.PEC`` — which is what lets
-            the cross-Route gate compare their answers at all. The wall
-            is a third conductor, so the shielded line has a second
-            propagating Mode, between both electrodes together and the
-            wall; the Stage checks the Mode it selected against that
-            and says so when it is the wrong one (ADR 0005).
-        order: Finite-element order of the mode solve. Under the
-            ``"pec"`` conductor model the impedance is read off the field
-            around the electrode rather than out of it, and femwell
-            derives that field from the curl of its solution — so the
-            femwell Route wants order 2 there, and says so at order 1.
-        n_guess: Effective-index guess centering the eigenvalue search;
-            RF materials have large conductive ``|Im(eps)|``, so the
-            default guess is the slow-wave index rather than the solver's.
         track_modes: Follow the line Mode across the sweep, guessing each
             frequency from the index solved at the one before it, so a
             shift-and-invert search anchored to one number cannot settle
@@ -192,6 +168,11 @@ class RFStage(EMStage):
     """
 
     stage_name: ClassVar[str] = "rf"
+    setting_defaults: ClassVar[dict[str, Any]] = {
+        "num_modes": 4,
+        "boundary_field_tol": 0.2,
+        "n_guess": 3.0,
+    }
 
     #: The unloaded solve's cached result, dropped with the loaded one.
     _unloaded_result: RFLineParams | None = PrivateAttr(default=None)
@@ -204,16 +185,10 @@ class RFStage(EMStage):
     conductor_model: ConductorModel | None = None
     electrodes: ElectrodeSpec = Field(default=DEFAULT_ELECTRODES)
     signal_contact: str | None = None
-    num_modes: int = Field(default=4, ge=1)
     rule: LineModeRule | None = None
-    min_index: float = Field(default=1.0, ge=0.0)
     max_loss_ratio: float = Field(default=0.5, gt=0.0)
     degeneracy_rtol: float = Field(default=0.03, gt=0.0)
     strip_permittivity: float = Field(default=11.9, gt=0.0)
-    boundary_field_tol: float = Field(default=0.2, gt=0.0)
-    metallic_boundaries: bool = True
-    order: int = Field(default=1, ge=1)
-    n_guess: float | None = 3.0
     track_modes: bool = True
     jump_rtol: float = Field(default=0.25, gt=0.0)
 
@@ -297,15 +272,15 @@ class RFStage(EMStage):
         """How this run expresses the electrode metal (ADR 0003).
 
         Returns:
-            The configured model, or the one the selected Route can
-            express: ``"volume"`` on femwell, which carries the metal's
-            own conductivity, and ``"pec"`` on Palace, whose eigenvalue
-            search returns a metal Region's own modes rather than the
-            line's.
+            The configured model, or the one the selected Route's adapter
+            expresses by default: ``"volume"`` on femwell, which carries
+            the metal's own conductivity, and ``"pec"`` on Palace, whose
+            eigenvalue search returns a metal Region's own modes rather
+            than the line's.
         """
         if self.conductor_model is not None:
             return self.conductor_model
-        return "pec" if self.route == "palace" else "volume"
+        return self.route_adapter().conductor_model
 
     def staircase(self) -> StaircaseCrossSection:
         """Reduce the Bias point's Carrier map to a meshable Staircase.
@@ -427,7 +402,7 @@ class RFStage(EMStage):
         # re-solves it per frequency without reading the boundary-mode
         # block, which records the first frequency so the sim is a
         # complete description.
-        sim = self.build_staircase_simulation(
+        return self.build_staircase_simulation(
             stair,
             output_dir=(
                 output_dir
@@ -435,36 +410,30 @@ class RFStage(EMStage):
                 else study.stage_dir(self.stage_name)
             ),
             freq_hz=float(self.frequencies_hz[0]),
-            num_modes=self.num_modes,
         )
-        # Both Routes put the same condition on the Window's outer wall:
-        # femwell reads this setting directly, and the Palace config puts
-        # the wall under Boundaries.PEC — without it Palace defaults the
-        # unconditioned wall to PMC, the opposite condition, and the two
-        # Routes solve different boundary-value problems.
-        sim.metallic_boundaries = self.metallic_boundaries
-        return sim
 
     # ------------------------------------------------------------------
     # Results
     # ------------------------------------------------------------------
 
-    def _check_containment(self, ratio: float, freq_hz: float) -> None:
-        """Warn when a solved Mode is squeezed by its Window (ADR 0002)."""
-        if ratio > self.boundary_field_tol:
-            warnings.warn(
-                f"The {self.stage_name} stage's mode at f = {freq_hz / 1e9:g} "
-                f"GHz carries {ratio:.1%} of its peak field at the window "
-                f"boundary (tolerance {self.boundary_field_tol:.1%}); the "
-                "window is squeezing the line mode rather than shielding "
-                f"it. Widen it with study.{self.stage_name}(window=..., "
-                "window_z=...) or move the electrodes further apart.",
-                stacklevel=2,
-            )
+    def selection(self) -> dict[str, Any]:
+        """A transmission line's bounds on the default selection rule."""
+        return {
+            "rule": self.rule,
+            "min_index": self.min_index,
+            "max_loss_ratio": self.max_loss_ratio,
+            "degeneracy_rtol": self.degeneracy_rtol,
+        }
 
-    def _check_current_balance(
-        self, i_signal: complex, i_return: complex, *, freq_hz: float, n_eff: complex
-    ) -> None:
+    def window_hint(self) -> str:
+        """A squeezed line Mode wants a wider Window or wider electrodes."""
+        return (
+            "The window is squeezing the line mode rather than shielding it. "
+            f"Widen it with study.{self.stage_name}(window=..., window_z=...) "
+            "or move the electrodes further apart."
+        )
+
+    def _check_wall_mode(self, reading: LineReading, freq_hz: float) -> None:
         """Warn when the selected Mode is the wall Mode, not the line Mode.
 
         A shielded two-electrode line has two propagating Modes. On the
@@ -474,66 +443,28 @@ class RFStage(EMStage):
         The index alone does not tell them apart, and at an undepleted
         Bias the loaded line Mode can lose as fast as it advances and
         fall outside ``max_loss_ratio``, leaving the wall Mode as the
-        slowest candidate. The Palace Route reads the same diagnosis off
-        its gap voltage (:func:`~gsim.modulator.route.native_line_impedance`);
-        this is the femwell Route's, off the currents it has in hand.
+        slowest candidate. Each Route reads the diagnosis its own way —
+        femwell off the two electrode currents, Palace off the gap
+        voltage against the power — and the reading says which it was.
 
         Args:
-            i_signal: Longitudinal current on the signal electrode.
-            i_return: Longitudinal current on the return electrode, read
-                the same way.
+            reading: What the Route read off the selected Mode.
             freq_hz: The frequency, named in the warning.
-            n_eff: The selected Mode's index, named in the warning.
 
         Warns:
-            UserWarning: When the
-                :func:`~gsim.common.modes.common_mode_fraction` of the two
-                currents exceeds
-                :data:`~gsim.common.modes.MAX_COMMON_MODE_FRACTION`. A
-                fraction of NaN — no current on either electrode — is no
-                reading, and does not warn.
+            UserWarning: When the reading says the Mode is the wall Mode.
+                A reading that could not tell (``None``) does not warn.
         """
-        from gsim.common.modes import (
-            MAX_COMMON_MODE_FRACTION,
-            common_mode_fraction,
-            wall_mode_hint,
-        )
+        from gsim.common.modes import wall_mode_hint
 
-        fraction = common_mode_fraction(i_signal, i_return)
-        if not fraction > MAX_COMMON_MODE_FRACTION:
+        if not reading.wall_mode:
             return
         warnings.warn(
             f"The {self.stage_name} stage's {self.route} route selected a mode "
-            f"at f = {freq_hz / 1e9:g} GHz (n_eff = {n_eff:.6g}) whose two "
-            f"electrodes carry currents {fraction:.0%} in common rather than "
-            "equal and opposite: they sit at one potential, so this is the "
-            "mode between them and the window wall rather than the line mode "
-            "between them. " + wall_mode_hint(self.stage_name),
-            stacklevel=2,
+            f"at f = {freq_hz / 1e9:g} GHz (n_eff = {reading.n_eff:.6g}) "
+            f"{reading.diagnostic}. " + wall_mode_hint(self.stage_name),
+            stacklevel=3,
         )
-
-    def _pick_line_mode(self, modes: Sequence[Any], freq_hz: float) -> Any:
-        """Select the physical line Mode of one frequency, and check it.
-
-        Args:
-            modes: Every Mode the Route solved at this frequency.
-            freq_hz: The frequency, named in the containment warning.
-
-        Returns:
-            The selected Mode.
-        """
-        from gsim.common.modes import select_line_mode
-        from gsim.modulator.route import mode_boundary_ratio
-
-        mode = select_line_mode(
-            modes,
-            rule=self.rule,
-            min_index=self.min_index,
-            max_loss_ratio=self.max_loss_ratio,
-            degeneracy_rtol=self.degeneracy_rtol,
-        )
-        self._check_containment(mode_boundary_ratio(mode), freq_hz)
-        return mode
 
     def _guess_for(self, solved: Sequence[complex]) -> float | None:
         """Effective-index guess for the next frequency of the sweep.
@@ -596,319 +527,100 @@ class RFStage(EMStage):
             stacklevel=2,
         )
 
-    def _require_metallic_boundaries(self) -> None:
-        """Refuse a perfect electrode that femwell would leave as a hole.
+    def line_conductors(
+        self, staircase: StaircaseCrossSection
+    ) -> tuple[Conductor, Conductor | None]:
+        """The signal electrode and, when there is exactly one, the return.
 
-        femwell has one perfect-conductor condition and applies it to
-        every facet of the domain boundary at once, so a ``"pec"``
-        electrode — which is a hole in that boundary — is a conductor
-        only while ``metallic_boundaries`` is on. Off, the same hole
-        takes the natural condition and the Stage would quietly solve a
-        cross-section with open slots where its electrodes should be.
+        Args:
+            staircase: The Staircase the electrodes were drawn on.
 
-        Raises:
-            ValueError: When the two settings contradict each other.
+        Returns:
+            ``(signal, return_)``; ``return_`` is ``None`` on a Staircase
+            with other than one electrode beside the signal, which then
+            has no pair to compare and is not checked for the wall Mode.
         """
-        if self.metallic_boundaries:
-            return
-        raise ValueError(
-            f"The {self.stage_name} stage's femwell route cannot leave its "
-            "electrodes perfect while metallic_boundaries is off: femwell "
-            "applies that one condition to the whole domain boundary, and a "
-            "perfect electrode is a hole in it, so the electrodes would come "
-            "out as open slots. Turn the wall back on with "
-            f"study.{self.stage_name}(metallic_boundaries=True), or mesh the "
-            "electrodes as lossy volumes with "
-            f"study.{self.stage_name}(conductor_model='volume')."
-        )
+        signal = staircase.conductor(self.signal_electrode())
+        others = [name for name in staircase.electrode_names if name != signal.name]
+        return_ = staircase.conductor(others[0]) if len(others) == 1 else None
+        return signal, return_
 
-    def _check_contour_order(self) -> None:
-        """Warn when the contour current is read off a first-order field.
-
-        femwell solves for ``E`` and derives ``H`` from its curl, one
-        order lower, so a first-order solve leaves ``H`` piecewise
-        constant exactly where a ``"pec"`` conductor's contour integral
-        reads it. On the shipped coax benchmark that is 8-29% of the
-        impedance depending on the mesh, and it does not converge with
-        refinement — only with order.
-        """
-        if self.order >= 2:
-            return
-        warnings.warn(
-            f"The {self.stage_name} stage's femwell route reads its "
-            "characteristic impedance off the field around a perfect "
-            f"conductor at order {self.order}, where femwell's h field is "
-            "piecewise constant: the impedance is biased high by tens of "
-            f"percent. Solve with study.{self.stage_name}(order=2), or mesh "
-            "the electrodes as lossy volumes with "
-            f"study.{self.stage_name}(conductor_model='volume').",
-            stacklevel=2,
-        )
-
-    def _solve_femwell(
-        self, sim: BoundaryModeSim, staircase: StaircaseCrossSection
+    def _solve_line(
+        self, sim: BoundaryModeSim, staircase: StaircaseCrossSection, adapter: Route
     ) -> tuple[list[complex], list[complex]]:
-        """Solve the Staircase with femwell, per frequency.
+        """Solve the meshed Staircase at every frequency, on the Route.
 
-        The femwell Route reads the Mode's fields as it solves, so it is
-        the Route that also checks the Window while it selects. The
-        signal current it divides the power by follows the conductor
-        model: a ``"volume"`` electrode carries a conduction current over
-        its own elements, and a ``"pec"`` one carries Ampere's contour
-        integral around the hole it left in the mesh. The return
-        electrode's current is read the same way and checked against the
-        signal's, which is how this Route tells the line Mode from the
-        wall Mode (:meth:`_check_current_balance`).
+        One loop for both Routes: the adapter solves, the shared
+        selection picks the line Mode and checks its Window, the
+        adapter reads the selected Mode, and the Stage says so when the
+        reading is the wall Mode's.
 
         Args:
             sim: The meshed Staircase simulation.
             staircase: The Staircase it was built from.
-
-        Returns:
-            ``(n_eff, z0_ohm)``, one entry per configured frequency.
-
-        Warns:
-            UserWarning: When a selected Mode is squeezed by its Window
-                (:meth:`_check_containment`), or is the wall Mode rather
-                than the line Mode (:meth:`_check_current_balance`).
-        """
-        import meshio
-        from scipy.constants import speed_of_light as c0
-
-        from gsim.femwell.adapter import (
-            boundary_facets_on_rect,
-            electrode_current,
-            epsilon_by_region,
-            region_elements,
-            solve_modes,
-            z0_power_current,
-        )
-
-        stack = staircase.stack()
-        mesh_path = sim.mesh_path
-        mesh = meshio.read(str(mesh_path))
-        signal = self.signal_electrode()
-        return_electrodes = [
-            name for name in staircase.electrode_names if name != signal
-        ]
-        on_contour = self.effective_conductor_model() == "pec"
-
-        def conductor(name: str) -> tuple[Any, Any]:
-            """``(elements, extent)`` — how this electrode's current is read."""
-            if on_contour:
-                return None, staircase.electrode_extent(name)
-            return region_elements(mesh, name), None
-
-        def facets_of(mode: Any, extent: Any) -> Any:
-            if extent is None:
-                return None
-            h_span, v_span = extent
-            return boundary_facets_on_rect(
-                mode.basis.mesh, h_span=h_span, v_span=v_span
-            )
-
-        signal_elements, signal_extent = conductor(signal)
-        # The same current definition on the return electrode: a
-        # Staircase with other than one return electrode has no pair to
-        # compare, and is not checked.
-        return_conductor = (
-            conductor(return_electrodes[0]) if len(return_electrodes) == 1 else None
-        )
-
-        n_eff: list[complex] = []
-        z0_ohm: list[complex] = []
-        for freq in self.frequencies_hz:
-            modes = solve_modes(
-                mesh_path,
-                epsilon=epsilon_by_region(mesh, stack, frequency_hz=freq),
-                wavelength_um=c0 / freq * 1e6,
-                num_modes=self.num_modes,
-                order=self.order,
-                metallic_boundaries=self.metallic_boundaries,
-                n_guess=self._guess_for(n_eff),
-            )
-            mode = self._pick_line_mode(modes, freq)
-            n_eff.append(complex(mode.n_eff))
-            signal_facets = facets_of(mode, signal_extent)
-            z0_ohm.append(
-                z0_power_current(
-                    mode,
-                    frequency_hz=freq,
-                    current_elements=signal_elements,
-                    current_facets=signal_facets,
-                )
-            )
-            if return_conductor is not None:
-                return_elements, return_extent = return_conductor
-                self._check_current_balance(
-                    electrode_current(
-                        mode,
-                        frequency_hz=freq,
-                        elements=signal_elements,
-                        facets=signal_facets,
-                    ),
-                    electrode_current(
-                        mode,
-                        frequency_hz=freq,
-                        elements=return_elements,
-                        facets=facets_of(mode, return_extent),
-                    ),
-                    freq_hz=freq,
-                    n_eff=complex(mode.n_eff),
-                )
-        return n_eff, z0_ohm
-
-    def impedance_paths(
-        self, sim: BoundaryModeSim, staircase: StaircaseCrossSection
-    ) -> ImpedancePaths:
-        """Where the Palace Route integrates the line voltage and current.
-
-        Sized from the Staircase rather than hand-specified: the voltage
-        path crosses the gap from the signal electrode to the return
-        electrode, and the current loop hugs the signal electrode inside
-        the meshed domain (:func:`~gsim.modulator.route.line_impedance_paths`).
-
-        Args:
-            sim: The meshed Staircase simulation, whose mesh bounds the
-                paths.
-            staircase: The Staircase it was built from.
-
-        Returns:
-            The two paths.
-
-        Raises:
-            ValueError: When the Staircase does not carry exactly one
-                return electrode beside the signal, or the signal
-                electrode is not inside the mesh — the Palace Route then
-                reads the impedance off the saved fields instead.
-        """
-        from gsim.modulator.route import line_impedance_paths, mesh_extent
-
-        signal = self.signal_electrode()
-        others = [name for name in staircase.electrode_names if name != signal]
-        if len(others) != 1:
-            raise ValueError(
-                f"The {self.stage_name} stage's impedance paths need one return "
-                f"electrode beside the signal '{signal}', but the staircase drew "
-                f"{list(staircase.electrode_names)}."
-            )
-        signal_h, signal_v = staircase.electrode_extent(signal)
-        ground_h, ground_v = staircase.electrode_extent(others[0])
-        return line_impedance_paths(
-            signal=(signal_h, signal_v),
-            ground=(ground_h, ground_v),
-            domain=mesh_extent(sim),
-        )
-
-    def _solve_palace(
-        self,
-        sim: BoundaryModeSim,
-        staircase: StaircaseCrossSection,
-        binary: Path | None,
-    ) -> tuple[list[complex], list[complex]]:
-        """Solve the same Staircase on the same mesh with Palace.
-
-        Palace's *text* results are effective indices without fields, so
-        the Window-containment ratio — measured while the Mode is being
-        chosen — cannot be had here. The impedance can: the solve
-        declares the voltage and current paths of the line, sized from
-        the Staircase (:meth:`impedance_paths`), and Palace integrates
-        the selected Mode's impedance along them itself, reported under
-        the index the simulation assigned. When the paths cannot be
-        declared, the solve saves every Mode it might select instead and
-        answers off the saved fields, through the same Marks-Williams
-        integral the femwell Route runs.
-
-        Args:
-            sim: The meshed Staircase simulation.
-            staircase: The Staircase it was built from, holding the
-                electrodes' outlines.
-            binary: Palace executable, as ``require_route`` resolved
-                it; resolved again when ``None``.
+            adapter: The Route answering this run.
 
         Returns:
             ``(n_eff, z0_ohm)``, one entry per configured frequency.
         """
-        from gsim.modulator.route import (
-            containment_unmeasurable,
-            declare_impedance_paths,
-            palace_binary,
-            palace_line_impedance,
-            solve_palace_modes,
+        signal, return_ = self.line_conductors(staircase)
+        adapter.prepare_line(
+            sim, signal=signal, return_=return_, stage_name=self.stage_name
         )
-
-        warnings.warn(containment_unmeasurable(self.stage_name), stacklevel=2)
-        executable = palace_binary(binary, stage_name=self.stage_name)
         verbose = self._is_verbose()
-        h_span, v_span = staircase.electrode_extent(self.signal_electrode())
-        index: int | None = None
-        try:
-            paths = self.impedance_paths(sim, staircase)
-        except ValueError as err:
-            # Not a reason to refuse the solve: the field-based reading
-            # needs only the signal electrode's outline, which is in hand.
-            warnings.warn(
-                f"The {self.stage_name} stage's palace route cannot declare its "
-                f"impedance paths, so the characteristic impedance is read off "
-                f"the saved fields instead: {err}",
-                stacklevel=2,
-            )
-        else:
-            index = declare_impedance_paths(sim, paths)
 
         n_eff: list[complex] = []
         z0_ohm: list[complex] = []
         for freq in self.frequencies_hz:
-            guess = self._guess_for(n_eff)
-            solve = solve_palace_modes(
+            modes = adapter.solve(
                 sim,
                 freq_hz=freq,
                 num_modes=self.num_modes,
-                binary=executable,
-                target=guess if guess is not None else 0.0,
-                # Fields are needed only when the impedance has to be read
-                # off them; which Mode is the line Mode is not known until
-                # they are all solved, so every one of them is saved then.
-                save=0 if index is not None else self.num_modes,
+                target=self._guess_for(n_eff),
+                order=self.order,
+                metallic_boundaries=self.metallic_boundaries,
                 verbose=verbose,
+                stage_name=self.stage_name,
             )
-            mode = self._pick_line_mode(solve.modes, freq)
-            n_eff.append(complex(mode.n_eff))
-            z0_ohm.append(
-                palace_line_impedance(
-                    sim,
-                    solve,
-                    mode,
-                    index=index,
-                    h_span=h_span,
-                    v_span=v_span,
-                    stage_name=self.stage_name,
-                )
+            mode, _ratio = self.select_mode(
+                modes, adapter, at=f"f = {freq / 1e9:g} GHz"
             )
+            reading = adapter.read_line(
+                sim,
+                mode,
+                freq_hz=freq,
+                signal=signal,
+                return_=return_,
+                stage_name=self.stage_name,
+            )
+            self._check_wall_mode(reading, freq)
+            n_eff.append(complex(reading.n_eff))
+            z0_ohm.append(complex(reading.z0_ohm))
         return n_eff, z0_ohm
 
-    def _check_route(self) -> Path | None:
-        """Resolve the Route's runtime, refusing settings it cannot honour.
+    def check_route(self) -> Route:
+        """The Route's adapter, its Backend and this Stage's settings checked.
 
         Before the charge solve and before meshing: a user whose Route
         cannot run, or whose settings the Route cannot honour, should
         pay nothing to find that out. Every check reads settings only.
-        Named like :func:`~gsim.modulator.route.require_route`, whose
-        answer it passes through.
 
         Returns:
-            The Palace binary when that Route is selected, else ``None``.
+            The adapter for this run.
         """
-        binary = require_route(self.route, stage_name=self.stage_name)
-        if self.route == "femwell" and self.effective_conductor_model() == "pec":
-            self._require_metallic_boundaries()
-            self._check_contour_order()
-        return binary
+        adapter = super().check_route()
+        adapter.check_line_settings(
+            conductor_model=self.effective_conductor_model(),
+            metallic_boundaries=self.metallic_boundaries,
+            order=self.order,
+            stage_name=self.stage_name,
+        )
+        return adapter
 
     def _solve_staircase(
         self,
         staircase: StaircaseCrossSection,
-        binary: Path | None,
+        adapter: Route,
         *,
         bias_v: float,
         output_dir: Path | None = None,
@@ -924,11 +636,7 @@ class RFStage(EMStage):
 
         sim = self.simulation(staircase, output_dir=output_dir)
         sim.mesh(**self.mesh)
-
-        if self.route == "femwell":
-            n_eff, z0_ohm = self._solve_femwell(sim, staircase)
-        else:
-            n_eff, z0_ohm = self._solve_palace(sim, staircase, binary)
+        n_eff, z0_ohm = self._solve_line(sim, staircase, adapter)
         self._check_continuity(n_eff)
 
         return line_params_from_neff(
@@ -959,12 +667,12 @@ class RFStage(EMStage):
         """
         if self._unloaded_result is not None and not force:
             return self._unloaded_result
-        binary = self._check_route()
+        adapter = self.check_route()
         output_dir = self._require_study().stage_dir(self.stage_name) / "unloaded"
         output_dir.mkdir(parents=True, exist_ok=True)
         line = self._solve_staircase(
             self.unloaded_staircase(),
-            binary,
+            adapter,
             bias_v=self.bias_point().bias_v,
             output_dir=output_dir,
             unloaded=True,
@@ -1052,6 +760,6 @@ class RFStage(EMStage):
 
     def _solve(self) -> RFLineParams:
         """Mesh the Staircase and solve the line Mode at every frequency."""
-        binary = self._check_route()
+        adapter = self.check_route()
         point = self.bias_point()
-        return self._solve_staircase(self.staircase(), binary, bias_v=point.bias_v)
+        return self._solve_staircase(self.staircase(), adapter, bias_v=point.bias_v)

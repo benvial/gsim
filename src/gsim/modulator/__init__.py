@@ -57,6 +57,7 @@ from gsim.modulator.carriers import (
 from gsim.modulator.charge import ChargeStage
 from gsim.modulator.demo import DemoPhaseShifter, demo_phase_shifter
 from gsim.modulator.device import Device
+from gsim.modulator.femwell_route import FemwellRoute
 from gsim.modulator.layout import (
     Contact,
     DeviceLayout,
@@ -66,13 +67,10 @@ from gsim.modulator.layout import (
 )
 from gsim.modulator.line import ExportRoundTrip, LineStage
 from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
+from gsim.modulator.palace_route import PalaceMode, PalaceRoute
 from gsim.modulator.preset import pn_phase_shifter
 from gsim.modulator.rf import RFStage
-from gsim.modulator.route import (
-    DEFAULT_PALACE_STRIPS,
-    EMRoute,
-    PalaceMode,
-)
+from gsim.modulator.route import DEFAULT_PALACE_STRIPS, EMRoute, Route
 from gsim.modulator.stage import Stage, StageNotRunError
 from gsim.modulator.study import Study
 
@@ -88,6 +86,7 @@ __all__ = [
     "DeviceLayout",
     "EMRoute",
     "ExportRoundTrip",
+    "FemwellRoute",
     "Interface",
     "LineStage",
     "MaterialResponse",
@@ -95,7 +94,9 @@ __all__ = [
     "OpticalStage",
     "OpticalSweep",
     "PalaceMode",
+    "PalaceRoute",
     "RFStage",
+    "Route",
     "Span",
     "Stage",
     "StageNotRunError",

@@ -9,10 +9,13 @@ import pytest
 
 from gsim.common.modes import (
     MAX_COMMON_MODE_FRACTION,
+    Conductor,
+    LineReading,
     NoLineModeError,
     common_mode_fraction,
     propagating_modes,
     select_line_mode,
+    wall_mode_from_currents,
     wall_mode_hint,
 )
 
@@ -200,3 +203,40 @@ class TestCommonModeFraction:
         assert "n_guess" in hint
         assert "max_loss_ratio" in hint
         assert "rule=" in hint
+
+
+class TestWallModeFromCurrents:
+    """The pairing behind the femwell Route's reading, on bare currents."""
+
+    def test_alike_currents_are_the_wall_mode(self):
+        wall_mode, diagnostic = wall_mode_from_currents(0.075 + 0j, 0.0751 + 0j)
+        assert wall_mode is True
+        assert "window wall" in diagnostic
+        assert "100%" in diagnostic
+
+    def test_opposite_currents_are_the_line_mode(self):
+        wall_mode, diagnostic = wall_mode_from_currents(0.156 + 0j, -0.157 + 0j)
+        assert wall_mode is False
+        assert "line mode" in diagnostic
+
+    def test_no_current_at_all_is_no_reading(self):
+        wall_mode, diagnostic = wall_mode_from_currents(0j, 0j)
+        assert wall_mode is None
+        assert "neither electrode" in diagnostic
+
+    def test_the_bound_is_the_shared_one(self):
+        # |1 - 0.34| / 1.34 sits just under one half, |1 - 0.32| / 1.32 just over.
+        assert wall_mode_from_currents(1.0 + 0j, -0.34 + 0j)[0] is False
+        assert wall_mode_from_currents(1.0 + 0j, -0.32 + 0j)[0] is True
+
+
+class TestDescriptors:
+    def test_a_conductor_defaults_to_a_meshed_region(self):
+        conductor = Conductor("electrode_low", ((-22.6, -20.6), (0.0, 0.5)))
+        assert conductor.model == "volume"
+        assert conductor.extent == ((-22.6, -20.6), (0.0, 0.5))
+
+    def test_a_reading_carries_what_a_route_read(self):
+        reading = LineReading(n_eff=2.9 - 1.4e-3j, z0_ohm=41.0 + 0j, wall_mode=False)
+        assert reading.diagnostic == ""
+        assert reading.z0_ohm == 41.0

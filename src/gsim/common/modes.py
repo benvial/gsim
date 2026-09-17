@@ -30,7 +30,12 @@ alone does not separate from the line Mode: the one on which both
 electrodes sit at one potential and return their current through the
 metallic wall around them. :func:`common_mode_fraction` tells the two
 apart from the electrode currents, which either Backend can measure
-once a Mode is in hand.
+once a Mode is in hand, and :func:`wall_mode_from_currents` turns that
+into the diagnostic a Route reports.
+
+What a Route reads off a selected RF Mode is one :class:`LineReading`
+— its index, its characteristic impedance and whether it is the wall
+Mode — given the two electrodes as :class:`Conductor` descriptors.
 """
 
 from __future__ import annotations
@@ -38,19 +43,71 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 __all__ = [
     "MAX_COMMON_MODE_FRACTION",
     "MAX_GAIN_RATIO",
+    "Conductor",
     "LineModeRule",
+    "LineReading",
     "NoLineModeError",
     "common_mode_fraction",
     "mode_index",
     "propagating_modes",
     "select_line_mode",
+    "wall_mode_from_currents",
     "wall_mode_hint",
 ]
+
+#: ``((h_min, h_max), (v_min, v_max))`` of a rectangle on the Cross-section (um).
+Extent = tuple[tuple[float, float], tuple[float, float]]
+
+
+@dataclass(frozen=True)
+class Conductor:
+    """One electrode of a Traveling-wave line, as a current integral names it.
+
+    A conductor reaches a mode solve one of two ways (ADR 0003), and its
+    current is read one of two ways: meshed as a Region of metal
+    (``"volume"``) it carries a conduction current over its elements,
+    named by its Region; left out of the meshed domain as a perfect
+    conductor (``"pec"``) it carries Ampere's contour integral around
+    the hole its outline leaves, located by its extent.
+
+    Attributes:
+        name: Region name of the electrode.
+        extent: ``((h_min, h_max), (v_min, v_max))`` the electrode
+            occupies on the Cross-section (um).
+        model: How the metal reached the mesh — ``"volume"`` or ``"pec"``.
+    """
+
+    name: str
+    extent: Extent
+    model: Literal["volume", "pec"] = "volume"
+
+
+@dataclass(frozen=True)
+class LineReading:
+    """What a Route read off one selected RF Mode.
+
+    Attributes:
+        n_eff: The Mode's complex effective index.
+        z0_ohm: Its characteristic impedance (ohm), by the power-current
+            definition; NaN when the Route could not read it.
+        wall_mode: Whether the Mode is the wall Mode rather than the line
+            Mode (ADR 0005); ``None`` when the Route had nothing to tell
+            them apart with.
+        diagnostic: How the Route told them apart, or why it could not —
+            the clause a warning quotes when ``wall_mode`` is true.
+    """
+
+    n_eff: complex
+    z0_ohm: complex
+    wall_mode: bool | None
+    diagnostic: str = ""
+
 
 #: A candidate rule: given every solved Mode, return the physical ones.
 LineModeRule = Callable[[Sequence[Any]], Sequence[Any]]
@@ -101,6 +158,45 @@ def common_mode_fraction(i_signal: complex, i_return: complex) -> float:
     if total == 0.0:
         return math.nan
     return float(abs(i_signal + i_return) / total)
+
+
+def wall_mode_from_currents(
+    i_signal: complex, i_return: complex
+) -> tuple[bool | None, str]:
+    """Tell the line Mode from the wall Mode by the two electrode currents.
+
+    The pairing logic behind the femwell Route's reading, on its own so
+    it is testable without a solved Mode: both currents read the same
+    way round, their :func:`common_mode_fraction` against
+    :data:`MAX_COMMON_MODE_FRACTION`.
+
+    Args:
+        i_signal: Longitudinal current on the signal electrode.
+        i_return: Longitudinal current on the return electrode, in the
+            same convention.
+
+    Returns:
+        ``(wall_mode, diagnostic)``: whether the Mode is the wall Mode,
+        or ``None`` when neither electrode carries any current, and the
+        clause saying what was measured.
+    """
+    fraction = common_mode_fraction(i_signal, i_return)
+    if math.isnan(fraction):
+        return (
+            None,
+            "neither electrode carries any current, so nothing says which mode this is",
+        )
+    if fraction > MAX_COMMON_MODE_FRACTION:
+        return True, (
+            f"whose two electrodes carry currents {fraction:.0%} in common rather "
+            "than equal and opposite: they sit at one potential, so this is the "
+            "mode between them and the window wall rather than the line mode "
+            "between them"
+        )
+    return False, (
+        f"whose two electrodes carry currents {fraction:.0%} in common: equal "
+        "and opposite, the line mode between them"
+    )
 
 
 def wall_mode_hint(stage_name: str) -> str:

@@ -16,6 +16,7 @@ from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 from scipy.constants import mu_0 as MU0  # noqa: N812
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
+from gsim.common.modes import Conductor
 from gsim.femwell.adapter import solve_modes, z0_power_current
 
 pytest.importorskip("femwell")
@@ -30,6 +31,12 @@ SIGMA_COPPER = 5.8e7
 FREQ_HZ = 100e9
 ETA0 = MU0 * C0
 Z0_ANALYTIC = ETA0 / (2 * np.pi * np.sqrt(EPS_DIELECTRIC)) * np.log(R_OUTER / R_INNER)
+
+
+#: The inner conductor, named to the current integral by its Region and
+#: bounding box; the model says which integral reads it.
+INNER = Conductor("conductor", ((-R_INNER, R_INNER), (-R_INNER, R_INNER)), "volume")
+INNER_PEC = Conductor("conductor", INNER.extent, "pec")
 
 
 @pytest.fixture(scope="module")
@@ -79,12 +86,13 @@ def coax_mode(tmp_path_factory):
         num_modes=1,
         metallic_boundaries=True,
     )
-    return modes[0]
+    return modes[0], path
 
 
 class TestZ0PowerCurrent:
     def test_coax_matches_analytic(self, coax_mode):
-        z0 = z0_power_current(coax_mode, frequency_hz=FREQ_HZ)
+        mode, mesh = coax_mode
+        z0 = z0_power_current(mode, frequency_hz=FREQ_HZ, conductor=INNER, mesh=mesh)
         # Measured 3.2% high with a small negative reactance — the expected
         # finite-conductivity correction at 100 GHz; the margin covers mesh
         # variance across gmsh versions.
@@ -94,29 +102,30 @@ class TestZ0PowerCurrent:
     def test_normalization_invariant(self, coax_mode):
         from dataclasses import replace
 
+        mode, mesh = coax_mode
         factor = 3.7 * np.exp(1j * 0.61)
-        scaled = replace(coax_mode, E=coax_mode.E * factor, H=coax_mode.H * factor)
-        z0 = z0_power_current(coax_mode, frequency_hz=FREQ_HZ)
-        z0_scaled = z0_power_current(scaled, frequency_hz=FREQ_HZ)
+        scaled = replace(mode, E=mode.E * factor, H=mode.H * factor)
+        z0 = z0_power_current(mode, frequency_hz=FREQ_HZ, conductor=INNER, mesh=mesh)
+        z0_scaled = z0_power_current(
+            scaled, frequency_hz=FREQ_HZ, conductor=INNER, mesh=mesh
+        )
         assert z0_scaled == pytest.approx(z0, rel=1e-12)
 
-    def test_no_conductive_elements_raises(self, coax_mode):
-        with pytest.raises(ValueError, match="conductive"):
+    def test_a_conductor_that_is_not_on_the_mesh_is_reported(self, coax_mode):
+        mode, mesh = coax_mode
+        with pytest.raises(ValueError, match="'signal' not found"):
             z0_power_current(
-                coax_mode,
+                mode,
                 frequency_hz=FREQ_HZ,
-                sigma_s_per_m=np.zeros_like(np.asarray(coax_mode.epsilon_r).real),
+                conductor=Conductor("signal", INNER.extent, "volume"),
+                mesh=mesh,
             )
 
-    def test_explicit_sigma_matches_default(self, coax_mode):
-        omega = 2 * np.pi * FREQ_HZ
-        eps = np.asarray(coax_mode.epsilon_r)
-        sigma = np.where(eps.imag < 0, -eps.imag, 0.0) * omega * EPS0
-        z0_default = z0_power_current(coax_mode, frequency_hz=FREQ_HZ)
-        z0_explicit = z0_power_current(
-            coax_mode, frequency_hz=FREQ_HZ, sigma_s_per_m=sigma
-        )
-        assert z0_explicit == pytest.approx(z0_default, rel=1e-12)
+    def test_a_volume_conductor_is_not_a_hole(self, coax_mode):
+        """Naming a meshed conductor as perfect finds no outline to loop."""
+        mode, mesh = coax_mode
+        with pytest.raises(ValueError, match="not a hole"):
+            z0_power_current(mode, frequency_hz=FREQ_HZ, conductor=INNER_PEC, mesh=mesh)
 
 
 # The same coax with a perfect inner conductor: the disk is left out of the
@@ -161,31 +170,27 @@ def pec_coax_mode(tmp_path_factory):
         metallic_boundaries=True,
         n_guess=np.sqrt(EPS_DIELECTRIC),
     )
-    return modes[0]
-
-
-def inner_conductor_facets(mode):
-    """Boundary facets on the coax's inner conductor, by radius."""
-    mesh = mode.basis.mesh
-    facets = mesh.boundary_facets()
-    midpoints = mesh.p[:, mesh.facets[:, facets]].mean(axis=1)
-    radius = np.hypot(midpoints[0], midpoints[1])
-    return facets[radius < 0.5 * (R_INNER + R_OUTER)]
+    return modes[0], path
 
 
 class TestContourCurrent:
     def test_the_pec_coax_carries_the_tem_mode(self, pec_coax_mode):
         """The domain is homogeneous, so the TEM index is exactly sqrt(eps)."""
-        n_eff = complex(pec_coax_mode.n_eff)
+        mode, _mesh = pec_coax_mode
+        n_eff = complex(mode.n_eff)
         assert n_eff.real == pytest.approx(np.sqrt(EPS_DIELECTRIC), rel=2e-3)
         assert abs(n_eff.imag) < 1e-6
 
     def test_the_contour_current_reaches_the_analytic_impedance(self, pec_coax_mode):
-        """A perfect conductor has no volume current; Ampere's law has one."""
+        """A perfect conductor has no volume current; Ampere's law has one.
+
+        The round inner conductor is a hole in the mesh, found by its
+        bounding box: every domain-boundary facet inside it is its
+        outline, since the outer wall lies well beyond.
+        """
+        mode, mesh = pec_coax_mode
         z0 = z0_power_current(
-            pec_coax_mode,
-            frequency_hz=FREQ_HZ,
-            current_facets=inner_conductor_facets(pec_coax_mode),
+            mode, frequency_hz=FREQ_HZ, conductor=INNER_PEC, mesh=mesh
         )
         assert z0.real == pytest.approx(Z0_ANALYTIC, rel=0.01)
         assert abs(z0.imag) < 0.01 * Z0_ANALYTIC
@@ -193,24 +198,19 @@ class TestContourCurrent:
     def test_the_contour_current_is_normalization_invariant(self, pec_coax_mode):
         from dataclasses import replace
 
+        mode, mesh = pec_coax_mode
         factor = 3.7 * np.exp(1j * 0.61)
-        scaled = replace(
-            pec_coax_mode, E=pec_coax_mode.E * factor, H=pec_coax_mode.H * factor
-        )
-        facets = inner_conductor_facets(pec_coax_mode)
+        scaled = replace(mode, E=mode.E * factor, H=mode.H * factor)
         z0 = z0_power_current(
-            pec_coax_mode, frequency_hz=FREQ_HZ, current_facets=facets
+            mode, frequency_hz=FREQ_HZ, conductor=INNER_PEC, mesh=mesh
         )
         z0_scaled = z0_power_current(
-            scaled, frequency_hz=FREQ_HZ, current_facets=facets
+            scaled, frequency_hz=FREQ_HZ, conductor=INNER_PEC, mesh=mesh
         )
         assert z0_scaled == pytest.approx(z0, rel=1e-12)
 
-    def test_asking_for_both_current_definitions_is_refused(self, pec_coax_mode):
-        with pytest.raises(ValueError, match="elements to integrate"):
-            z0_power_current(
-                pec_coax_mode,
-                frequency_hz=FREQ_HZ,
-                current_elements=[0, 1],
-                current_facets=inner_conductor_facets(pec_coax_mode),
-            )
+    def test_a_perfect_conductor_has_no_region_to_integrate_over(self, pec_coax_mode):
+        """Naming the hole as a meshed Region finds nothing on the mesh."""
+        mode, mesh = pec_coax_mode
+        with pytest.raises(ValueError, match="not found"):
+            z0_power_current(mode, frequency_hz=FREQ_HZ, conductor=INNER, mesh=mesh)

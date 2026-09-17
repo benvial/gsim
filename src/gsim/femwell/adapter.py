@@ -17,6 +17,17 @@ Both epsilon paths are pure meshio/scipy functions testable without the
 femwell runtime; only :func:`solve_modes` needs femwell/skfem installed
 (``pip install 'gsim[femwell]'``).
 
+What comes back from a solve is read here too: how much of a Mode's
+field is left at the Window boundary (:func:`boundary_field_ratio`) or
+outside a band of the Cross-section (:func:`field_fraction_outside`),
+the current one conductor carries (:func:`electrode_current`) and the
+Marks-Williams power-current impedance it implies
+(:func:`z0_power_current`), and — for an RF line — the one reading of a
+selected Mode the RF Stage asks for: index, impedance and whether it is
+the wall Mode (:func:`line_reading`). A conductor is named to every
+current integral the same way, as a
+:class:`~gsim.common.modes.Conductor`.
+
 The sign convention is ``exp(+i omega t)``: lossy media have
 ``Im(eps) < 0``.
 """
@@ -32,6 +43,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
+from gsim.common.modes import Conductor, LineReading, wall_mode_from_currents
 from gsim.common.stack.materials import (
     MaterialProperties,
     ResolvedMaterial,
@@ -43,12 +55,13 @@ if TYPE_CHECKING:
     from gsim.common.stack.extractor import LayerStack
 
 __all__ = [
-    "boundary_facets_on_rect",
+    "boundary_facets_within",
     "boundary_field_ratio",
     "electrode_current",
     "elementwise_epsilon",
     "epsilon_by_region",
     "field_fraction_outside",
+    "line_reading",
     "region_elements",
     "region_material_map",
     "solve_modes",
@@ -505,20 +518,22 @@ def field_fraction_outside(
     return float(power[outside].sum() / total)
 
 
-def boundary_facets_on_rect(
+def boundary_facets_within(
     mesh: Any,
     *,
     h_span: tuple[float, float],
     v_span: tuple[float, float],
     tol_um: float = 1e-4,
 ) -> NDArray[np.int64]:
-    """Facets of the domain boundary lying on one axis-aligned rectangle.
+    """Facets of the domain boundary lying within one axis-aligned rectangle.
 
     A conductor the mesh leaves out of its meshed domain — a Staircase
     electrode under the ``"pec"`` conductor model — is a hole, and its
     outline is part of the domain boundary. This finds that outline from
-    the rectangle the conductor was drawn as, which is what
-    :func:`z0_power_current` integrates the line current around.
+    the rectangle the conductor occupies, which is what
+    :func:`electrode_current` integrates the line current around. The
+    outline need not be the rectangle itself: any hole inside it counts,
+    so a round conductor is found by its bounding box.
 
     Args:
         mesh: The skfem mesh a Mode was solved on
@@ -526,34 +541,28 @@ def boundary_facets_on_rect(
         h_span: ``(min, max)`` of the rectangle along the first
             coordinate (um).
         v_span: ``(min, max)`` along the second coordinate (um).
-        tol_um: How far a facet midpoint may sit off the rectangle's
-            perimeter and still count as on it (um). Loose enough to
-            absorb the rounding a mesh file's own coordinate precision
-            leaves, and far tighter than any drawn feature.
+        tol_um: How far a facet midpoint may sit outside the rectangle
+            and still count as inside it (um). Loose enough to absorb
+            the rounding a mesh file's own coordinate precision leaves,
+            and far tighter than any drawn feature.
 
     Returns:
         The facet indices, ascending.
 
     Raises:
-        ValueError: When no boundary facet lies on the rectangle, which
-            means the conductor was meshed as a domain rather than left
-            out of one.
+        ValueError: When no boundary facet lies within the rectangle,
+            which means the conductor was meshed as a domain rather than
+            left out of one.
     """
     facets = mesh.boundary_facets()
     midpoints = mesh.p[:, mesh.facets[:, facets]].mean(axis=1)
     h, v = midpoints[0], midpoints[1]
     inside_h = (h >= h_span[0] - tol_um) & (h <= h_span[1] + tol_um)
     inside_v = (v >= v_span[0] - tol_um) & (v <= v_span[1] + tol_um)
-    on_side = (
-        (np.abs(h - h_span[0]) <= tol_um)
-        | (np.abs(h - h_span[1]) <= tol_um)
-        | (np.abs(v - v_span[0]) <= tol_um)
-        | (np.abs(v - v_span[1]) <= tol_um)
-    )
-    selected = facets[inside_h & inside_v & on_side]
+    selected = facets[inside_h & inside_v]
     if selected.size == 0:
         raise ValueError(
-            f"No boundary facet lies on the rectangle h={h_span}, v={v_span}, "
+            f"No boundary facet lies within the rectangle h={h_span}, v={v_span}, "
             "so that conductor is not a hole in the meshed domain. Its "
             "current is a conduction integral over its elements rather than "
             "a contour integral around it."
@@ -565,54 +574,35 @@ def z0_power_current(
     mode: Any,
     *,
     frequency_hz: float,
-    sigma_s_per_m: ArrayLike | None = None,
-    current_elements: ArrayLike | None = None,
-    current_facets: ArrayLike | None = None,
+    conductor: Conductor,
+    mesh: meshio.Mesh | str | Path,
 ) -> complex:
     """Marks-Williams power-current characteristic impedance of an RF mode.
 
     ``Z_0 = 2 P / |I|^2`` with the complex Poynting flux
     ``P = (1/2) integral (E_t x H_t*) . z dA`` over the whole cross-section
-    and the longitudinal current ``I`` on the signal conductor. The ratio
-    is invariant to the mode's field normalization; the mesh coordinates
-    are in um and ``sigma`` in S/m, the unit conversion is internal.
-
-    The current is read one of two ways, because a conductor reaches a
-    mode solve one of two ways. A conductor meshed as a Region carries a
-    conduction current ``I = integral sigma E_z dA`` over its elements. A
-    conductor the mesh leaves out of its domain — a perfect one — carries
-    no volume current at all, and Ampere's law reads it off the field
-    around it instead: ``I = contour integral of H . dl`` over its
-    outline, which :func:`boundary_facets_on_rect` locates.
+    and the longitudinal current ``I`` on the signal conductor
+    (:func:`electrode_current`). The ratio is invariant to the mode's
+    field normalization; the mesh coordinates are in um and the unit
+    conversion is internal.
 
     Args:
         mode: A femwell ``Mode`` from :func:`solve_modes` (fields solved
             with the complex permittivity that encodes the conductivity,
             ``exp(+i omega t)``: ``Im(eps) < 0``).
         frequency_hz: RF frequency of the solve in Hz.
-        sigma_s_per_m: Conductivity per mesh element in S/m. Defaults to
-            the conduction profile implied by the mode's own epsilon:
-            ``sigma = -Im(eps_r) omega eps_0`` where negative. Unused
-            when the current comes from ``current_facets``.
-        current_elements: Element indices (or boolean mask) carrying the
-            signal current. Defaults to every element with positive
-            conductivity — valid only when the mesh has a single signal
-            conductor; on a two-conductor line (e.g. CPS electrodes) the
-            signal and return currents nearly cancel in that sum, so pass
-            the elements of one conductor explicitly.
-        current_facets: Facets of a closed contour around the signal
-            conductor, from :func:`boundary_facets_on_rect`. Given
-            these, the current is Ampere's contour integral rather than
-            a conduction integral, which is the only one a perfect
-            conductor has.
+        conductor: The signal conductor, named the way its current is
+            read.
+        mesh: The shared msh v2.2 mesh the Mode was solved on (path or
+            loaded meshio mesh), whose Region names a ``"volume"``
+            conductor's elements are found by.
 
     Returns:
         Complex characteristic impedance in ohms.
 
     Raises:
-        ValueError: When both current definitions are asked for at once
-            or there is nothing to integrate over (from
-            :func:`electrode_current`), or when the integral comes out
+        ValueError: When the conductor has nothing to integrate over
+            (from :func:`electrode_current`), or the current comes out
             zero.
     """
     skfem = require_skfem()
@@ -631,11 +621,7 @@ def z0_power_current(
     )
 
     current = electrode_current(
-        mode,
-        frequency_hz=frequency_hz,
-        sigma_s_per_m=sigma_s_per_m,
-        elements=current_elements,
-        facets=current_facets,
+        mode, frequency_hz=frequency_hz, conductor=conductor, mesh=mesh
     )
     if current == 0:
         raise ValueError("Zero longitudinal current over the selected conductor.")
@@ -646,9 +632,8 @@ def electrode_current(
     mode: Any,
     *,
     frequency_hz: float,
-    sigma_s_per_m: ArrayLike | None = None,
-    elements: ArrayLike | None = None,
-    facets: ArrayLike | None = None,
+    conductor: Conductor,
+    mesh: meshio.Mesh | str | Path,
 ) -> complex:
     """Longitudinal current one conductor of a Mode carries.
 
@@ -659,47 +644,88 @@ def electrode_current(
     between both electrodes together and the shielding wall has them
     alike (:func:`gsim.common.modes.common_mode_fraction`).
 
-    A conductor meshed as a Region carries the conduction current
-    ``integral sigma E_z dA`` over its *elements*; a perfect conductor
+    A ``"volume"`` conductor carries the conduction current
+    ``integral sigma E_z dA`` over the elements of its Region, with
+    ``sigma`` implied by the Mode's own epsilon; a ``"pec"`` conductor
     left out of the meshed domain carries Ampere's contour integral of
-    ``H`` around its *facets*. Both land in the same scale, and both
-    sign conventions are consistent from one conductor to the next —
-    the conduction integral through ``E_z``, the contour through the
-    boundary normal that points into every conductor alike — so two
+    ``H`` around the outline its extent locates
+    (:func:`boundary_facets_within`). Both land in the same scale, and
+    both sign conventions are consistent from one conductor to the
+    next — the conduction integral through ``E_z``, the contour through
+    the boundary normal that points into every conductor alike — so two
     conductors' currents read the same way are comparable.
 
     Args:
         mode: A femwell ``Mode`` from :func:`solve_modes`.
         frequency_hz: RF frequency of the solve in Hz.
-        sigma_s_per_m: Conductivity per mesh element in S/m; the Mode's
-            own epsilon implies it when omitted. Unused with *facets*.
-        elements: Element indices (or boolean mask) of the conductor,
-            for the conduction integral. Omitted with *facets*, every
-            conductive element is taken.
-        facets: Facets of a closed contour around the conductor, from
-            :func:`boundary_facets_on_rect`, for the contour integral.
+        conductor: The conductor, named the way its current is read.
+        mesh: The shared msh v2.2 mesh the Mode was solved on (path or
+            loaded meshio mesh).
 
     Returns:
         The complex current, in the um-coordinate scale
         :func:`z0_power_current` divides out.
 
     Raises:
-        ValueError: When both definitions are asked for at once, or when
-            there is nothing to integrate over.
+        ValueError: When there is nothing to integrate over: a
+            ``"volume"`` conductor with no Region on the mesh, or a
+            ``"pec"`` conductor that is not a hole in it.
     """
-    if elements is not None and facets is not None:
-        raise ValueError(
-            "Give the conductor's current as elements to integrate the "
-            "conduction current over, or as facets to integrate the field "
-            "around, not both."
-        )
-    if facets is not None:
+    if conductor.model == "pec":
+        h_span, v_span = conductor.extent
+        facets = boundary_facets_within(mode.basis.mesh, h_span=h_span, v_span=v_span)
         return _contour_current(mode, facets)
     return _conduction_current(
         mode,
         frequency_hz=frequency_hz,
-        sigma_s_per_m=sigma_s_per_m,
-        current_elements=elements,
+        current_elements=region_elements(mesh, conductor.name),
+    )
+
+
+def line_reading(
+    mode: Any,
+    *,
+    frequency_hz: float,
+    mesh: meshio.Mesh | str | Path,
+    signal: Conductor,
+    return_: Conductor | None = None,
+) -> LineReading:
+    """What the RF Stage asks of one selected Mode, in one reading.
+
+    The index off the Mode, the impedance off its fields over the signal
+    conductor, and — given the return electrode — whether the Mode is
+    the wall Mode, from the balance of the two electrodes' currents
+    (:func:`gsim.common.modes.wall_mode_from_currents`). A line with no
+    single return electrode has no pair to compare, and is not checked.
+
+    Args:
+        mode: A femwell ``Mode`` from :func:`solve_modes`.
+        frequency_hz: RF frequency of the solve in Hz.
+        mesh: The shared msh v2.2 mesh the Mode was solved on.
+        signal: The signal conductor.
+        return_: The return conductor, or ``None`` when there is not
+            exactly one.
+
+    Returns:
+        The reading.
+    """
+    z0 = z0_power_current(mode, frequency_hz=frequency_hz, conductor=signal, mesh=mesh)
+    if return_ is None:
+        return LineReading(
+            n_eff=complex(mode.n_eff),
+            z0_ohm=z0,
+            wall_mode=None,
+            diagnostic="the line has no single return electrode to compare "
+            "the signal current against",
+        )
+    wall_mode, diagnostic = wall_mode_from_currents(
+        electrode_current(mode, frequency_hz=frequency_hz, conductor=signal, mesh=mesh),
+        electrode_current(
+            mode, frequency_hz=frequency_hz, conductor=return_, mesh=mesh
+        ),
+    )
+    return LineReading(
+        n_eff=complex(mode.n_eff), z0_ohm=z0, wall_mode=wall_mode, diagnostic=diagnostic
     )
 
 
@@ -707,35 +733,24 @@ def _conduction_current(
     mode: Any,
     *,
     frequency_hz: float,
-    sigma_s_per_m: ArrayLike | None,
-    current_elements: ArrayLike | None,
+    current_elements: ArrayLike,
 ) -> complex:
-    """Longitudinal conduction current over a conductor's own elements."""
+    """Longitudinal conduction current over a conductor's own elements.
+
+    The conductivity is the one the Mode was solved with: ``sigma =
+    -Im(eps_r) omega eps_0`` where the imaginary part is negative.
+    """
     skfem = require_skfem()
 
     omega = 2.0 * np.pi * float(frequency_hz)
     eps = np.asarray(mode.epsilon_r, dtype=np.complex128)
-    if sigma_s_per_m is None:
-        sigma = np.where(eps.imag < 0.0, -eps.imag, 0.0) * omega * EPS0
-    else:
-        sigma = np.asarray(sigma_s_per_m, dtype=np.float64)
-        if sigma.shape != eps.shape:
-            raise ValueError(
-                f"sigma_s_per_m has shape {sigma.shape} but the mesh has "
-                f"{eps.shape[0]} elements."
-            )
+    sigma = np.where(eps.imag < 0.0, -eps.imag, 0.0) * omega * EPS0
 
-    if current_elements is None:
-        elements = np.flatnonzero(sigma > 0.0)
-    else:
-        elements = np.atleast_1d(np.asarray(current_elements))
-        if elements.dtype == bool:
-            elements = np.flatnonzero(elements)
+    elements = np.atleast_1d(np.asarray(current_elements))
+    if elements.dtype == bool:
+        elements = np.flatnonzero(elements)
     if elements.size == 0:
-        raise ValueError(
-            "No conductive elements to integrate the current over; the mode "
-            "was solved without conductive regions (all Im(eps) >= 0)."
-        )
+        raise ValueError("The conductor has no elements to integrate the current over.")
 
     @skfem.Functional(dtype=np.complex128)  # type: ignore[untyped-decorator]
     def _current_form(w: Any) -> Any:
@@ -766,7 +781,8 @@ def _contour_current(mode: Any, facets: ArrayLike) -> complex:
 
     Args:
         mode: The solved Mode.
-        facets: Facet indices of the closed contour.
+        facets: Facet indices of the closed contour
+            (:func:`boundary_facets_within`).
 
     Returns:
         The enclosed current, in the same scale as the conduction

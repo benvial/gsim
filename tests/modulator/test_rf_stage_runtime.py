@@ -25,7 +25,7 @@ import warnings
 import numpy as np
 import pytest
 
-from gsim.common.modes import NoLineModeError
+from gsim.common.modes import Conductor, NoLineModeError
 from gsim.common.twmzm_report import RFLineParams
 from gsim.modulator import Device, Study
 
@@ -234,21 +234,16 @@ class TestSignalConductor:
     def test_the_impedance_integrates_over_the_signal_electrode(
         self, tmp_path, monkeypatch
     ):
-        """The elements come from the device description, not the caller."""
-        import meshio
-
+        """The conductor comes from the device description, not the caller."""
         from gsim.femwell import adapter
 
-        captured: dict[str, np.ndarray] = {}
+        captured: dict[str, Conductor] = {}
         extract = adapter.z0_power_current
 
-        def spy(mode, *, frequency_hz, current_elements=None, **kwargs):
-            captured["elements"] = np.asarray(current_elements)
+        def spy(mode, *, frequency_hz, conductor, mesh):
+            captured["conductor"] = conductor
             return extract(
-                mode,
-                frequency_hz=frequency_hz,
-                current_elements=current_elements,
-                **kwargs,
+                mode, frequency_hz=frequency_hz, conductor=conductor, mesh=mesh
             )
 
         monkeypatch.setattr(adapter, "z0_power_current", spy)
@@ -256,11 +251,12 @@ class TestSignalConductor:
         study.rf(frequencies_hz=ONE_FREQ_HZ, n_strips=N_STRIPS)
         study.rf.run()
 
-        mesh = meshio.read(str(study.stage_dir("rf") / "palace.msh"))
-        signal = adapter.region_elements(mesh, "electrode_low")
-
-        assert signal.size > 0
-        assert captured["elements"].tolist() == signal.tolist()
+        conductor = captured["conductor"]
+        assert conductor.name == "electrode_low"
+        assert conductor.model == "volume"
+        assert conductor.extent == study.rf.staircase().electrode_extent(
+            "electrode_low"
+        )
 
 
 @pytest.fixture(scope="module")

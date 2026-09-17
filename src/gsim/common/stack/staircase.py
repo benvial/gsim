@@ -49,6 +49,7 @@ from gsim.common.stack.materials import MaterialProperties, make_doped_materials
 if TYPE_CHECKING:
     import gdsfactory as gf
 
+    from gsim.common.modes import Conductor
     from gsim.common.stack.extractor import Layer, LayerStack
 
 __all__ = [
@@ -686,7 +687,9 @@ class StaircaseCrossSection:
         """
         return self._electrodes.conductor_model if self._electrodes else None
 
-    def electrode_extent(self, name: str) -> tuple[tuple[float, float], ...]:
+    def electrode_extent(
+        self, name: str
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
         """The rectangle one electrode occupies on the Cross-section.
 
         A downstream integral over a conductor — the line current the
@@ -712,6 +715,29 @@ class StaircaseCrossSection:
         index = self.electrode_names.index(name)
         layer = self.layers[name]
         return (self.electrode_spans[index], (layer.zmin, layer.zmax))
+
+    def conductor(self, name: str) -> Conductor:
+        """One electrode, named the way a current integral reads it.
+
+        Args:
+            name: Region name of the electrode.
+
+        Returns:
+            The :class:`~gsim.common.modes.Conductor`: its Region, its
+            extent and the model it reached the mesh under.
+
+        Raises:
+            ValueError: When the Staircase has no electrode of that name.
+        """
+        from gsim.common.modes import Conductor
+
+        model = self.conductor_model
+        if model is None:
+            raise ValueError(
+                f"The staircase drew no electrodes, so there is no conductor "
+                f"named '{name}'."
+            )
+        return Conductor(name=name, extent=self.electrode_extent(name), model=model)
 
     def unloaded(self) -> StaircaseCrossSection:
         """The same Staircase with its carriers switched off.

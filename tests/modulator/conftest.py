@@ -9,9 +9,13 @@ against, read off the builder rather than restated here.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any, ClassVar
+
 import numpy as np
 import pytest
 
+from gsim.common.modes import LineReading
 from gsim.modulator.demo import (
     DEFAULT_CENTER_UM,
     DEFAULT_ELECTRODE_THICKNESS_UM,
@@ -21,6 +25,7 @@ from gsim.modulator.demo import (
     DEFAULT_RIB_HEIGHT_UM,
     demo_phase_shifter,
 )
+from gsim.modulator.route import ROUTES, Route
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
 
 CENTER_Y = DEFAULT_CENTER_UM
@@ -136,3 +141,94 @@ def junction_sweep() -> BiasSweepResult:
         contact="cathode",
         points=[admittance_point(*values) for values in JUNCTION_BRANCH],
     )
+
+
+class FakeRoute(Route):
+    """A scripted Route: solves nothing, answers what the test told it.
+
+    Registered under the ``"palace"`` name by the ``fake_route`` fixture,
+    so a Stage configured with ``route="palace"`` reaches it through the
+    registry the way it reaches a real adapter. Every call the Stage
+    makes is recorded on the class, because the Stage builds a fresh
+    instance per run.
+    """
+
+    name: ClassVar = "palace"
+    conductor_model: ClassVar = "pec"
+    continuous_materials: ClassVar[bool] = False
+
+    #: ``freq_hz -> [n_eff, ...]`` the solve answers with; a single list
+    #: answers every frequency alike.
+    modes_at: ClassVar[Any] = [3.0 - 0.01j]
+    #: The reading of every selected Mode, or a callable of the Mode.
+    reading: ClassVar[Any] = None
+    #: The boundary-field ratio of every selected Mode.
+    boundary: ClassVar[float] = 0.0
+    #: The fraction of a Mode outside the Strips.
+    outside: ClassVar[float] = 0.0
+    #: Every call a Stage made, as ``(method, kwargs)``.
+    calls: ClassVar[list[tuple[str, dict[str, Any]]]] = []
+
+    @classmethod
+    def reset(cls) -> None:
+        """Back to the defaults, with nothing recorded."""
+        cls.conductor_model = "pec"
+        cls.continuous_materials = False
+        cls.modes_at = [3.0 - 0.01j]
+        cls.reading = None
+        cls.boundary = 0.0
+        cls.outside = 0.0
+        cls.calls = []
+
+    @classmethod
+    def made(cls, method: str) -> list[dict[str, Any]]:
+        """The keyword arguments of every recorded call of *method*."""
+        return [kwargs for name, kwargs in cls.calls if name == method]
+
+    def _record(self, method: str, **kwargs: Any) -> None:
+        type(self).calls.append((method, kwargs))
+
+    def require(self, *, stage_name: str) -> None:
+        self._record("require", stage_name=stage_name)
+
+    def check_line_settings(self, **kwargs: Any) -> None:
+        self._record("check_line_settings", **kwargs)
+
+    def check_staircase(self, staircase: Any, **kwargs: Any) -> None:
+        self._record("check_staircase", staircase=staircase, **kwargs)
+
+    def prepare_line(self, sim: Any, **kwargs: Any) -> None:
+        self._record("prepare_line", sim=sim, **kwargs)
+
+    def solve(self, sim: Any, **kwargs: Any) -> list[Any]:
+        self._record("solve", sim=sim, **kwargs)
+        script = type(self).modes_at
+        indices = script(kwargs["freq_hz"]) if callable(script) else script
+        return [SimpleNamespace(n_eff=complex(n)) for n in indices]
+
+    def boundary_ratio(self, mode: Any) -> float:
+        self._record("boundary_ratio", mode=mode)
+        return type(self).boundary
+
+    def strip_fraction_outside(self, mode: Any, span: Any, *, stage_name: str) -> float:
+        self._record(
+            "strip_fraction_outside", mode=mode, span=span, stage_name=stage_name
+        )
+        return type(self).outside
+
+    def read_line(self, sim: Any, mode: Any, **kwargs: Any) -> LineReading:
+        self._record("read_line", sim=sim, mode=mode, **kwargs)
+        reading = type(self).reading
+        if callable(reading):
+            return reading(mode, kwargs["freq_hz"])
+        if reading is not None:
+            return reading
+        return LineReading(n_eff=mode.n_eff, z0_ohm=50.0 + 0j, wall_mode=False)
+
+
+@pytest.fixture
+def fake_route(monkeypatch):
+    """The fake adapter, registered as the ``"palace"`` Route for one test."""
+    FakeRoute.reset()
+    monkeypatch.setitem(ROUTES, "palace", FakeRoute)
+    return FakeRoute

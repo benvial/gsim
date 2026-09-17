@@ -237,8 +237,12 @@ class TestConductorClearance:
     A drawn conductor is meshed as an outline with its interior left out
     of the domain (ADR 0003). When the Window cuts one, that outline runs
     along the Window's own wall and the Palace binary aborts with no
-    message at all — deterministically, on this geometry.
+    message at all — deterministically, on this geometry. femwell meshes
+    it, so the refusal is the Palace adapter's and not the Stage's.
     """
+
+    WINDOW = (CENTER_Y - 2.0, CENTER_Y + 2.0)
+    WINDOW_Z = (-1.0, 1.0)
 
     @staticmethod
     def _metal(h, z):
@@ -248,48 +252,68 @@ class TestConductorClearance:
             name="pad_metal", h=h, z=z, material="aluminum", layer_type="conductor"
         )
 
-    def test_a_conductor_inside_the_window_is_fine(self, study):
-        study.optical(window=(CENTER_Y - 2.0, CENTER_Y + 2.0), window_z=(-1.0, 1.0))
+    def _clear(self, surroundings, window=WINDOW, window_z=WINDOW_Z):
+        from gsim.modulator.palace_route import conductor_clearance
 
-        study.optical._check_conductor_clearance(
-            [self._metal((-20.6, -20.3), (0.22, 0.72))]
+        conductor_clearance(
+            surroundings, window=window, window_z=window_z, stage_name="optical"
         )
 
-    def test_a_conductor_outside_it_is_fine_too(self, study):
-        study.optical(window=(CENTER_Y - 2.0, CENTER_Y + 2.0), window_z=(-1.0, 1.0))
+    def test_a_conductor_inside_the_window_is_fine(self):
+        self._clear([self._metal((-20.6, -20.3), (0.22, 0.72))])
 
-        study.optical._check_conductor_clearance(
-            [self._metal((-20.6, -20.3), (1.1, 1.8))]
-        )
+    def test_a_conductor_outside_it_is_fine_too(self):
+        self._clear([self._metal((-20.6, -20.3), (1.1, 1.8))])
 
-    def test_a_conductor_the_vertical_window_cuts_is_refused(self, study):
-        study.optical(window=(CENTER_Y - 2.0, CENTER_Y + 2.0), window_z=(-1.0, 1.0))
-
+    def test_a_conductor_the_vertical_window_cuts_is_refused(self):
         with pytest.raises(ValueError, match=r"window_z.*cuts through|pad_metal"):
-            study.optical._check_conductor_clearance(
-                [self._metal((-20.6, -20.3), (0.5, 1.5))]
-            )
+            self._clear([self._metal((-20.6, -20.3), (0.5, 1.5))])
 
-    def test_a_conductor_the_in_plane_window_cuts_is_refused(self, study):
-        study.optical(window=(CENTER_Y - 0.5, CENTER_Y + 0.5), window_z=(-1.0, 1.0))
-
+    def test_a_conductor_the_in_plane_window_cuts_is_refused(self):
         with pytest.raises(ValueError, match="pad_metal"):
-            study.optical._check_conductor_clearance(
-                [self._metal((-21.0, -20.3), (0.22, 0.72))]
+            self._clear(
+                [self._metal((-21.0, -20.3), (0.22, 0.72))],
+                window=(CENTER_Y - 0.5, CENTER_Y + 0.5),
             )
 
-    def test_a_dielectric_the_window_cuts_is_not_its_business(self, study):
+    def test_a_dielectric_the_window_cuts_is_not_its_business(self):
         from gsim.common.stack.staircase import SurroundingRegion
 
-        study.optical(window=(CENTER_Y - 2.0, CENTER_Y + 2.0), window_z=(-1.0, 1.0))
-
-        study.optical._check_conductor_clearance(
+        self._clear(
             [
                 SurroundingRegion(
                     name="slab", h=(-30.0, -10.0), z=(0.0, 0.09), material="si"
                 )
             ]
         )
+
+    def test_the_palace_adapter_refuses_through_its_staircase_check(self):
+        from types import SimpleNamespace
+
+        from gsim.modulator import PalaceRoute
+
+        with pytest.raises(ValueError, match="pad_metal"):
+            PalaceRoute().check_staircase(
+                SimpleNamespace(surroundings=[self._metal((-20.6, -20.3), (0.5, 1.5))]),
+                window=self.WINDOW,
+                window_z=self.WINDOW_Z,
+                stage_name="optical",
+            )
+
+    def test_the_stage_hands_every_staircase_to_the_adapter(self, biased, fake_route):
+        """With its Window, before meshing it: the check is the adapter's."""
+        biased.optical(route="palace", n_strips=2, n_guess=2.9)
+
+        biased.optical.run()
+
+        checks = fake_route.made("check_staircase")
+        assert len(checks) == len(biased.charge.result.points)
+        assert checks[0]["window"] == pytest.approx(biased.optical.mode_window())
+        assert checks[0]["window_z"] == pytest.approx(biased.optical.mode_window_z())
+        assert "cathode_metal" in {
+            region.name for region in checks[0]["staircase"].surroundings
+        }
+        assert checks[0]["stage_name"] == "optical"
 
 
 class TestBoundaryCondition:

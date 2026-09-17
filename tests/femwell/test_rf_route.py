@@ -14,6 +14,7 @@ import pytest
 from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
+from gsim.common.modes import Conductor
 from gsim.common.twmzm_report import (
     OpticalPhaseSweep,
     line_params_from_neff,
@@ -75,7 +76,14 @@ def _solve_line_params(mesh_path):
             metallic_boundaries=True,
         )
         n_eff.append(complex(modes[0].n_eff))
-        z0.append(z0_power_current(modes[0], frequency_hz=freq))
+        z0.append(
+            z0_power_current(
+                modes[0],
+                frequency_hz=freq,
+                conductor=Conductor("si", ((-2.0, 2.0), (-0.11, 0.11)), "volume"),
+                mesh=mesh_path,
+            )
+        )
     return line_params_from_neff(FREQS_HZ, n_eff, z0_ohm=z0)
 
 

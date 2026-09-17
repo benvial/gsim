@@ -12,15 +12,18 @@ numbers a designer wants follow: the index shift relative to zero bias,
 which sets modulation efficiency, and the bias-dependent loss.
 
 Either Backend can answer, and the choice changes how the carriers reach
-the solver. femwell — the default Route — carries a continuous
-``eps(x, y)`` projected onto the mesh elements of the drawn device.
-Palace takes piecewise-constant materials per Region and nothing else, so
-selecting it moves the Stage onto a Staircase: the doped silicon replaced
-by Strips tiling it, and the rest of the drawn Cross-section — the slab,
-the metal on the pads, whatever else the plane crosses — redrawn around
-them, in the same Window. Asking for a strip count puts the femwell Route
-on that same Staircase too, which is what makes the two Routes comparable
-at all: they differ then in their materials and in nothing else.
+the solver. A Route that carries a continuous permittivity — femwell,
+the default — solves the drawn device with ``eps(x, y)`` projected onto
+its mesh elements. One that takes piecewise-constant materials per
+Region and nothing else — Palace — moves the Stage onto a Staircase: the
+doped silicon replaced by Strips tiling it, and the rest of the drawn
+Cross-section — the slab, the metal on the pads, whatever else the plane
+crosses — redrawn around them, in the same Window. Asking for a strip
+count puts the femwell Route on that same Staircase too, which is what
+makes the two Routes comparable at all: they differ then in their
+materials and in nothing else. The one choice that is this Stage's own
+is that one — continuous Carrier map or Staircase; what a Route can and
+cannot check, it says for itself.
 
 The selected Route's runtime is checked before the Stage meshes, so a
 missing extra or a missing binary costs nothing but the error message.
@@ -29,7 +32,7 @@ missing extra or a missing binary costs nothing but the error message.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
@@ -38,7 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from gsim.common.stack.staircase import DEFAULT_SI_INDEX, OpticalStripMaterial
 from gsim.modulator.em import EMStage
-from gsim.modulator.route import DEFAULT_PALACE_STRIPS, require_route
+from gsim.modulator.route import DEFAULT_PALACE_STRIPS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -50,6 +53,7 @@ if TYPE_CHECKING:
         SurroundingRegion,
     )
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
+    from gsim.modulator.route import Route
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import CarrierMap
 
@@ -134,16 +138,23 @@ class OpticalStage(EMStage):
     shrink with the strip count, which is the whole claim, and what
     ``tests/modulator/test_representation_gate.py`` holds the Route to.
 
+    The settings every EM Stage takes — ``route``, ``num_modes``,
+    ``min_index``, ``boundary_field_tol``, ``metallic_boundaries``,
+    ``order``, ``n_guess``, the Window and the mesh — are documented on
+    :class:`~gsim.modulator.em.EMStage`, and their defaults there are
+    this Stage's. The metallic wall matters here because the drawn metal
+    inside an optical Window is part of that boundary: a conductor is
+    meshed as an outline with its interior left out (ADR 0003), and
+    femwell applies this one condition to every facet at once, so
+    turning it off leaves the electrodes as open slots while the Palace
+    Route still reads them as perfect conductors — the two Routes would
+    solve different boundary-value problems.
+
     Attributes:
-        route: Backend answering this Stage — ``"femwell"`` (the default)
-            or ``"palace"``. The Palace Route cannot express a continuous
-            permittivity, so selecting it puts the Stage on a Staircase
-            (see ``n_strips``) and leaves the Window-containment ratio
-            NaN, Palace's results carrying no mode fields.
         n_strips: Number of Strips the carrier response is reduced to.
             ``None`` — the default — keeps the continuous ``eps(x, y)``
-            of the drawn device, which only the femwell Route can solve;
-            the Palace Route staircases with
+            of the drawn device, which only a Route carrying continuous
+            materials can solve; a Route that cannot staircases with
             :data:`~gsim.modulator.route.DEFAULT_PALACE_STRIPS` instead.
             Setting a count puts either Route on the Staircase, so the
             two solve the identical problem.
@@ -161,8 +172,6 @@ class OpticalStage(EMStage):
         substrate_thickness_um: Substrate below the Staircase (um).
             Unused when the continuous profile is solved.
         wavelength_um: Vacuum wavelength of the solve (um).
-        num_modes: Number of Modes to solve at each Bias point; the
-            slowest propagating one is reported.
         window: In-plane optical Window (um); derived as a box around the
             rib when unset. A Staircase is clipped to the same Window as
             the continuous profile, so the two Routes mesh one domain.
@@ -175,29 +184,10 @@ class OpticalStage(EMStage):
         z_below_um: Margin below it (um).
         perturbed_regions: Regions whose permittivity the Carrier maps
             perturb; defaults to the device's doped Regions.
-        min_index: Lower bound on ``Re(n_eff)`` for a Mode to count as
-            guided; raise it to the cladding index to reject radiation
-            Modes.
-        boundary_field_tol: Warn above this boundary-field ratio, the sign
-            of a Window too small for the Mode.
-        metallic_boundaries: Enforce a perfect conductor on the domain
-            boundary. On by default because the drawn metal inside an
-            optical Window is part of that boundary: a conductor is
-            meshed as an outline with its interior left out (ADR 0003),
-            and femwell applies this one condition to every facet at
-            once, so turning it off leaves the electrodes as open slots
-            while the Palace Route still reads them as perfect
-            conductors — the two Routes would solve different
-            boundary-value problems. The outer wall takes the same
-            condition, which a contained Mode does not notice; the
-            containment check is what says whether it is contained.
         strip_field_tol: Warn above this fraction of the Mode's power
             falling outside the Strip extent — the sign of Strips too
             narrow to carry the carrier response where the Mode actually
-            is. Measured only on the femwell Route, Palace's results
-            carrying no mode fields.
-        order: Finite-element order of the mode solve.
-        n_guess: Effective-index guess centering the eigenvalue search.
+            is. Measured only by a Route that reads its Mode's fields.
     """
 
     stage_name: ClassVar[str] = "optical"
@@ -205,17 +195,11 @@ class OpticalStage(EMStage):
     n_strips: int | None = Field(default=None, ge=1)
     strip_index: float | None = Field(default=None, gt=0.0)
     wavelength_um: float = Field(default=1.55, gt=0.0)
-    num_modes: int = Field(default=1, ge=1)
     mode_margin_um: float = Field(default=2.0, gt=0.0)
     z_above_um: float = Field(default=1.0, ge=0.0)
     z_below_um: float = Field(default=1.0, ge=0.0)
     perturbed_regions: list[str] | None = None
-    min_index: float = Field(default=1.0, ge=0.0)
-    boundary_field_tol: float = Field(default=0.01, gt=0.0)
     strip_field_tol: float = Field(default=0.5, gt=0.0, le=1.0)
-    metallic_boundaries: bool = True
-    order: int = Field(default=1, ge=1)
-    n_guess: float | None = None
 
     # ------------------------------------------------------------------
     # Derivation
@@ -316,13 +300,15 @@ class OpticalStage(EMStage):
 
         Returns:
             The configured count; ``None`` when the continuous
-            ``eps(x, y)`` is solved instead, which only the femwell Route
-            can do, so the Palace Route falls back to
-            :data:`~gsim.modulator.route.DEFAULT_PALACE_STRIPS`.
+            ``eps(x, y)`` is solved instead, which only a Route carrying
+            continuous materials can do, so a Route that cannot falls
+            back to :data:`~gsim.modulator.route.DEFAULT_PALACE_STRIPS`.
         """
         if self.n_strips is not None:
             return int(self.n_strips)
-        return DEFAULT_PALACE_STRIPS if self.route == "palace" else None
+        if self.route_adapter().continuous_materials:
+            return None
+        return DEFAULT_PALACE_STRIPS
 
     def unperturbed_index(self) -> float:
         """Refractive index the Strips carry before the carriers move it.
@@ -479,17 +465,13 @@ class OpticalStage(EMStage):
         """
         from scipy.constants import speed_of_light as c0
 
-        sim = self.build_staircase_simulation(
+        return self.build_staircase_simulation(
             staircase,
             output_dir=output_dir,
             freq_hz=c0 / (self.wavelength_um * 1e-6),
-            num_modes=self.num_modes,
-            target=self.n_guess if self.n_guess is not None else 0.0,
             window=self.mode_window(),
             window_z=self.mode_window_z(),
         )
-        sim.metallic_boundaries = self.metallic_boundaries
-        return sim
 
     def simulation(self) -> BoundaryModeSim:
         """Assemble the cross-section this Stage meshes.
@@ -503,25 +485,16 @@ class OpticalStage(EMStage):
         """
         from scipy.constants import speed_of_light as c0
 
-        from gsim.palace import BoundaryModeSim
-
         study = self._require_study()
-
-        sim = BoundaryModeSim()
-        sim.set_output_dir(study.stage_dir(self.stage_name))
-        sim.set_stack(study.stack)
-        sim.set_geometry(study.component)
-        sim.set_airbox(**self.airbox)
-        sim.set_cross_section(
-            study.plane,
+        return self.new_simulation(
+            stack=study.stack,
+            component=study.component,
+            plane=study.plane,
+            output_dir=study.stage_dir(self.stage_name),
+            freq_hz=c0 / (self.wavelength_um * 1e-6),
             window=self.mode_window(),
             window_z=self.mode_window_z(),
         )
-        sim.set_boundary_mode(
-            freq=c0 / (self.wavelength_um * 1e-6), num_modes=self.num_modes
-        )
-        sim.metallic_boundaries = self.metallic_boundaries
-        return sim
 
     # ------------------------------------------------------------------
     # Solving
@@ -575,7 +548,7 @@ class OpticalStage(EMStage):
         return epsilon
 
     def _check_strip_coverage(
-        self, mode: Any, bias_v: float, span: tuple[float, float]
+        self, adapter: Route, mode: Any, bias_v: float, span: tuple[float, float]
     ) -> None:
         """Warn when the Mode mostly sits off the carrier-bearing Strips.
 
@@ -583,12 +556,14 @@ class OpticalStage(EMStage):
         reaches. A Mode whose power is largely outside them is answered
         by the surrounding Regions, which carry the drawn materials and
         no carriers at all — so the index shift the bias sweep reports is
-        the shift of whatever fraction of the Mode the Strips do hold.
+        the shift of whatever fraction of the Mode the Strips do hold. A
+        Route that cannot measure the fraction answers NaN and has
+        already said why.
         """
-        from gsim.femwell.adapter import field_fraction_outside
-
-        fraction = field_fraction_outside(mode, span)
-        if fraction <= self.strip_field_tol:
+        fraction = adapter.strip_fraction_outside(
+            mode, span, stage_name=self.stage_name
+        )
+        if np.isnan(fraction) or fraction <= self.strip_field_tol:
             return
         warnings.warn(
             f"The {self.stage_name} stage's staircase at V = {bias_v:g} "
@@ -603,63 +578,12 @@ class OpticalStage(EMStage):
             stacklevel=2,
         )
 
-    def _check_conductor_clearance(
-        self, surroundings: Sequence[SurroundingRegion]
-    ) -> None:
-        """Refuse a Staircase whose metal is sliced by the Window.
-
-        A drawn conductor is meshed as an outline with its interior left
-        out of the domain (ADR 0003). When the Window cuts through one,
-        that outline runs along the Window's own outer wall, and the
-        Palace Route's meshing does not survive it — the solver aborts
-        rather than reporting anything. The femwell Route meshes it, so
-        this is a Route limitation and not a modelling one, which is why
-        it is checked here and not in the Staircase.
-
-        Args:
-            surroundings: The Regions redrawn around the Strips.
-
-        Raises:
-            ValueError: When a conductor crosses the Window boundary on
-                either axis.
-        """
-        window, window_z = self.mode_window(), self.mode_window_z()
-        for region in surroundings:
-            if region.layer_type not in ("conductor", "via"):
-                continue
-            for extent, bounds, axis in (
-                (region.h, window, "window"),
-                (region.z, window_z, "window_z"),
-            ):
-                inside = extent[0] >= bounds[0] and extent[1] <= bounds[1]
-                outside = extent[1] <= bounds[0] or extent[0] >= bounds[1]
-                if inside or outside:
-                    continue
-                raise ValueError(
-                    f"The {self.stage_name} stage's palace route cannot "
-                    f"solve this staircase: the drawn conductor "
-                    f"'{region.name}' spans {extent[0]:.4g}..{extent[1]:.4g} "
-                    f"um, which the {axis} {bounds[0]:.4g}..{bounds[1]:.4g} "
-                    "um cuts through, so its perfect-conductor outline "
-                    "would run along the window's own wall. Widen the "
-                    f"window to contain it (study.{self.stage_name}"
-                    f"({axis}=...)) or narrow it to leave the conductor "
-                    f"out, or solve with study.{self.stage_name}"
-                    "(route='femwell'), which meshes it."
-                )
-
-    def _check_containment(self, ratio: float, bias_v: float) -> None:
-        """Warn when a solved Mode still has field at the Window boundary."""
-        if ratio > self.boundary_field_tol:
-            warnings.warn(
-                f"The {self.stage_name} stage's mode at V = {bias_v:g} still "
-                f"carries {ratio:.1%} of its peak field at the window "
-                f"boundary (tolerance {self.boundary_field_tol:.1%}); its "
-                "effective index is a clipped mode's. Widen the window with "
-                f"study.{self.stage_name}(mode_margin_um=...) / "
-                "(z_above_um=..., z_below_um=...) or set it explicitly.",
-                stacklevel=2,
-            )
+    def window_hint(self) -> str:
+        """A clipped optical Mode wants a wider derived Window."""
+        return (
+            f"Widen the window with study.{self.stage_name}(mode_margin_um=...) / "
+            "(z_above_um=..., z_below_um=...) or set it explicitly."
+        )
 
     def _sweep_from(
         self,
@@ -712,166 +636,105 @@ class OpticalStage(EMStage):
             )
         return responses
 
-    def _solve_continuous(self) -> OpticalSweep:
+    def _solve_continuous(self, adapter: Route) -> OpticalSweep:
         """Solve the drawn device with a continuous ``eps(x, y)``.
 
         One mesh serves the whole sweep: the geometry does not move with
         the bias, only the per-element permittivity the Carrier maps
         imply.
+
+        Args:
+            adapter: The Route answering this run; one that carries
+                continuous materials.
         """
         import meshio
+        from scipy.constants import speed_of_light as c0
 
-        from gsim.common.modes import select_line_mode
-        from gsim.femwell.adapter import (
-            boundary_field_ratio,
-            epsilon_by_region,
-            solve_modes,
-        )
+        from gsim.femwell.adapter import epsilon_by_region
 
         study = self._require_study()
         responses = self._bias_sweep()
 
         sim = self.simulation()
         sim.mesh(**self.mesh)
-        mesh_path = sim.mesh_path
-        mesh = meshio.read(str(mesh_path))
+        mesh = meshio.read(str(sim.mesh_path))
         base_epsilon = epsilon_by_region(
             mesh, study.stack, wavelength_um=self.wavelength_um
         )
 
         solved: list[tuple[float, complex, float]] = []
         for point in responses.points:
-            modes = solve_modes(
-                mesh_path,
-                epsilon=self._element_epsilon(mesh, base_epsilon, point.carriers),
-                wavelength_um=self.wavelength_um,
-                num_modes=self.num_modes,
-                order=self.order,
-                metallic_boundaries=self.metallic_boundaries,
-                n_guess=self.n_guess,
-            )
-            mode = select_line_mode(modes, min_index=self.min_index)
-            ratio = boundary_field_ratio(mode)
-            self._check_containment(ratio, point.bias_v)
-            solved.append((point.bias_v, complex(mode.n_eff), ratio))
-        return self._sweep_from(responses.contact, solved)
-
-    def _staircase_modes(
-        self,
-        sim: BoundaryModeSim,
-        staircase: StaircaseCrossSection,
-        *,
-        binary: Path | None,
-        verbose: bool,
-    ) -> Sequence[Any]:
-        """Solve one meshed Staircase on the selected Route.
-
-        Both Routes read the Strip materials off the same Staircase and
-        the same mesh; they differ only in who does the algebra.
-
-        Args:
-            sim: The meshed Staircase simulation.
-            staircase: The Staircase it was built from.
-            binary: Palace executable, on the Palace Route; ``None`` on
-                the femwell Route, which needs none.
-            verbose: Stream the Backend's own output.
-
-        Returns:
-            Every Mode the Route solved.
-        """
-        from scipy.constants import speed_of_light as c0
-
-        if self.route == "palace":
-            from gsim.modulator.route import palace_binary, solve_palace_modes
-
-            return solve_palace_modes(
+            modes = adapter.solve(
                 sim,
                 freq_hz=c0 / (self.wavelength_um * 1e-6),
                 num_modes=self.num_modes,
-                binary=palace_binary(binary, stage_name=self.stage_name),
-                target=self.n_guess if self.n_guess is not None else 0.0,
-                verbose=verbose,
-            ).modes
+                target=self.n_guess,
+                order=self.order,
+                metallic_boundaries=self.metallic_boundaries,
+                verbose=self._is_verbose(),
+                stage_name=self.stage_name,
+                epsilon=self._element_epsilon(mesh, base_epsilon, point.carriers),
+            )
+            mode, ratio = self.select_mode(modes, adapter, at=f"V = {point.bias_v:g}")
+            solved.append((point.bias_v, complex(mode.n_eff), ratio))
+        return self._sweep_from(responses.contact, solved)
 
-        import meshio
-
-        from gsim.femwell.adapter import epsilon_by_region, solve_modes
-
-        mesh = meshio.read(str(sim.mesh_path))
-        modes: Sequence[Any] = solve_modes(
-            sim.mesh_path,
-            epsilon=epsilon_by_region(
-                mesh, staircase.stack(), wavelength_um=self.wavelength_um
-            ),
-            wavelength_um=self.wavelength_um,
-            num_modes=self.num_modes,
-            order=self.order,
-            metallic_boundaries=self.metallic_boundaries,
-            n_guess=self.n_guess,
-        )
-        return modes
-
-    def _solve_staircase(self, binary: Path | None) -> OpticalSweep:
-        """Solve the Staircase of every Bias point, on either Route.
+    def _solve_staircase(self, adapter: Route) -> OpticalSweep:
+        """Solve the Staircase of every Bias point, on the Route.
 
         Each Bias point gets its own Staircase, and its own mesh under its
         own directory: the Strip edges do not move with the bias but the
-        Strip materials do, and Palace reads its materials off the meshed
-        stack rather than from an array handed in per solve.
+        Strip materials do, and a Backend may read its materials off the
+        meshed stack rather than from an array handed in per solve.
 
         Args:
-            binary: Palace executable, on the Palace Route.
+            adapter: The Route answering this run.
         """
-        from gsim.common.modes import select_line_mode
-        from gsim.modulator.route import (
-            containment_unmeasurable,
-            mode_boundary_ratio,
-        )
+        from scipy.constants import speed_of_light as c0
 
         study = self._require_study()
         responses = self._bias_sweep()
         stage_dir = study.stage_dir(self.stage_name)
         verbose = self._is_verbose()
-        if self.route == "palace":
-            if self.n_strips is None:
-                warnings.warn(
-                    f"The {self.stage_name} stage's palace route cannot carry "
-                    "a continuous permittivity, so it is solving a staircase "
-                    f"of {DEFAULT_PALACE_STRIPS} strips instead of the "
-                    "continuous eps(x, y) the femwell route would have used. "
-                    f"Choose the count with study.{self.stage_name}"
-                    "(n_strips=...).",
-                    stacklevel=2,
-                )
-            warnings.warn(containment_unmeasurable(self.stage_name), stacklevel=2)
+        if self.n_strips is None:
             warnings.warn(
-                f"The {self.stage_name} stage's palace route cannot check "
-                "how much of the mode sits outside the strip extent either, "
-                "for the same reason: no mode fields come back. Re-solve "
-                f"with study.{self.stage_name}(route='femwell') at the same "
-                "strip count to have both checks run on the identical "
-                "staircase.",
+                f"The {self.stage_name} stage's {adapter.name} route cannot carry "
+                "a continuous permittivity, so it is solving a staircase "
+                f"of {DEFAULT_PALACE_STRIPS} strips instead of the "
+                "continuous eps(x, y) a route carrying one would have used. "
+                f"Choose the count with study.{self.stage_name}"
+                "(n_strips=...).",
                 stacklevel=2,
             )
 
         solved: list[tuple[float, complex, float]] = []
         for index, point in enumerate(responses.points):
             staircase = self.staircase(point)
-            if self.route == "palace":
-                self._check_conductor_clearance(staircase.surroundings)
+            adapter.check_staircase(
+                staircase,
+                window=self.mode_window(),
+                window_z=self.mode_window_z(),
+                stage_name=self.stage_name,
+            )
             point_dir = stage_dir / f"bias_{index:02d}"
             point_dir.mkdir(parents=True, exist_ok=True)
             sim = self.staircase_simulation(staircase, output_dir=point_dir)
             sim.mesh(**self.mesh)
 
-            modes = self._staircase_modes(
-                sim, staircase, binary=binary, verbose=verbose
+            modes = adapter.solve(
+                sim,
+                freq_hz=c0 / (self.wavelength_um * 1e-6),
+                num_modes=self.num_modes,
+                target=self.n_guess,
+                order=self.order,
+                metallic_boundaries=self.metallic_boundaries,
+                verbose=verbose,
+                stage_name=self.stage_name,
             )
-            mode = select_line_mode(modes, min_index=self.min_index)
-            ratio = mode_boundary_ratio(mode)
-            self._check_containment(ratio, point.bias_v)
-            if self.route != "palace":
-                self._check_strip_coverage(mode, point.bias_v, staircase.strip_span)
+            mode, ratio = self.select_mode(modes, adapter, at=f"V = {point.bias_v:g}")
+            self._check_strip_coverage(
+                adapter, mode, point.bias_v, staircase.strip_span
+            )
             solved.append((point.bias_v, complex(mode.n_eff), ratio))
         return self._sweep_from(responses.contact, solved)
 
@@ -879,7 +742,7 @@ class OpticalStage(EMStage):
         """Solve the Mode at every Bias point, on the selected Route."""
         # Before the charge solve and before meshing: a user whose Route
         # cannot run should pay nothing to find that out.
-        binary = require_route(self.route, stage_name=self.stage_name)
+        adapter = self.check_route()
         if self.effective_n_strips() is None:
-            return self._solve_continuous()
-        return self._solve_staircase(binary)
+            return self._solve_continuous(adapter)
+        return self._solve_staircase(adapter)

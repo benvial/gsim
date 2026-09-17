@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 
 from gsim.common.modes import NoLineModeError
-from gsim.modulator import Device, Study
+from gsim.modulator import Device, PalaceRoute, Study
 
 from .conftest import (
     CENTER_Y,
@@ -338,11 +338,10 @@ NATIVE_Z0_RTOL = 0.05
 @pytest.fixture(scope="module")
 def native_solve(tmp_path_factory):
     """The ticket-17 cross-section solved once, both impedance readings kept."""
-    from gsim.modulator.route import (
-        declare_impedance_paths,
+    from gsim.modulator.palace_route import (
         field_line_impedance,
         native_line_impedance,
-        palace_binary,
+        require_palace_binary,
         solve_palace_modes,
     )
 
@@ -358,23 +357,27 @@ def native_solve(tmp_path_factory):
     staircase = stage.staircase()
     sim = stage.simulation(staircase)
     sim.mesh(**stage.mesh)
-    paths = stage.impedance_paths(sim, staircase)
-    index = declare_impedance_paths(sim, paths)
+    adapter = PalaceRoute()
+    signal, return_ = stage.line_conductors(staircase)
+    adapter.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
+    index = adapter.impedance_index
+    assert index is not None
     solve = solve_palace_modes(
         sim,
         freq_hz=10e9,
         num_modes=4,
-        binary=palace_binary(None, stage_name="rf"),
+        binary=require_palace_binary(stage_name="rf"),
         target=RF_GATE_N_GUESS,
         save=4,
     )
-    mode = stage._pick_line_mode(solve.modes, 10e9)
-    h_span, v_span = staircase.electrode_extent(stage.signal_electrode())
-    native = native_line_impedance(solve.results, mode, index=index, stage_name="rf")
+    mode, _ratio = stage.select_mode(solve.modes, adapter, at="f = 10 GHz")
+    h_span, v_span = signal.extent
+    reading = native_line_impedance(solve.results, mode, index=index)
+    native = None if reading is None else reading.z0_ohm
     fields = field_line_impedance(
         sim, mode, h_span=h_span, v_span=v_span, stage_name="rf"
     )
-    return paths, native, fields
+    return sim.mode_paths, native, fields
 
 
 class TestNativeImpedance:

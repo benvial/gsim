@@ -2,11 +2,14 @@
 
 Both EM Stages answer the same question through either Backend, and the
 choice is a Stage setting. What is hermetic about that choice — the
-default, the values accepted, what a strip count means on each Stage, the
-Staircase the optical Stage builds when it is routed to Palace, and the
-error a user selecting a Route they cannot run gets — is under test here.
-The Routes actually agreeing on a number is the runtime-gated
-``test_palace_route_runtime.py``.
+default, the values accepted, the registry an adapter is found in, what
+a strip count means on each Stage, the Staircase the optical Stage
+builds when it is routed to Palace, and the error a user selecting a
+Route they cannot run gets — is under test here, as is everything the
+Palace adapter does around a Palace run without the binary: the crash
+salvage, the abort report, the impedance paths and the readings off
+Palace's tables. The Routes actually agreeing on a number is the
+runtime-gated ``test_palace_route_runtime.py``.
 """
 
 from __future__ import annotations
@@ -18,10 +21,43 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from gsim.common.modes import Conductor
 from gsim.modulator import DEFAULT_PALACE_STRIPS, OpticalStage, RFStage
 from gsim.palace.results import PalaceTextResults
 
 from .conftest import SLAB
+
+
+class TestRouteRegistry:
+    def test_each_name_resolves_to_its_adapter(self):
+        from gsim.modulator import FemwellRoute, PalaceRoute
+        from gsim.modulator.route import route_for
+
+        assert isinstance(route_for("femwell"), FemwellRoute)
+        assert isinstance(route_for("palace"), PalaceRoute)
+
+    def test_every_run_gets_a_fresh_adapter(self):
+        from gsim.modulator.route import route_for
+
+        assert route_for("palace") is not route_for("palace")
+
+    def test_an_unregistered_name_is_reported(self):
+        from gsim.modulator.route import route_for
+
+        with pytest.raises(ValueError, match="comsol"):
+            route_for("comsol")  # type: ignore[arg-type]
+
+    def test_a_registered_fake_is_what_the_stage_gets(self, biased, fake_route):
+        biased.rf(route="palace")
+        assert isinstance(biased.rf.route_adapter(), fake_route)
+
+    def test_the_adapters_say_what_they_can_express(self):
+        from gsim.modulator import FemwellRoute, PalaceRoute
+
+        assert FemwellRoute.continuous_materials is True
+        assert PalaceRoute.continuous_materials is False
+        assert FemwellRoute.conductor_model == "volume"
+        assert PalaceRoute.conductor_model == "pec"
 
 
 class TestRouteSelection:
@@ -173,7 +209,7 @@ class TestSavedFieldsAreTheSelectedMode:
     def test_fields_matching_the_mode_table_pass_quietly(self):
         import warnings
 
-        from gsim.modulator.route import PalaceMode, _check_field_is_the_mode
+        from gsim.modulator.palace_route import PalaceMode, _check_field_is_the_mode
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")
@@ -184,7 +220,7 @@ class TestSavedFieldsAreTheSelectedMode:
             )
 
     def test_fields_from_another_mode_are_reported(self):
-        from gsim.modulator.route import PalaceMode, _check_field_is_the_mode
+        from gsim.modulator.palace_route import PalaceMode, _check_field_is_the_mode
 
         with pytest.warns(UserWarning, match="different mode's fields"):
             _check_field_is_the_mode(
@@ -197,7 +233,7 @@ class TestSavedFieldsAreTheSelectedMode:
         """Nothing to compare is not the same as a mismatch."""
         import warnings
 
-        from gsim.modulator.route import PalaceMode, _check_field_is_the_mode
+        from gsim.modulator.palace_route import PalaceMode, _check_field_is_the_mode
 
         field = self._field(n_from_fields=2.4)
         field = type(field)(
@@ -280,7 +316,7 @@ class TestCrashedRunSalvage:
     """
 
     def test_a_complete_table_is_used_and_the_crash_reported(self, tmp_path):
-        from gsim.modulator.route import _salvage_mode_table
+        from gsim.modulator.palace_route import _salvage_mode_table
 
         sim = FakeSim(tmp_path, stale=mode_table(4))
         with pytest.warns(UserWarning, match="exited abnormally"):
@@ -295,7 +331,7 @@ class TestCrashedRunSalvage:
         assert text.modes[1]["n_eff"].real == pytest.approx(2.1)
 
     def test_a_truncated_table_is_not_an_answer(self, tmp_path):
-        from gsim.modulator.route import _salvage_mode_table
+        from gsim.modulator.palace_route import _salvage_mode_table
 
         sim = FakeSim(tmp_path, stale=mode_table(2))
         assert (
@@ -304,7 +340,7 @@ class TestCrashedRunSalvage:
         )
 
     def test_no_output_at_all_is_not_an_answer(self, tmp_path):
-        from gsim.modulator.route import _salvage_mode_table
+        from gsim.modulator.palace_route import _salvage_mode_table
 
         sim = FakeSim(tmp_path)
         assert (
@@ -317,7 +353,7 @@ class TestSolvingThroughACrash:
     """What ``solve_palace_modes`` does around a run that exits abnormally."""
 
     def _solve(self, sim, num_modes: int = 4):
-        from gsim.modulator.route import solve_palace_modes
+        from gsim.modulator.palace_route import solve_palace_modes
 
         return solve_palace_modes(
             sim, freq_hz=10e9, num_modes=num_modes, target=2.0, save=1, binary="palace"
@@ -371,7 +407,7 @@ class TestAbortedBinaryIsReported:
         )
 
     def _solve(self, sim):
-        from gsim.modulator.route import solve_palace_modes
+        from gsim.modulator.palace_route import solve_palace_modes
 
         return solve_palace_modes(
             sim,
@@ -442,7 +478,7 @@ DOMAIN = ((-25.0, -15.0), (-3.0, 2.0))
 
 def impedance_paths(**overrides):
     """The paths sized for the electrodes above, with any of them replaced."""
-    from gsim.modulator.route import line_impedance_paths
+    from gsim.modulator.palace_route import line_impedance_paths
 
     kwargs = {"signal": SIGNAL, "ground": GROUND, "domain": DOMAIN}
     kwargs.update(overrides)
@@ -534,7 +570,7 @@ class TestImpedancePaths:
 
 class TestDeclaringThePaths:
     def test_the_paths_become_a_mode_path_of_the_sim(self, biased):
-        from gsim.modulator.route import declare_impedance_paths
+        from gsim.modulator.palace_route import declare_impedance_paths
 
         sim = biased.rf.simulation()
         paths = impedance_paths()
@@ -549,7 +585,7 @@ class TestDeclaringThePaths:
         assert all(len(p) == 2 for p in path.voltage_path)
 
     def test_declaring_twice_replaces_rather_than_stacks(self, biased):
-        from gsim.modulator.route import declare_impedance_paths
+        from gsim.modulator.palace_route import declare_impedance_paths
 
         sim = biased.rf.simulation()
 
@@ -561,7 +597,7 @@ class TestDeclaringThePaths:
 
     def test_the_index_is_where_the_sim_put_it(self, biased):
         """A path declared after another is read under its own index."""
-        from gsim.modulator.route import declare_impedance_paths
+        from gsim.modulator.palace_route import declare_impedance_paths
 
         sim = biased.rf.simulation()
         sim.add_impedance_path("probe", voltage=[[-20.0, 0.1], [-20.0, 0.2]])
@@ -571,6 +607,9 @@ class TestDeclaringThePaths:
 
 #: ``mode -> (Z_PV, Z_VI)`` of the canned ``mode-Z.csv``.
 NATIVE_TABLE = {1: (100.0, 80.0), 2: (200.0, 120.0)}
+
+#: The signal electrode of the geometry above, as a current integral names it.
+SIGNAL_CONDUCTOR = Conductor(name="electrode_low", extent=SIGNAL, model="pec")
 
 
 def impedance_tables(rows=None, *, z_vi: bool = True, index: int = 1):
@@ -599,101 +638,88 @@ class TestNativeImpedance:
 
     def test_it_is_the_power_current_impedance_of_the_selected_mode(self):
         """``Z_VI^2 / Z_PV`` is ``2P/|I|^2``: the definition both Routes use."""
-        from gsim.modulator.route import PalaceMode, native_line_impedance
+        from gsim.modulator.palace_route import PalaceMode, native_line_impedance
 
-        z0 = native_line_impedance(
-            impedance_tables(), PalaceMode(2.1 - 1e-5j, 2), index=1, stage_name="rf"
+        reading = native_line_impedance(
+            impedance_tables(), PalaceMode(2.1 - 1e-5j, 2), index=1
         )
 
-        assert z0 == pytest.approx(120.0**2 / 200.0)
+        assert reading is not None
+        assert reading.z0_ohm == pytest.approx(120.0**2 / 200.0)
+        assert reading.n_eff == 2.1 - 1e-5j
+        assert reading.wall_mode is False
 
     def test_it_reads_under_the_index_the_path_was_declared_at(self):
-        from gsim.modulator.route import PalaceMode, native_line_impedance
+        from gsim.modulator.palace_route import PalaceMode, native_line_impedance
 
         results = impedance_tables(index=3)
-        assert (
-            native_line_impedance(results, PalaceMode(2.0, 1), index=1, stage_name="rf")
-            is None
-        )
-        assert native_line_impedance(
-            results, PalaceMode(2.0, 1), index=3, stage_name="rf"
-        ) == pytest.approx(80.0**2 / 100.0)
+        assert native_line_impedance(results, PalaceMode(2.0, 1), index=1) is None
+        reading = native_line_impedance(results, PalaceMode(2.0, 1), index=3)
+        assert reading is not None
+        assert reading.z0_ohm == pytest.approx(80.0**2 / 100.0)
 
     def test_a_gap_carrying_no_voltage_is_reported(self):
         """``|V| |I| << 2P``: the electrodes sit at one potential."""
-        from gsim.modulator.route import PalaceMode, native_line_impedance
+        from gsim.modulator.palace_route import PalaceMode, native_line_impedance
 
-        with pytest.warns(UserWarning, match="between them and the window wall"):
-            z0 = native_line_impedance(
-                impedance_tables({1: (2.5e-8, 2.1e-3)}),
-                PalaceMode(2.03 - 6e-7j, 1),
-                index=1,
-                stage_name="rf",
-            )
+        reading = native_line_impedance(
+            impedance_tables({1: (2.5e-8, 2.1e-3)}),
+            PalaceMode(2.03 - 6e-7j, 1),
+            index=1,
+        )
 
+        assert reading is not None
+        assert reading.wall_mode is True
+        assert "between them and the window wall" in reading.diagnostic
         # The impedance itself is still the power-current one.
-        assert z0 == pytest.approx(2.1e-3**2 / 2.5e-8)
+        assert reading.z0_ohm == pytest.approx(2.1e-3**2 / 2.5e-8)
 
     def test_a_lossy_line_mode_is_not_reported(self):
         """``Z_PV / Z_PI`` of 0.4 is a lossy line, not a wall mode."""
-        import warnings
+        from gsim.modulator.palace_route import PalaceMode, native_line_impedance
 
-        from gsim.modulator.route import PalaceMode, native_line_impedance
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            native_line_impedance(
-                impedance_tables({1: (1.63, 2.62)}),
-                PalaceMode(31.9 - 31.9j, 1),
-                index=1,
-                stage_name="rf",
-            )
+        reading = native_line_impedance(
+            impedance_tables({1: (1.63, 2.62)}), PalaceMode(31.9 - 31.9j, 1), index=1
+        )
+        assert reading is not None
+        assert reading.wall_mode is False
 
     def test_a_loop_enclosing_no_current_is_no_answer(self):
         """``Z_VI = 0`` would make the impedance zero, which is no reading."""
-        from gsim.modulator.route import PalaceMode, native_line_impedance
+        from gsim.modulator.palace_route import PalaceMode, native_line_impedance
 
         assert (
             native_line_impedance(
                 impedance_tables({1: (100.0, 0.0)}),
                 PalaceMode(2.0, 1),
                 index=1,
-                stage_name="rf",
             )
             is None
         )
 
     def test_no_table_is_no_answer(self):
-        from gsim.modulator.route import PalaceMode, native_line_impedance
+        from gsim.modulator.palace_route import PalaceMode, native_line_impedance
 
-        assert (
-            native_line_impedance(
-                mode_table(2), PalaceMode(2.0, 1), index=1, stage_name="rf"
-            )
-            is None
-        )
+        assert native_line_impedance(mode_table(2), PalaceMode(2.0, 1), index=1) is None
 
     def test_a_table_without_the_current_is_no_answer(self):
         """``Z_PV`` alone is a different definition, not a fallback."""
-        from gsim.modulator.route import PalaceMode, native_line_impedance
+        from gsim.modulator.palace_route import PalaceMode, native_line_impedance
 
         assert (
             native_line_impedance(
                 impedance_tables(z_vi=False),
                 PalaceMode(2.0, 1),
                 index=1,
-                stage_name="rf",
             )
             is None
         )
 
     def test_a_mode_the_table_does_not_carry_is_no_answer(self):
-        from gsim.modulator.route import PalaceMode, native_line_impedance
+        from gsim.modulator.palace_route import PalaceMode, native_line_impedance
 
         assert (
-            native_line_impedance(
-                impedance_tables(), PalaceMode(2.0, 3), index=1, stage_name="rf"
-            )
+            native_line_impedance(impedance_tables(), PalaceMode(2.0, 3), index=1)
             is None
         )
 
@@ -701,131 +727,110 @@ class TestNativeImpedance:
         """With the table in the run's results, no field file is read."""
         import warnings
 
-        from gsim.modulator.route import PalaceMode, PalaceSolve, palace_line_impedance
+        from gsim.modulator.palace_route import (
+            PalaceMode,
+            PalaceSolve,
+            palace_line_impedance,
+        )
 
         mode = PalaceMode(2.0, 1)
         solve = PalaceSolve(modes=[mode], results=impedance_tables())
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            z0 = palace_line_impedance(
+            reading = palace_line_impedance(
                 FakeSim(tmp_path),
                 solve,
                 mode,
                 index=1,
-                h_span=(-22.6, -20.6),
-                v_span=(0.0, 0.5),
+                signal=SIGNAL_CONDUCTOR,
                 stage_name="rf",
             )
 
-        assert z0 == pytest.approx(80.0**2 / 100.0)
-        assert z0.imag == 0.0
+        assert reading.z0_ohm == pytest.approx(80.0**2 / 100.0)
+        assert reading.z0_ohm.imag == 0.0
+        assert reading.wall_mode is False
 
     def test_without_a_declared_path_the_fields_are_read_and_their_absence_reported(
         self, tmp_path
     ):
         """The fallback and its NaN contract stay."""
-        from gsim.modulator.route import PalaceMode, PalaceSolve, palace_line_impedance
+        from gsim.modulator.palace_route import (
+            PalaceMode,
+            PalaceSolve,
+            palace_line_impedance,
+        )
 
         mode = PalaceMode(2.0, 1)
         solve = PalaceSolve(modes=[mode], results=impedance_tables())
         with pytest.warns(UserWarning, match="could not read mode 1's saved fields"):
-            z0 = palace_line_impedance(
+            reading = palace_line_impedance(
                 FakeSim(tmp_path),
                 solve,
                 mode,
                 index=None,
-                h_span=(-22.6, -20.6),
-                v_span=(0.0, 0.5),
+                signal=SIGNAL_CONDUCTOR,
                 stage_name="rf",
             )
 
-        assert np.isnan(z0.real)
+        assert np.isnan(reading.z0_ohm.real)
+        assert reading.wall_mode is None
 
 
-class TestTheStageDeclaresThePaths:
-    def test_the_palace_route_solves_with_the_paths_declared(self, biased, monkeypatch):
-        """The RF Stage sizes the paths from its Staircase, not by hand."""
-        from pathlib import Path
+class TestPalaceRoutePreparesTheLine:
+    """The Palace adapter sizes the paths from the electrodes, not by hand."""
 
-        from gsim.modulator import route
-
-        seen: dict[str, list] = {}
-
-        def fake_extent(_sim):
-            return ((-30.0, -10.0), (-3.0, 2.0))
-
-        def fake_solve(sim, **kwargs):
-            seen["paths"] = list(sim.mode_paths)
-            seen["save"] = kwargs["save"]
-            mode = route.PalaceMode(n_eff=2.0 - 1e-3j, mode_id=1)
-            return route.PalaceSolve(modes=[mode], results=mode_table(1))
-
-        monkeypatch.setattr(route, "mesh_extent", fake_extent)
-        monkeypatch.setattr(route, "solve_palace_modes", fake_solve)
-        monkeypatch.setattr(
-            route, "palace_line_impedance", lambda *_a, **_k: complex(50.0)
-        )
-
-        biased.rf(route="palace", frequencies_hz=[10e9], n_strips=3)
+    def _meshed(self, biased, **settings):
+        biased.rf(route="palace", frequencies_hz=[10e9], n_strips=3, **settings)
         staircase = biased.rf.staircase()
         sim = biased.rf.simulation(staircase)
-        with pytest.warns(UserWarning, match="cannot check window containment"):
-            n_eff, z0 = biased.rf._solve_palace(sim, staircase, Path("palace"))
+        sim.mesh(**biased.rf.mesh)
+        return sim, staircase
 
-        assert n_eff == [2.0 - 1e-3j]
-        assert z0 == [50.0]
-        (path,) = seen["paths"]
-        (h_lo, h_hi), (v_lo, v_hi) = staircase.electrode_extent(
-            biased.rf.signal_electrode()
-        )
+    def test_the_paths_are_declared_on_the_meshed_simulation(self, biased):
+        from gsim.modulator import PalaceRoute
+
+        sim, staircase = self._meshed(biased)
+        signal, return_ = biased.rf.line_conductors(staircase)
+        adapter = PalaceRoute()
+
+        adapter.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
+
+        assert adapter.impedance_index == 1
+        (path,) = sim.mode_paths
+        (h_lo, h_hi), (v_lo, v_hi) = signal.extent
         # The voltage path leaves the signal electrode's inner face at
         # its mid-height; the loop surrounds that electrode.
         assert path.voltage_path[0][1] == pytest.approx(0.5 * (v_lo + v_hi))
         loop_h = [p[0] for p in path.current_path]
         assert min(loop_h) < h_lo
         assert max(loop_h) > h_hi
-        # Palace's tables answer, so no fields need saving.
-        assert seen["save"] == 0
 
-    def test_paths_that_cannot_be_sized_leave_the_solve_to_the_fields(
-        self, biased, monkeypatch
-    ):
+    def test_a_signal_the_window_clips_leaves_the_reading_to_the_fields(self, biased):
         """A Window clipping an electrode is no reason to refuse the solve."""
-        import warnings
-        from pathlib import Path
+        from gsim.modulator import PalaceRoute
 
-        from gsim.modulator import route
-
-        seen: dict[str, list] = {}
-
-        def fake_solve(sim, **kwargs):
-            seen["paths"] = list(sim.mode_paths)
-            seen["save"] = kwargs["save"]
-            mode = route.PalaceMode(n_eff=2.0 - 1e-3j, mode_id=1)
-            return route.PalaceSolve(modes=[mode], results=mode_table(1))
-
-        # The mesh stops short of the signal electrode's outer face.
-        monkeypatch.setattr(
-            route, "mesh_extent", lambda _sim: ((-22.0, -10.0), (-3.0, 2.0))
-        )
-        monkeypatch.setattr(route, "solve_palace_modes", fake_solve)
-        monkeypatch.setattr(
-            route, "palace_line_impedance", lambda *_a, **_k: complex(50.0)
-        )
-
-        biased.rf(route="palace", frequencies_hz=[10e9], n_strips=3)
-        staircase = biased.rf.staircase()
+        sim, staircase = self._meshed(biased, conductor_model="volume")
+        signal, return_ = biased.rf.line_conductors(staircase)
+        # Pretend the mesh stops short of the signal electrode's outer face.
+        biased.rf(window=(signal.extent[0][0] + 0.5, signal.extent[0][1] + 10.0))
         sim = biased.rf.simulation(staircase)
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            n_eff, z0 = biased.rf._solve_palace(sim, staircase, Path("palace"))
-        assert any(
-            "read off the saved fields instead" in str(w.message) for w in caught
-        )
+        sim.mesh(**biased.rf.mesh)
+        adapter = PalaceRoute()
 
-        assert n_eff == [2.0 - 1e-3j]
-        assert z0 == [50.0]
-        assert seen["paths"] == []
-        # Every Mode is saved: which one the fields are read for is not
-        # known until they are all solved.
-        assert seen["save"] == biased.rf.num_modes
+        with pytest.warns(UserWarning, match="read off the saved fields instead"):
+            adapter.prepare_line(sim, signal=signal, return_=return_, stage_name="rf")
+
+        assert adapter.impedance_index is None
+        assert sim.mode_paths == []
+
+    def test_a_line_without_a_single_return_is_read_off_the_fields(self, biased):
+        from gsim.modulator import PalaceRoute
+
+        sim, staircase = self._meshed(biased)
+        signal, _ = biased.rf.line_conductors(staircase)
+        adapter = PalaceRoute()
+
+        with pytest.warns(UserWarning, match="no single return electrode"):
+            adapter.prepare_line(sim, signal=signal, return_=None, stage_name="rf")
+
+        assert adapter.impedance_index is None

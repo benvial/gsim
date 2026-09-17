@@ -1,35 +1,46 @@
-"""What the two EM Stages share: a Staircase, and the Cross-section of it.
+"""What the two EM Stages share: a Staircase, a Route, and a Mode to check.
 
 The optical and the RF Stage ask different questions, but both answer them
 on a Staircase — the Bias point's Carrier map reduced to Strips tiling the
 Junction extent, drawn as a component of its own and meshed through the
-native ``BoundaryMode`` pipeline. The Strips, the extent they tile, the
-substrate under them and the plane cut through the middle of them are the
-same decisions in both Stages, so they are made once here.
+native ``BoundaryMode`` pipeline — and both reach their Backend through
+the same :class:`~gsim.modulator.route.Route`. The Strips, the extent they
+tile, the substrate under them, the plane cut through the middle of them,
+the simulation that meshes them, the Route that solves it and the check
+that the selected Mode is contained by its Window (ADR 0002) are the same
+decisions in both Stages, so they are made once here.
 
 What differs is the material each Stage adds to a Strip — the optical
 wavelength and unperturbed index, or the RF lattice permittivity and top
 frequency — and that is the one typed value each Stage answers
 :meth:`EMStage.strip_material` with. The coupling itself is the carriers
-Stage's, handed to the Staircase whole.
+Stage's, handed to the Staircase whole. The settings both Stages take —
+how many Modes to solve, the guided-index floor, the boundary-field
+tolerance, the metallic wall, the element order and the index guess —
+are declared here once, each Stage restating only the defaults its own
+physics wants.
 """
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from gsim.common.stack.staircase import STRIP_LENGTH_UM, StaircaseDrawing
 from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
-from gsim.modulator.route import EMRoute
+from gsim.modulator.route import EMRoute, Route, route_for
 from gsim.modulator.stage import Stage
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import gdsfactory as gf
+
+    from gsim.common.stack.extractor import LayerStack
     from gsim.common.stack.staircase import (
         ElectrodeSpec,
         StaircaseCrossSection,
@@ -43,15 +54,19 @@ __all__ = ["EMStage"]
 
 
 class EMStage(Stage):
-    """A Stage that solves an EM Mode on a Staircase.
+    """A Stage that solves an EM Mode on a Staircase, through a Route.
 
     Subclasses say what they add to a Strip's material in
-    :meth:`strip_material`, and add the settings their own physics needs
-    on top of the ones here.
+    :meth:`strip_material`, restate the defaults of the shared settings
+    in :attr:`setting_defaults`, and add the settings their own physics
+    needs on top of the ones here.
 
     Attributes:
         route: Backend answering this Stage — ``"femwell"`` (the default)
-            or ``"palace"``.
+            or ``"palace"``. Both solve the same Staircase on the same
+            mesh; only femwell reads its Mode's fields while it selects,
+            so the Palace Route reports NaN for the Window-containment
+            ratio and says so.
         strip_span: ``(min, max)`` extent the Strips tile along the
             junction axis (um); :meth:`default_strip_span` when unset,
             which each Stage answers for itself.
@@ -60,7 +75,27 @@ class EMStage(Stage):
         window_z: Vertical Window (um).
         mesh: Keyword arguments forwarded to the mesh pipeline.
         airbox: Background region around what the Stage meshes.
+        num_modes: Number of Modes solved at each point, out of which
+            the physical one is selected.
+        min_index: Lower bound on ``Re(n_eff)`` for a Mode to count as
+            guided; raise it to the cladding index to reject radiation
+            Modes.
+        boundary_field_tol: Warn above this boundary-field ratio, the
+            sign of a Window squeezing the Mode (ADR 0002).
+        metallic_boundaries: Enforce a perfect conductor on the domain
+            boundary. Both Routes express it identically: femwell applies
+            its perfect-conductor condition to the domain boundary, and
+            the Palace config puts the outer wall under ``Boundaries.PEC``
+            — which is what lets the cross-Route gate compare their
+            answers at all.
+        order: Finite-element order of the mode solve, where the Route
+            has one.
+        n_guess: Effective-index guess centering the eigenvalue search;
+            ``None`` leaves it to the Backend.
     """
+
+    #: The defaults a Stage restates for the shared settings below.
+    setting_defaults: ClassVar[dict[str, Any]] = {}
 
     route: EMRoute = "femwell"
     strip_span: tuple[float, float] | None = None
@@ -69,6 +104,53 @@ class EMStage(Stage):
     window_z: tuple[float, float] | None = None
     mesh: dict[str, Any] = Field(default_factory=STAGE_MESH.copy)
     airbox: dict[str, Any] = Field(default_factory=STAGE_AIRBOX.copy)
+    num_modes: int = Field(default=1, ge=1)
+    min_index: float = Field(default=1.0, ge=0.0)
+    boundary_field_tol: float = Field(default=0.01, gt=0.0)
+    metallic_boundaries: bool = True
+    order: int = Field(default=1, ge=1)
+    n_guess: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _restate_defaults(cls, data: Any) -> Any:
+        """Fill the shared settings a Stage left unset with its own defaults."""
+        if isinstance(data, dict):
+            return {**cls.setting_defaults, **data}
+        return data
+
+    # ------------------------------------------------------------------
+    # Route
+    # ------------------------------------------------------------------
+
+    def route_adapter(self) -> Route:
+        """A fresh adapter for the selected Route, for one run.
+
+        Returns:
+            The adapter, its Backend not yet checked.
+        """
+        return route_for(self.route)
+
+    def check_route(self) -> Route:
+        """The Route's adapter, its Backend checked.
+
+        Called before the charge solve and before meshing, so a user
+        whose Route cannot run pays only for the error message.
+
+        Returns:
+            The adapter for this run.
+
+        Raises:
+            ImportError: When the femwell extra is not installed.
+            RuntimeError: When no Palace binary is available.
+        """
+        adapter = self.route_adapter()
+        adapter.require(stage_name=self.stage_name)
+        return adapter
+
+    # ------------------------------------------------------------------
+    # Staircase
+    # ------------------------------------------------------------------
 
     def default_strip_span(self) -> tuple[float, float]:
         """The extent this Stage tiles when ``strip_span`` says nothing.
@@ -186,14 +268,64 @@ class EMStage(Stage):
             drawing=StaircaseDrawing(substrate_thickness=self.substrate_thickness_um),
         )
 
+    # ------------------------------------------------------------------
+    # Simulation
+    # ------------------------------------------------------------------
+
+    def new_simulation(
+        self,
+        *,
+        stack: LayerStack,
+        component: gf.Component,
+        plane: str,
+        output_dir: str | Path,
+        freq_hz: float,
+        window: tuple[float, float] | None,
+        window_z: tuple[float, float] | None,
+    ) -> BoundaryModeSim:
+        """Assemble a cross-section simulation the way every EM Stage does.
+
+        The one place the metallic wall reaches a simulation: both Routes
+        put the same condition on the Window's outer wall — femwell reads
+        this setting directly, and the Palace config puts the wall under
+        ``Boundaries.PEC`` — and without it Palace defaults the
+        unconditioned wall to PMC, the opposite condition, so the two
+        Routes would solve different boundary-value problems.
+
+        Args:
+            stack: The layer stack the Regions are named in.
+            component: The drawn component the plane cuts.
+            plane: Cross-section plane spec, e.g. ``"x=5"``.
+            output_dir: Directory the mesh and solver files land in.
+            freq_hz: Frequency recorded in the boundary-mode block.
+            window: In-plane Window (um), or ``None`` for the full extent.
+            window_z: Vertical Window (um), likewise.
+
+        Returns:
+            The configured (unmeshed) ``BoundaryModeSim``.
+        """
+        from gsim.palace import BoundaryModeSim
+
+        sim = BoundaryModeSim()
+        sim.set_output_dir(output_dir)
+        sim.set_stack(stack)
+        sim.set_geometry(component)
+        sim.set_airbox(**self.airbox)
+        sim.set_cross_section(plane, window=window, window_z=window_z)
+        sim.set_boundary_mode(
+            freq=freq_hz,
+            num_modes=self.num_modes,
+            target=self.n_guess if self.n_guess is not None else 0.0,
+        )
+        sim.metallic_boundaries = self.metallic_boundaries
+        return sim
+
     def build_staircase_simulation(
         self,
         staircase: StaircaseCrossSection,
         *,
         output_dir: str | Path,
         freq_hz: float,
-        num_modes: int,
-        target: float = 0.0,
         window: tuple[float, float] | None = None,
         window_z: tuple[float, float] | None = None,
     ) -> BoundaryModeSim:
@@ -210,8 +342,6 @@ class EMStage(Stage):
             staircase: The Staircase to mesh.
             output_dir: Directory the mesh and solver files land in.
             freq_hz: Frequency recorded in the boundary-mode block.
-            num_modes: Number of Modes the block asks for.
-            target: Effective-index target centering the search.
             window: In-plane Window (um) to clip the Staircase to; the
                 Stage's own ``window`` when omitted.
             window_z: Vertical Window (um); likewise.
@@ -219,17 +349,67 @@ class EMStage(Stage):
         Returns:
             The configured (unmeshed) ``BoundaryModeSim``.
         """
-        from gsim.palace import BoundaryModeSim
-
-        sim = BoundaryModeSim()
-        sim.set_output_dir(output_dir)
-        sim.set_stack(staircase.stack())
-        sim.set_geometry(staircase.component)
-        sim.set_airbox(**self.airbox)
-        sim.set_cross_section(
-            f"x={STRIP_LENGTH_UM / 2.0}",
+        return self.new_simulation(
+            stack=staircase.stack(),
+            component=staircase.component,
+            plane=f"x={STRIP_LENGTH_UM / 2.0}",
+            output_dir=output_dir,
+            freq_hz=freq_hz,
             window=window if window is not None else self.window,
             window_z=window_z if window_z is not None else self.window_z,
         )
-        sim.set_boundary_mode(freq=freq_hz, num_modes=num_modes, target=target)
-        return sim
+
+    # ------------------------------------------------------------------
+    # Mode selection
+    # ------------------------------------------------------------------
+
+    def selection(self) -> dict[str, Any]:
+        """The keyword arguments this Stage selects its Mode with.
+
+        The guided-index floor for every Stage; a Stage with a
+        transmission line's tighter bounds adds them.
+
+        Returns:
+            What :func:`gsim.common.modes.select_line_mode` takes.
+        """
+        return {"min_index": self.min_index}
+
+    def window_hint(self) -> str:
+        """How this Stage's Window is widened, for the containment warning."""
+        return (
+            f"Widen the window with study.{self.stage_name}(window=..., window_z=...)."
+        )
+
+    def select_mode(
+        self, modes: Sequence[Any], adapter: Route, *, at: str
+    ) -> tuple[Any, float]:
+        """Select the physical Mode of one solve, and check its Window.
+
+        The one ADR 0002 rule for both Stages: a solved Mode still
+        carrying field at its Window boundary is a clipped Mode, and the
+        Stage says so. A Route that cannot measure the ratio answers NaN
+        and has already said why.
+
+        Args:
+            modes: Every Mode the Route solved.
+            adapter: The Route that solved them.
+            at: Where the solve was, for the warning (``"f = 10 GHz"``,
+                ``"V = 2"``).
+
+        Returns:
+            ``(mode, ratio)``: the selected Mode and its boundary-field
+            ratio, NaN when unmeasured.
+        """
+        from gsim.common.modes import select_line_mode
+
+        mode = select_line_mode(modes, **self.selection())
+        ratio = adapter.boundary_ratio(mode)
+        if not math.isnan(ratio) and ratio > self.boundary_field_tol:
+            warnings.warn(
+                f"The {self.stage_name} stage's mode at {at} carries "
+                f"{ratio:.1%} of its peak field at the window boundary "
+                f"(tolerance {self.boundary_field_tol:.1%}); its effective "
+                f"index is a clipped mode's. {self.window_hint()}",
+                stacklevel=3,
+            )
+        return mode, ratio
