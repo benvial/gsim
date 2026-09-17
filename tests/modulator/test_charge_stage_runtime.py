@@ -36,12 +36,12 @@ def meshed(tmp_path_factory):
 
 class TestDerivedNamesReachTheMesh:
     def test_every_derived_contact_and_interface_is_tagged(self, meshed):
+        """Each under its own kind of line group, so nothing is told apart later."""
         study, sim = meshed
         contact_lines = set(sim.mesh_groups["contact_lines"])
-        expected = {c.name for c in study.layout.contacts} | {
-            i.name for i in study.layout.interfaces
-        }
-        assert expected <= contact_lines
+        interface_lines = set(sim.mesh_groups["interface_lines"])
+        assert {c.name for c in study.layout.contacts} == contact_lines
+        assert {i.name for i in study.layout.interfaces} == interface_lines
 
     def test_every_doped_region_is_a_mesh_volume(self, meshed):
         study, sim = meshed

@@ -1,8 +1,9 @@
-"""Tests for named contact line groups in the native-2D BoundaryMode mesh.
+"""Tests for named contact and interface line groups in the native-2D mesh.
 
-Contacts are declared as layer pairs; the shared interface curves between
-the two layers' meshed regions become a dim-1 physical group carrying the
-contact name, so DEVSIM's ``add_gmsh_contact`` can bind to it.
+Contacts and interfaces are declared as layer pairs; the shared curves
+between the two layers' meshed regions become a dim-1 physical group
+carrying the declared name, so DEVSIM's ``add_gmsh_contact`` and
+``add_gmsh_interface`` can bind to them. The two are recorded apart.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from gsim.palace import BoundaryModeSim
-from gsim.palace.models import ContactSpec
+from gsim.palace.models import ContactSpec, InterfaceSpec
 from tests._helpers import draw_pn_rib
 
 
@@ -22,7 +23,7 @@ def _build_pn_device():
     return draw_pn_rib()
 
 
-def _make_sim(tmp_path, contacts):
+def _make_sim(tmp_path, contacts, interfaces=()):
     comp, stack = _build_pn_device()
     sim = BoundaryModeSim()
     sim.set_output_dir(str(tmp_path))
@@ -33,6 +34,8 @@ def _make_sim(tmp_path, contacts):
     sim.set_boundary_mode(freq=50e9, num_modes=1)
     for contact in contacts:
         sim.add_contact(**contact)
+    for interface in interfaces:
+        sim.add_interface(**interface)
     sim.mesh(preset="coarse", refined_mesh_size=0.05, max_mesh_size=40.0, verbose=False)
     return sim
 
@@ -49,6 +52,42 @@ class TestContactSpecModel:
     def test_rejects_empty_name(self):
         with pytest.raises(ValidationError):
             ContactSpec(name="", layer_a="a", layer_b="b")
+
+
+class TestInterfaceSpecModel:
+    def test_fields(self):
+        spec = InterfaceSpec(name="junction", layer_a="p_rib", layer_b="n_rib")
+        assert spec.name == "junction"
+
+    def test_rejects_same_layer(self):
+        with pytest.raises(ValidationError):
+            InterfaceSpec(name="bad", layer_a="p_rib", layer_b="p_rib")
+
+
+class TestInterfaceLineGroups:
+    def test_an_interface_is_tagged_apart_from_the_contacts(self, tmp_path):
+        sim = _make_sim(
+            tmp_path,
+            [
+                {"name": "anode", "layer_a": "p_rib", "layer_b": "sio2"},
+                {"name": "cathode", "layer_a": "n_rib", "layer_b": "sio2"},
+            ],
+            [{"name": "junction", "layer_a": "p_rib", "layer_b": "n_rib"}],
+        )
+        groups = sim.mesh_groups
+        assert set(groups["contact_lines"]) == {"anode", "cathode"}
+        assert set(groups["interface_lines"]) == {"junction"}
+        assert groups["interface_lines"]["junction"]["tags"]
+        field_data = meshio.read(sim.mesh_path).field_data
+        assert int(np.asarray(field_data["junction"])[1]) == 1
+
+    def test_a_nontouching_interface_raises(self, tmp_path):
+        with pytest.raises(ValueError, match=r"Interface 'far'.*do not touch"):
+            _make_sim(
+                tmp_path,
+                [{"name": "anode", "layer_a": "p_rib", "layer_b": "sio2"}],
+                [{"name": "far", "layer_a": "p_rib", "layer_b": "air"}],
+            )
 
 
 class TestContactLineGroups:

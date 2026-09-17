@@ -1257,6 +1257,7 @@ class PalaceSimMixin:
             boundary_mode_config=getattr(self, "boundary_mode", None),
             cross_section=getattr(self, "cross_section", None),
             contact_specs=getattr(self, "contact_specs", None),
+            interface_specs=getattr(self, "interface_specs", None),
             write_config=write_config,
             planar_conductors=mesh_config.planar_conductors,
             pec_blocks=self._pec_blocks or None,

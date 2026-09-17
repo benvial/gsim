@@ -41,6 +41,35 @@ class ContactSpec(BaseModel):
         return self
 
 
+class InterfaceSpec(BaseModel):
+    """Named interface between two semiconductor layers on the native-2D mesh.
+
+    The shared curves between the two layers' meshed regions are tagged as
+    a dim-1 physical group named ``name``, so a charge-transport solver can
+    bind continuity across it (DEVSIM ``add_gmsh_interface``) by name. An
+    Interface carries no terminal voltage — that is what separates it from
+    a :class:`ContactSpec`, and why the two are declared apart.
+
+    Attributes:
+        name: Physical-group name of the interface (e.g. ``"junction"``).
+        layer_a: First semiconductor layer.
+        layer_b: Second semiconductor layer.
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    name: str = Field(min_length=1, description="Interface physical-group name")
+    layer_a: str = Field(min_length=1, description="First layer of the interface")
+    layer_b: str = Field(min_length=1, description="Second layer of the interface")
+
+    @model_validator(mode="after")
+    def validate_layers_differ(self) -> Self:
+        """An interface needs two distinct layers."""
+        if self.layer_a == self.layer_b:
+            raise ValueError("layer_a and layer_b must differ")
+        return self
+
+
 class CrossSectionPlaneConfig(BaseModel):
     """Axis-aligned cross-section plane for 2D mode extraction.
 
@@ -103,4 +132,4 @@ class CrossSectionPlaneConfig(BaseModel):
         return f"{self.axis}={self.value}"
 
 
-__all__ = ["ContactSpec", "CrossSectionPlaneConfig"]
+__all__ = ["ContactSpec", "CrossSectionPlaneConfig", "InterfaceSpec"]

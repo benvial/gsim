@@ -26,11 +26,10 @@ class TestConfiguration:
 
 class TestSimulationAssembly:
     def test_the_sim_carries_the_derived_contacts_and_interfaces(self, study):
+        """Contacts are Contacts and Interfaces are Interfaces, all the way."""
         sim = study.charge.simulation()
-        declared = {spec.name for spec in sim.contact_specs}
-        assert declared == {
-            "anode",
-            "cathode",
+        assert {spec.name for spec in sim.contact_specs} == {"anode", "cathode"}
+        assert {spec.name for spec in sim.interface_specs} == {
             "junction",
             "n_pad_n_rib",
             "p_rib_p_pad",

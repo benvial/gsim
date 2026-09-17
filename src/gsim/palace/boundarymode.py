@@ -23,6 +23,7 @@ from gsim.palace.models import (
     BoundaryModeConfig,
     ContactSpec,
     CrossSectionPlaneConfig,
+    InterfaceSpec,
     MaterialConfig,
     MeshConfig,
     NumericalConfig,
@@ -109,6 +110,7 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     boundary_mode: BoundaryModeConfig = Field(default_factory=BoundaryModeConfig)
     cross_section: CrossSectionPlaneConfig | None = None
     contact_specs: list[ContactSpec] = Field(default_factory=list)
+    interface_specs: list[InterfaceSpec] = Field(default_factory=list)
     #: Postprocessing paths, in declaration order: Palace reports the
     #: first under index 1, the second under 2, and so on.
     mode_paths: list[ModePath] = Field(default_factory=list)
@@ -220,6 +222,24 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
         self.contact_specs = [
             *self.contact_specs,
             ContactSpec(name=name, layer_a=layer_a, layer_b=layer_b),
+        ]
+
+    def add_interface(self, *, name: str, layer_a: str, layer_b: str) -> None:
+        """Declare a named interface between two semiconductor layers.
+
+        Tagged on the mesh the way a contact is — the shared curves become
+        a dim-1 physical group named *name* — but recorded apart from the
+        contacts, because an interface carries continuity and no terminal
+        voltage.
+
+        Args:
+            name: Interface / physical-group name (e.g. ``"junction"``).
+            layer_a: First semiconductor layer.
+            layer_b: Second semiconductor layer.
+        """
+        self.interface_specs = [
+            *self.interface_specs,
+            InterfaceSpec(name=name, layer_a=layer_a, layer_b=layer_b),
         ]
 
     # -------------------------------------------------------------------------

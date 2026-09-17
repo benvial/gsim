@@ -133,7 +133,6 @@ class ChargeTransportSim(BaseModel):
     _devsim_mesh_name: str | None = PrivateAttr(default=None)
     _device: str | None = PrivateAttr(default=None)
     _contact_regions: dict[str, str] = PrivateAttr(default_factory=dict)
-    _interface_names: list[str] = PrivateAttr(default_factory=list)
     _interface_regions: dict[str, tuple[str, str]] = PrivateAttr(default_factory=dict)
     _dd_initialized: bool = PrivateAttr(default=False)
     _current_bias: dict[str, float] = PrivateAttr(default_factory=dict)
@@ -194,18 +193,18 @@ class ChargeTransportSim(BaseModel):
         Adjacent doped mesh regions (e.g. the P and N halves of a rib) load
         into DEVSIM as separate regions; without an interface they are
         electrically disconnected and no junction forms. The shared curves
-        between the two layers are tagged as a dim-1 physical group (the
-        same mechanism as contacts) and bound with
-        ``devsim.add_gmsh_interface`` plus potential/carrier continuity, so
-        the drift-diffusion solution is continuous across the junction.
+        between the two layers are tagged as a dim-1 physical group and
+        bound with ``devsim.add_gmsh_interface`` plus potential/carrier
+        continuity, so the drift-diffusion solution is continuous across
+        the junction. An interface is never a contact: it carries no
+        terminal voltage, and the mesh keeps the two apart.
 
         Args:
             name: Interface / physical-group name (e.g. ``"junction"``).
             layer_a: First doped region layer name.
             layer_b: Second doped region layer name.
         """
-        self._boundary_sim().add_contact(name=name, layer_a=layer_a, layer_b=layer_b)
-        self._interface_names = [*self._interface_names, name]
+        self._boundary_sim().add_interface(name=name, layer_a=layer_a, layer_b=layer_b)
 
     def add_doping(self, profile: DopingProfile) -> None:
         """Add an analytic doping profile (see :mod:`gsim.tcad.doping`)."""
@@ -228,8 +227,13 @@ class ChargeTransportSim(BaseModel):
 
     @property
     def contact_specs(self) -> list[Any]:
-        """Declared contact specs."""
+        """Declared contacts — the ohmic terminals, and nothing else."""
         return list(self._bsim.contact_specs) if self._bsim is not None else []
+
+    @property
+    def interface_specs(self) -> list[Any]:
+        """Declared semiconductor-semiconductor interfaces."""
+        return list(self._bsim.interface_specs) if self._bsim is not None else []
 
     @property
     def output_dir(self) -> Path | None:
@@ -353,16 +357,6 @@ class ChargeTransportSim(BaseModel):
                 regions.append(profile.region)
         return regions
 
-    @property
-    def _electrical_contacts(self) -> list[Any]:
-        """Contact specs bound as DEVSIM contacts (interfaces excluded)."""
-        return [s for s in self.contact_specs if s.name not in self._interface_names]
-
-    @property
-    def _interfaces(self) -> list[Any]:
-        """Contact specs declared as region-region interfaces."""
-        return [s for s in self.contact_specs if s.name in self._interface_names]
-
     def _validate_setup(self) -> list[str]:
         """Check mesh/doping/contact consistency; return the device regions."""
         if self._devsim_mesh_path is None:
@@ -376,6 +370,7 @@ class ChargeTransportSim(BaseModel):
         groups = self.mesh_groups
         volumes = set(groups.get("volumes", {}))
         contact_lines = set(groups.get("contact_lines", {}))
+        interface_lines = set(groups.get("interface_lines", {}))
 
         regions = self._device_regions()
         unknown = [r for r in regions if r not in volumes]
@@ -386,7 +381,7 @@ class ChargeTransportSim(BaseModel):
             )
 
         self._contact_regions = {}
-        for spec in self._electrical_contacts:
+        for spec in self.contact_specs:
             if spec.name not in contact_lines:
                 raise ValueError(
                     f"Contact '{spec.name}' has no line group on the mesh. "
@@ -408,8 +403,8 @@ class ChargeTransportSim(BaseModel):
             )
 
         self._interface_regions = {}
-        for spec in self._interfaces:
-            if spec.name not in contact_lines:
+        for spec in self.interface_specs:
+            if spec.name not in interface_lines:
                 raise ValueError(
                     f"Interface '{spec.name}' has no line group on the mesh. "
                     "Re-run mesh() after add_interface()."
@@ -502,7 +497,7 @@ class ChargeTransportSim(BaseModel):
                 region=region,
                 material=self.material,
             )
-        for spec in self._electrical_contacts:
+        for spec in self.contact_specs:
             devsim.add_gmsh_contact(
                 mesh=mesh_name,
                 gmsh_name=spec.name,
@@ -525,7 +520,7 @@ class ChargeTransportSim(BaseModel):
             self._apply_doping(devsim, device, region)
             sp.SetSiliconParameters(device, region, self.temperature)
             sp.CreateSiliconPotentialOnly(device, region)
-        for spec in self._electrical_contacts:
+        for spec in self.contact_specs:
             # Each contact is driven through a circuit voltage source so the
             # small-signal AC solve can read the terminal admittance (the
             # C(V) extraction) and the DC current from the circuit node.
@@ -631,7 +626,7 @@ class ChargeTransportSim(BaseModel):
                     init_from=intrinsic,
                 )
             sp.CreateSiliconDriftDiffusion(device, region)
-        for spec in self._electrical_contacts:
+        for spec in self.contact_specs:
             sp.CreateSiliconDriftDiffusionAtContact(
                 device, self._contact_regions[spec.name], spec.name, True
             )
@@ -710,7 +705,7 @@ class ChargeTransportSim(BaseModel):
 
     def _resolve_sweep_contact(self, contact: str | None) -> str:
         """Default to the first declared contact; reject unknown names."""
-        specs = self._electrical_contacts
+        specs = self.contact_specs
         if not specs:
             raise ValueError("No contacts declared. Call add_contact() first.")
         if contact is None:
@@ -741,7 +736,7 @@ class ChargeTransportSim(BaseModel):
         carriers = self._collect_carriers(devsim)
         currents = {
             spec.name: self._contact_current(devsim, spec.name)
-            for spec in self._electrical_contacts
+            for spec in self.contact_specs
         }
         charge = self._contact_charge(devsim, contact)
 
@@ -749,7 +744,7 @@ class ChargeTransportSim(BaseModel):
         # admittance of the swept contact's unit-amplitude source gives
         # C = |Im(I)| / omega (the small-signal charge per volt). Only the
         # swept source carries AC amplitude; the others stay AC-grounded.
-        for spec in self._electrical_contacts:
+        for spec in self.contact_specs:
             devsim.circuit_alter(
                 name=self._source_name(spec.name),
                 param="acreal",

@@ -1,4 +1,4 @@
-"""The line Stage: the electrode, its terminations, and the device report.
+"""The line Stage: the electrode, its terminations, the report, the handoff.
 
 Every Stage before this one answers about a cross-section; this one adds
 the two things that are not cross-section physics — how long the
@@ -19,7 +19,20 @@ group index is not a single-wavelength solve's output, so it is a setting;
 without one the Stage stands the phase index in and says so. And the EO
 bandwidth is read off the frequency axis, which the RF Stage samples only
 where it can afford to solve, so a denser response grid can be asked for
-and the line parameters are interpolated onto it.
+and the RF result resamples itself onto it.
+
+The Stage is also where the Traveling-wave electrode leaves the Study for
+a circuit tool: as a Touchstone two-port on the solved frequencies
+(:meth:`LineStage.export_touchstone`), whose provenance header reads the
+Bias and the signal Contact off the RF result itself; as a SAX-convention
+callable (:meth:`LineStage.sax_model`); and as the driven response of the
+terminated line (:meth:`LineStage.driven_response`).
+:meth:`LineStage.verify_exports` writes both handoff artifacts — the
+two-port and the charge Stage's junction model — reads them back with the
+plain readers a consumer would use, and puts the reassembled response
+and junction branch beside the Study's own, the junction branches read
+through the RF Stage rather than from the charge Stage directly, so the
+line Stage depends on the two EM Stages and nothing upstream of them.
 """
 
 from __future__ import annotations

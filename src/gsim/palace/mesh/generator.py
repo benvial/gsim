@@ -284,6 +284,7 @@ def _generate_native_boundarymode_groups(
     airbox_z_below: float | None,
     airbox_material: str = "air",
     contact_specs: list | None = None,
+    interface_specs: list | None = None,
 ) -> dict:
     """Build a native 2D gmsh model and groups for BoundaryMode."""
     if cross_section.axis not in {"x", "y"}:
@@ -727,11 +728,14 @@ def _generate_native_boundarymode_groups(
                     "length_um": total_length,
                 }
 
-    # --- Named contact line groups -------------------------------------------
-    # Contacts are declared as layer pairs; the shared curves between the two
+    # --- Named line groups: contacts and interfaces ---------------------------
+    # Both are declared as layer pairs; the shared curves between the two
     # layers' meshed regions become a dim-1 physical group carrying the
-    # contact name (DEVSIM binds add_gmsh_contact to it by name).
-    if contact_specs:
+    # declared name. A contact's name is what DEVSIM binds add_gmsh_contact
+    # to; an interface's is what it binds add_gmsh_interface to. They are
+    # tagged the same way and recorded apart, so nothing downstream has to
+    # tell them apart by name.
+    if contact_specs or interface_specs:
         metal_boundary_curves: dict[str, set[int]] = {}
         for group_key in ("conductor_surfaces", "pec_surfaces"):
             for layer_name, info in groups[group_key].items():
@@ -739,7 +743,7 @@ def _generate_native_boundarymode_groups(
                     int(t) for t in info.get("tags", [])
                 )
 
-        def _layer_curves(layer_name: str, contact_name: str) -> set[int]:
+        def _layer_curves(layer_name: str, kind: str, spec_name: str) -> set[int]:
             curves = vol_boundary_curves.get(layer_name)
             if curves is None:
                 curves = metal_boundary_curves.get(layer_name)
@@ -748,30 +752,36 @@ def _generate_native_boundarymode_groups(
                     set(vol_boundary_curves) | set(metal_boundary_curves)
                 )
                 raise ValueError(
-                    f"Contact '{contact_name}': layer '{layer_name}' has no "
+                    f"{kind} '{spec_name}': layer '{layer_name}' has no "
                     f"meshed region in this cross-section. Available layers: "
                     f"{available}"
                 )
             return curves
 
-        groups["contact_lines"] = {}
-        for spec in contact_specs:
-            shared_curves = _layer_curves(spec.layer_a, spec.name) & _layer_curves(
-                spec.layer_b, spec.name
-            )
-            if not shared_curves:
-                raise ValueError(
-                    f"Contact '{spec.name}': layers '{spec.layer_a}' and "
-                    f"'{spec.layer_b}' share no interface curves in this "
-                    "cross-section (regions do not touch)."
-                )
-            pg = gmsh.model.addPhysicalGroup(1, sorted(shared_curves))
-            gmsh.model.setPhysicalName(1, pg, spec.name)
-            groups["contact_lines"][spec.name] = {
-                "phys_group": pg,
-                "tags": sorted(shared_curves),
-                "layers": (spec.layer_a, spec.layer_b),
-            }
+        def _tag_line_groups(specs: list, *, kind: str, key: str) -> None:
+            groups[key] = {}
+            for spec in specs:
+                shared_curves = _layer_curves(
+                    spec.layer_a, kind, spec.name
+                ) & _layer_curves(spec.layer_b, kind, spec.name)
+                if not shared_curves:
+                    raise ValueError(
+                        f"{kind} '{spec.name}': layers '{spec.layer_a}' and "
+                        f"'{spec.layer_b}' share no interface curves in this "
+                        "cross-section (regions do not touch)."
+                    )
+                pg = gmsh.model.addPhysicalGroup(1, sorted(shared_curves))
+                gmsh.model.setPhysicalName(1, pg, spec.name)
+                groups[key][spec.name] = {
+                    "phys_group": pg,
+                    "tags": sorted(shared_curves),
+                    "layers": (spec.layer_a, spec.layer_b),
+                }
+
+        _tag_line_groups(list(contact_specs or []), kind="Contact", key="contact_lines")
+        _tag_line_groups(
+            list(interface_specs or []), kind="Interface", key="interface_lines"
+        )
 
     outer_curves: set[int] = set()
     for stag in outer_parts:
@@ -1066,6 +1076,7 @@ def generate_mesh(
     boundary_mode_config: BoundaryModeConfig | None = None,
     cross_section: CrossSectionPlaneConfig | None = None,
     contact_specs: list | None = None,
+    interface_specs: list | None = None,
     write_config: bool = True,
     planar_conductors: bool = False,
     pec_blocks: list[PECBlockConfig] | None = None,
@@ -1113,6 +1124,9 @@ def generate_mesh(
         cross_section: Explicit x/y cross-section plane for native BoundaryMode
         contact_specs: Named contact layer pairs whose shared interface curves
             are tagged as dim-1 physical groups (native BoundaryMode only)
+        interface_specs: Named semiconductor-semiconductor layer pairs whose
+            shared curves are tagged the same way, recorded apart from the
+            contacts (native BoundaryMode only)
         write_config: Whether to write config.json (default True)
         pec_blocks: PEC configuration
         planar_conductors: If True, treat conductors as 2D PEC surfaces
@@ -1189,6 +1203,7 @@ def generate_mesh(
                 airbox_z_below=airbox_z_below,
                 airbox_material=airbox_material,
                 contact_specs=contact_specs,
+                interface_specs=interface_specs,
             )
 
             refinement_lines = sorted(

@@ -55,6 +55,16 @@ def _fresh_device(request):
 
 
 class TestMeshing:
+    def test_interfaces_are_declared_apart_from_contacts(self, meshed_sim):
+        """An interface carries no terminal voltage, and is never a contact."""
+        assert {spec.name for spec in meshed_sim.contact_specs} == {"anode", "cathode"}
+        assert {spec.name for spec in meshed_sim.interface_specs} == {"junction"}
+        groups = meshed_sim.mesh_groups
+        assert set(groups["contact_lines"]) == {"anode", "cathode"}
+        assert set(groups["interface_lines"]) == {"junction"}
+        # The junction is tagged on the mesh under its own name all the same.
+        assert "junction" in meshio.read(str(meshed_sim.mesh_path)).field_data
+
     def test_shared_mesh_and_scaled_copy(self, meshed_sim):
         # The shared native-2D mesh is the geometry source ...
         assert meshed_sim.mesh_path is not None
