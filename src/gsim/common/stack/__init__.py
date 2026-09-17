@@ -73,7 +73,7 @@ from gsim.common.stack.pn_junction import (
     select_junction_mode,
 )
 from gsim.common.stack.staircase import (
-    make_staircase_profile,
+    staircase_profile,
     strip_averages_from_nodes,
 )
 from gsim.common.stack.visualization import (
@@ -229,7 +229,6 @@ __all__ = [
     "make_doping_profile",
     "make_pn_junction_profile",
     "make_segmented_junction_profile",
-    "make_staircase_profile",
     "merge_overlay",
     "optical_params",
     "parse_layer_stack",
@@ -240,5 +239,6 @@ __all__ = [
     "resolve_material_at_wavelength",
     "select_junction_mode",
     "should_enable_dispersion",
+    "staircase_profile",
     "strip_averages_from_nodes",
 ]

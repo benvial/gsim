@@ -24,7 +24,6 @@ from gsim.common.carriers import (
     carrier_conductivity,
     carrier_index_shift,
     permittivity_perturbation,
-    staircase_profile,
 )
 
 
@@ -155,64 +154,3 @@ class TestPermittivityPerturbation:
         assert eps.real == pytest.approx(expected.real, rel=1e-12)
         assert eps.imag == pytest.approx(expected.imag, rel=1e-12)
         assert eps.imag < 0.0
-
-
-class TestStaircaseProfile:
-    def test_single_bin_recovers_average(self):
-        # N=1 must recover the exact average of the piecewise-linear profile.
-        h = np.array([0.0, 1.0, 2.0])
-        v = np.array([0.0, 2.0, 0.0])  # triangle, mean = 1.0
-        edges, means = staircase_profile(h, v, n_bins=1)
-        assert edges == pytest.approx([0.0, 2.0])
-        assert means == pytest.approx([1.0])
-
-    def test_constant_profile_any_n(self):
-        h = np.linspace(0.0, 4.0, 9)
-        v = np.full(9, 7.5)
-        edges, means = staircase_profile(h, v, n_bins=5)
-        assert len(edges) == 6
-        assert means == pytest.approx(np.full(5, 7.5))
-
-    def test_bins_partition_window(self):
-        h = np.linspace(-1.0, 1.0, 21)
-        v = h**2
-        edges, _means = staircase_profile(h, v, n_bins=4, h_min=-0.5, h_max=0.5)
-        assert edges[0] == pytest.approx(-0.5)
-        assert edges[-1] == pytest.approx(0.5)
-        assert np.all(np.diff(edges) > 0)
-
-    def test_convergence_with_n(self):
-        # Staircase approximation of a smooth profile converges in L2 as N grows.
-        h = np.linspace(0.0, 1.0, 401)
-        v = np.exp(-((h - 0.5) ** 2) / 0.01)
-
-        def l2_error(n_bins: int) -> float:
-            edges, means = staircase_profile(h, v, n_bins=n_bins)
-            approx = np.interp(h, edges[:-1], means, left=means[0], right=means[-1])
-            # Evaluate staircase exactly: index of bin per sample.
-            idx = np.clip(np.searchsorted(edges, h, side="right") - 1, 0, n_bins - 1)
-            approx = means[idx]
-            return float(np.sqrt(np.trapezoid((approx - v) ** 2, h)))
-
-        errors = [l2_error(n) for n in (2, 8, 32)]
-        assert errors[0] > errors[1] > errors[2]
-
-    def test_unsorted_input_sorted_internally(self):
-        h = np.array([2.0, 0.0, 1.0])
-        v = np.array([0.0, 0.0, 2.0])
-        _edges, means = staircase_profile(h, v, n_bins=1)
-        assert means == pytest.approx([1.0])
-
-    def test_rejects_bad_inputs(self):
-        with pytest.raises(ValueError):
-            staircase_profile(np.array([0.0]), np.array([1.0]), n_bins=1)
-        with pytest.raises(ValueError):
-            staircase_profile(np.array([0.0, 1.0]), np.array([1.0, 1.0]), n_bins=0)
-        with pytest.raises(ValueError):
-            staircase_profile(
-                np.array([0.0, 1.0]),
-                np.array([1.0, 1.0]),
-                n_bins=2,
-                h_min=1.0,
-                h_max=0.0,
-            )

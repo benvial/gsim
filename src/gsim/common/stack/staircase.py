@@ -4,20 +4,25 @@ Palace only accepts piecewise-constant materials per mesh domain, so a
 continuously varying carrier distribution is represented as N adjacent
 strips along the junction axis. Each strip becomes a patterned-dielectric
 region through the same ``Layer``/``MaterialProperties`` machinery the
-PN-junction profile uses (:mod:`gsim.common.stack.pn_junction`), so the result
-plugs straight into ``build_doped_cross_section(doping=...)`` and the
-native ``BoundaryMode`` solver.
+doped cross-section builder uses, so the result plugs straight into
+``build_doped_cross_section(doping=...)`` and the native ``BoundaryMode``
+solver.
 
-- :func:`strip_averages_from_nodes` reduces scattered solver-node values
-  (e.g. a :class:`gsim.tcad.results.CarrierMap`) to exact per-strip
-  averages — the tested, reusable mesh-transfer step.
-- :func:`make_staircase_profile` draws the strips on a component and emits
-  layer specs plus per-strip materials: Drude conductivity for RF, or the
-  Soref/Nedeljkovic complex permittivity for optics.
+Everything that turns a Carrier map into per-Strip averages lives here:
+
+- :func:`staircase_profile` bins a sampled one-dimensional profile into N
+  equal-width Strips, each carrying the exact average of the
+  piecewise-linear interpolant over it.
+- :func:`strip_averages_from_nodes` reduces a scattered two-dimensional
+  node cloud (e.g. a :class:`gsim.tcad.results.CarrierMap`) to that
+  one-dimensional profile first — the tested, reusable mesh-transfer
+  step — and bins it.
 - :func:`build_staircase_cross_section` does the whole job in one call: a
   Carrier map, a strip count and the Junction extent in, a meshable
   Staircase cross-section out — the strip Regions, their material
-  response for *both* EM Stages, and the flanking electrodes.
+  response for *both* EM Stages, and the flanking electrodes. The
+  drawing of the Strips and the material of each one are its own
+  private steps.
 - :func:`surroundings_from_section` supplies what the Strips are *not*:
   every other Region of the drawn Cross-section, cut against the Strip
   footprint, so the Staircase is the drawn waveguide with its doped
@@ -46,7 +51,6 @@ from gsim.common.carriers import (
     carrier_conductivity,
     carrier_index_shift,
     permittivity_perturbation,
-    staircase_profile,
 )
 from gsim.common.stack.materials import MaterialProperties, make_doped_materials
 
@@ -58,6 +62,7 @@ if TYPE_CHECKING:
 __all__ = [
     "COLUMN_TOL_FRACTION",
     "DEFAULT_ELECTRODES",
+    "DEFAULT_SI_INDEX",
     "DEFAULT_STRIP_LAYER",
     "DEFAULT_SURROUND_LAYER",
     "STRIP_LENGTH_UM",
@@ -67,12 +72,14 @@ __all__ = [
     "SurroundingRegion",
     "build_staircase_cross_section",
     "carrier_map_extent",
-    "make_staircase_profile",
+    "staircase_profile",
     "strip_averages_from_nodes",
     "surroundings_from_section",
 ]
 
-#: Unperturbed silicon refractive index near 1.55 um.
+#: Unperturbed silicon refractive index near 1.55 um: what a Strip
+#: carries before the carriers move it, when the drawn stack cannot say
+#: what its own silicon is.
 DEFAULT_SI_INDEX: float = 3.4757
 
 #: ``(layer, datatype)`` Strip 0 is drawn on, Strip ``i`` taking
@@ -103,6 +110,64 @@ COLUMN_TOL_FRACTION: float = 1e-6
 STRIP_LENGTH_UM: float = 10.0
 
 
+def staircase_profile(
+    h: ArrayLike,
+    values: ArrayLike,
+    *,
+    n_bins: int,
+    h_min: float | None = None,
+    h_max: float | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Bin a sampled 1D profile into N equal-width piecewise-constant strips.
+
+    The samples are interpreted as a piecewise-linear function of ``h``; each
+    strip value is the exact average of that interpolant over the strip, so
+    ``n_bins=1`` recovers the exact mean of the profile and increasing
+    ``n_bins`` converges to the continuous profile.
+
+    Args:
+        h: Sample coordinates along the binning axis (um), any order.
+        values: Sample values (e.g. carrier concentration, sigma, Delta n).
+        n_bins: Number of strips (>= 1).
+        h_min: Window start; defaults to ``min(h)``.
+        h_max: Window end; defaults to ``max(h)``.
+
+    Returns:
+        ``(edges, means)`` — strip edges of length ``n_bins + 1`` and the
+        per-strip averages of length ``n_bins``.
+    """
+    h_arr = np.asarray(h, dtype=np.float64).ravel()
+    v_arr = np.asarray(values, dtype=np.float64).ravel()
+    if h_arr.size != v_arr.size:
+        raise ValueError("h and values must have the same length.")
+    if h_arr.size < 2:
+        raise ValueError("At least two samples are required.")
+    if n_bins < 1:
+        raise ValueError("n_bins must be >= 1.")
+
+    order = np.argsort(h_arr)
+    h_arr = h_arr[order]
+    v_arr = v_arr[order]
+
+    lo = float(h_arr[0]) if h_min is None else float(h_min)
+    hi = float(h_arr[-1]) if h_max is None else float(h_max)
+    if hi <= lo:
+        raise ValueError("h_max must exceed h_min.")
+
+    edges = np.asarray(np.linspace(lo, hi, n_bins + 1), dtype=np.float64)
+
+    # Exact average of the piecewise-linear interpolant over each strip via
+    # its antiderivative sampled with cumulative trapezoids.
+    dense = np.union1d(edges, h_arr[(h_arr > lo) & (h_arr < hi)])
+    dense_v = np.interp(dense, h_arr, v_arr)
+    cumulative = np.concatenate(
+        ([0.0], np.cumsum(0.5 * (dense_v[1:] + dense_v[:-1]) * np.diff(dense)))
+    )
+    edge_integrals = np.interp(edges, dense, cumulative)
+    means = np.asarray(np.diff(edge_integrals) / np.diff(edges), dtype=np.float64)
+    return edges, means
+
+
 def strip_averages_from_nodes(
     h_um: ArrayLike,
     values: ArrayLike,
@@ -120,7 +185,7 @@ def strip_averages_from_nodes(
     reduced to a 1D profile of ``h`` — nodes sharing a coordinate are
     averaged, so a band selected with ``v_range`` contributes all of its
     rows and not just one — and binned with
-    :func:`gsim.common.carriers.staircase_profile`, whose strip values are
+    :func:`staircase_profile`, whose strip values are
     exact averages of the piecewise-linear interpolant — so ``n_strips=1``
     recovers the profile mean and increasing N converges to the continuous
     profile.
@@ -180,7 +245,7 @@ def strip_averages_from_nodes(
     return staircase_profile(h_arr, v_arr, n_bins=n_strips, h_min=h_min, h_max=h_max)
 
 
-def strip_response(
+def _strip_response(
     edges: ArrayLike,
     n_strips_cm3: ArrayLike,
     p_strips_cm3: ArrayLike,
@@ -248,7 +313,7 @@ def strip_response(
     return strips_info
 
 
-def strip_material(
+def _strip_material(
     name: str,
     strips_info: dict[str, Any],
     index: int,
@@ -261,7 +326,7 @@ def strip_material(
 
     Args:
         name: Region (and material) name of the strip.
-        strips_info: Per-strip response from :func:`strip_response`.
+        strips_info: Per-strip response from :func:`_strip_response`.
         index: Strip index within that response.
         target: ``"rf"`` (Drude sigma) or ``"optical"`` (perturbed eps).
         permittivity: Relative permittivity of the RF strips.
@@ -297,7 +362,7 @@ def strip_material(
     }
 
 
-def make_staircase_profile(
+def _make_staircase_profile(
     comp: gf.Component,
     *,
     length: float,
@@ -399,7 +464,7 @@ def make_staircase_profile(
     materials: dict[str, Any] = result["materials"]
     centres: dict[str, float] = result["centres"]
 
-    strips_info = strip_response(
+    strips_info = _strip_response(
         edge_arr,
         n_arr,
         p_arr,
@@ -436,7 +501,7 @@ def make_staircase_profile(
         )
 
         materials.update(
-            strip_material(
+            _strip_material(
                 name,
                 strips_info,
                 i,
@@ -515,7 +580,7 @@ class StaircaseCrossSection:
     Attributes:
         component: The gdsfactory component carrying the strip and
             electrode rectangles.
-        strips: Per-strip numbers from :func:`strip_response` — edges,
+        strips: Per-strip numbers from :func:`_strip_response` — edges,
             average concentrations, Drude conductivity, and the optical
             index shift, absorption and permittivity.
         strip_names: Region names of the strips, low edge first.
@@ -600,7 +665,7 @@ class StaircaseCrossSection:
         materials: dict[str, MaterialProperties] = {}
         for index, name in enumerate(self.strip_names):
             materials.update(
-                strip_material(
+                _strip_material(
                     name,
                     self.strips,
                     index,
@@ -1115,7 +1180,7 @@ def build_staircase_cross_section(
     )
 
     comp = component if component is not None else gf.Component()
-    profile = make_staircase_profile(
+    profile = _make_staircase_profile(
         comp,
         length=length,
         edges=edges,

@@ -1,10 +1,15 @@
-"""Hermetic tests for the staircase strip builder and node-to-strip transfer."""
+"""Hermetic tests for Strip binning and the node-to-strip transfer.
+
+Everything that reduces a Carrier map to per-Strip averages is under
+test here: the one-dimensional binning, the two-dimensional node cloud
+reduced onto it, and the Strips a Staircase draws from the result.
+"""
 
 from __future__ import annotations
 
 from itertools import pairwise
+from types import SimpleNamespace
 
-import gdsfactory as gf
 import numpy as np
 import pytest
 
@@ -15,9 +20,71 @@ from gsim.common.carriers import (
     carrier_index_shift,
 )
 from gsim.common.stack.staircase import (
-    make_staircase_profile,
+    build_staircase_cross_section,
+    staircase_profile,
     strip_averages_from_nodes,
 )
+
+
+class TestStaircaseProfile:
+    def test_single_bin_recovers_average(self):
+        # N=1 must recover the exact average of the piecewise-linear profile.
+        h = np.array([0.0, 1.0, 2.0])
+        v = np.array([0.0, 2.0, 0.0])  # triangle, mean = 1.0
+        edges, means = staircase_profile(h, v, n_bins=1)
+        assert edges == pytest.approx([0.0, 2.0])
+        assert means == pytest.approx([1.0])
+
+    def test_constant_profile_any_n(self):
+        h = np.linspace(0.0, 4.0, 9)
+        v = np.full(9, 7.5)
+        edges, means = staircase_profile(h, v, n_bins=5)
+        assert len(edges) == 6
+        assert means == pytest.approx(np.full(5, 7.5))
+
+    def test_bins_partition_window(self):
+        h = np.linspace(-1.0, 1.0, 21)
+        v = h**2
+        edges, _means = staircase_profile(h, v, n_bins=4, h_min=-0.5, h_max=0.5)
+        assert edges[0] == pytest.approx(-0.5)
+        assert edges[-1] == pytest.approx(0.5)
+        assert np.all(np.diff(edges) > 0)
+
+    def test_convergence_with_n(self):
+        # Staircase approximation of a smooth profile converges in L2 as N grows.
+        h = np.linspace(0.0, 1.0, 401)
+        v = np.exp(-((h - 0.5) ** 2) / 0.01)
+
+        def l2_error(n_bins: int) -> float:
+            edges, means = staircase_profile(h, v, n_bins=n_bins)
+            approx = np.interp(h, edges[:-1], means, left=means[0], right=means[-1])
+            # Evaluate staircase exactly: index of bin per sample.
+            idx = np.clip(np.searchsorted(edges, h, side="right") - 1, 0, n_bins - 1)
+            approx = means[idx]
+            return float(np.sqrt(np.trapezoid((approx - v) ** 2, h)))
+
+        errors = [l2_error(n) for n in (2, 8, 32)]
+        assert errors[0] > errors[1] > errors[2]
+
+    def test_unsorted_input_sorted_internally(self):
+        h = np.array([2.0, 0.0, 1.0])
+        v = np.array([0.0, 0.0, 2.0])
+        _edges, means = staircase_profile(h, v, n_bins=1)
+        assert means == pytest.approx([1.0])
+
+    def test_rejects_bad_inputs(self):
+        with pytest.raises(ValueError):
+            staircase_profile(np.array([0.0]), np.array([1.0]), n_bins=1)
+        with pytest.raises(ValueError):
+            staircase_profile(np.array([0.0, 1.0]), np.array([1.0, 1.0]), n_bins=0)
+        with pytest.raises(ValueError):
+            staircase_profile(
+                np.array([0.0, 1.0]),
+                np.array([1.0, 1.0]),
+                n_bins=2,
+                h_min=1.0,
+                h_max=0.0,
+            )
 
 
 class TestStripAveragesFromNodes:
@@ -120,86 +187,98 @@ class TestStripAveragesFromNodes:
             strip_averages_from_nodes([0.0, 1.0], [1.0], n_strips=1)
 
 
-def _make_profile(comp, edges, n_vals, p_vals, **kwargs):
-    return make_staircase_profile(
-        comp,
-        length=10.0,
-        edges=edges,
-        n_strips_cm3=n_vals,
-        p_strips_cm3=p_vals,
-        base_layer=(40, 0),
-        zmin=0.0,
-        zmax=0.22,
-        **kwargs,
+def _carriers(edges, n_of_h, p_of_h, *, samples=201):
+    """A one-row Carrier map across ``edges``, in the mesh frame."""
+    h = np.linspace(edges[0], edges[-1], samples)
+    return SimpleNamespace(
+        x_um=h, y_um=np.full(h.size, 0.11), electrons_cm3=n_of_h(h), holes_cm3=p_of_h(h)
     )
 
 
-class TestMakeStaircaseProfileRF:
+def _build(carriers, n_strips, **kwargs):
+    import gdsfactory as gf
+
+    gf.gpdk.PDK.activate()
+    params = dict(
+        n_strips=n_strips,
+        junction=(float(carriers.x_um[0]), float(carriers.x_um[-1])),
+        zmin=0.0,
+        zmax=0.22,
+        electrodes=None,
+        base_layer=(40, 0),
+    )
+    params.update(kwargs)
+    return build_staircase_cross_section(carriers, **params)
+
+
+def _material(stack, name):
+    from gsim.common.stack.materials import MaterialProperties
+
+    props = stack.materials[stack.layers[name].material]
+    return (
+        props
+        if isinstance(props, MaterialProperties)
+        else MaterialProperties.model_validate(props)
+    )
+
+
+class TestDrawnStripsRF:
     def test_single_strip_recovers_uniform_model(self):
-        gf.gpdk.PDK.activate()
-        comp = gf.Component()
-        result = _make_profile(comp, [-0.2, 0.2], [1e18], [0.0])
+        carriers = _carriers(
+            [-0.2, 0.2], lambda h: np.full(h.size, 1e18), np.zeros_like
+        )
+        staircase = _build(carriers, 1)
+        stack = staircase.stack("rf")
 
         # One region spanning the window with the uniform-model conductivity.
-        assert set(result["layer_specs"]) == {"strip_0"}
-        spec = result["layer_specs"]["strip_0"]
+        assert staircase.strip_names == ["strip_0"]
+        spec = stack.layers["strip_0"]
         assert spec.gds_layer == (40, 0)
         assert spec.zmin == 0.0
         assert spec.zmax == pytest.approx(0.22)
-        assert result["centres"]["strip_0"] == pytest.approx(0.0)
         expected_sigma = carrier_conductivity(1e18, 0.0)
-        assert result["strips"]["sigma_s_per_m"][0] == pytest.approx(expected_sigma)
-        assert "strip_0" in result["materials"]
+        assert staircase.strips["sigma_s_per_m"][0] == pytest.approx(expected_sigma)
+        assert _material(stack, "strip_0").conductivity == pytest.approx(expected_sigma)
 
     def test_arbitrary_strip_count_layers_and_materials(self):
-        gf.gpdk.PDK.activate()
-        comp = gf.Component()
         n = 7
         edges = np.linspace(-0.35, 0.35, n + 1)
-        n_vals = np.linspace(0.0, 1e18, n)
-        p_vals = np.linspace(1e18, 0.0, n)
-        result = _make_profile(comp, edges, n_vals, p_vals)
+        rise = lambda h: 1e18 * (h - edges[0]) / (edges[-1] - edges[0])  # noqa: E731
+        fall = lambda h: 1e18 - rise(h)  # noqa: E731
+        staircase = _build(_carriers(edges, rise, fall), n)
+        stack = staircase.stack("rf")
 
-        assert len(result["layer_specs"]) == n
-        for i in range(n):
-            name = f"strip_{i}"
-            assert result["layer_specs"][name].gds_layer == (40, i)
-            assert name in result["materials"]
-            assert result["centres"][name] == pytest.approx(
-                (edges[i] + edges[i + 1]) / 2
-            )
+        assert len(staircase.strip_names) == n
+        centres = 0.5 * (edges[1:] + edges[:-1])
+        for i, name in enumerate(staircase.strip_names):
+            assert stack.layers[name].gds_layer == (40, i)
+            assert stack.layers[name].material in stack.materials
+        # Linear profiles: each strip average is the value at its centre.
         np.testing.assert_allclose(
-            result["strips"]["sigma_s_per_m"],
-            carrier_conductivity(n_vals, p_vals),
+            staircase.strips["sigma_s_per_m"],
+            carrier_conductivity(rise(centres), fall(centres)),
+            rtol=1e-6,
         )
 
-    def test_rejects_mismatched_strip_values(self):
-        comp = gf.Component()
-        with pytest.raises(ValueError, match="per-strip"):
-            _make_profile(comp, [-0.2, 0.0, 0.2], [1e18], [0.0])
-
-    def test_rejects_descending_edges(self):
-        comp = gf.Component()
+    def test_rejects_a_descending_extent(self):
+        carriers = _carriers(
+            [-0.2, 0.2], lambda h: np.full(h.size, 1e18), np.zeros_like
+        )
         with pytest.raises(ValueError, match="ascending"):
-            _make_profile(comp, [0.2, -0.2], [1e18], [1e18])
+            _build(carriers, 1, junction=(0.2, -0.2))
 
 
-class TestMakeStaircaseProfileOptical:
-    def test_soref_permittivity_and_loss(self):
-        gf.gpdk.PDK.activate()
-        comp = gf.Component()
+class TestDrawnStripsOptical:
+    def test_plasma_dispersion_permittivity_and_loss(self):
         model = PlasmaDispersionModel.nedeljkovic_1550()
         n0 = 3.4757
-        result = _make_profile(
-            comp,
+        carriers = _carriers(
             [-0.1, 0.1],
-            [1e18],
-            [1e18],
-            target="optical",
-            dispersion=model,
-            n0=n0,
+            lambda h: np.full(h.size, 1e18),
+            lambda h: np.full(h.size, 1e18),
         )
-        material = result["materials"]["strip_0"]
+        staircase = _build(carriers, 1, dispersion=model, n0=n0)
+        material = _material(staircase.stack("optical"), "strip_0")
         dn = carrier_index_shift(1e18, 1e18, model=model)
         dalpha = carrier_absorption_cm(1e18, 1e18, model=model)
         # Carrier-depressed index: eps_re < n0^2, loss tangent positive.
@@ -207,9 +286,4 @@ class TestMakeStaircaseProfileOptical:
         assert material.permittivity < n0**2
         assert material.loss_tangent > 0.0
         assert dalpha > 0.0
-        np.testing.assert_allclose(result["strips"]["dn"], [dn])
-
-    def test_optical_requires_dispersion_model(self):
-        comp = gf.Component()
-        with pytest.raises(ValueError, match="dispersion"):
-            _make_profile(comp, [-0.1, 0.1], [1e18], [1e18], target="optical")
+        np.testing.assert_allclose(staircase.strips["dn"], [dn])

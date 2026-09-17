@@ -12,10 +12,6 @@ consume:
   (:class:`PlasmaDispersionModel`, :func:`carrier_index_shift`,
   :func:`carrier_absorption_cm`), plus the complex permittivity they imply
   (:func:`permittivity_perturbation`).
-- Staircase discretization: binning a continuously varying 1D carrier
-  profile into N piecewise-constant strips for solvers that only accept
-  piecewise-constant materials, e.g. Palace (:func:`staircase_profile`).
-
 All coefficients are explicit and overridable so foundry-calibrated values
 can be substituted for the published fits.
 
@@ -46,7 +42,6 @@ __all__ = [
     "carrier_conductivity",
     "carrier_index_shift",
     "permittivity_perturbation",
-    "staircase_profile",
 ]
 
 #: Low-field electron mobility of lightly doped silicon at 300 K (cm^2/Vs).
@@ -315,61 +310,3 @@ def permittivity_perturbation(
     kappa = alpha_m * wavelength_um * 1e-6 / (4.0 * np.pi)
     n_complex = (n0 + dn) - 1j * kappa
     return complex(n_complex * n_complex)
-
-
-def staircase_profile(
-    h: ArrayLike,
-    values: ArrayLike,
-    *,
-    n_bins: int,
-    h_min: float | None = None,
-    h_max: float | None = None,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Bin a sampled 1D profile into N equal-width piecewise-constant strips.
-
-    The samples are interpreted as a piecewise-linear function of ``h``; each
-    strip value is the exact average of that interpolant over the strip, so
-    ``n_bins=1`` recovers the exact mean of the profile and increasing
-    ``n_bins`` converges to the continuous profile.
-
-    Args:
-        h: Sample coordinates along the binning axis (um), any order.
-        values: Sample values (e.g. carrier concentration, sigma, Delta n).
-        n_bins: Number of strips (>= 1).
-        h_min: Window start; defaults to ``min(h)``.
-        h_max: Window end; defaults to ``max(h)``.
-
-    Returns:
-        ``(edges, means)`` — strip edges of length ``n_bins + 1`` and the
-        per-strip averages of length ``n_bins``.
-    """
-    h_arr = np.asarray(h, dtype=np.float64).ravel()
-    v_arr = np.asarray(values, dtype=np.float64).ravel()
-    if h_arr.size != v_arr.size:
-        raise ValueError("h and values must have the same length.")
-    if h_arr.size < 2:
-        raise ValueError("At least two samples are required.")
-    if n_bins < 1:
-        raise ValueError("n_bins must be >= 1.")
-
-    order = np.argsort(h_arr)
-    h_arr = h_arr[order]
-    v_arr = v_arr[order]
-
-    lo = float(h_arr[0]) if h_min is None else float(h_min)
-    hi = float(h_arr[-1]) if h_max is None else float(h_max)
-    if hi <= lo:
-        raise ValueError("h_max must exceed h_min.")
-
-    edges = np.asarray(np.linspace(lo, hi, n_bins + 1), dtype=np.float64)
-
-    # Exact average of the piecewise-linear interpolant over each strip via
-    # its antiderivative sampled with cumulative trapezoids.
-    dense = np.union1d(edges, h_arr[(h_arr > lo) & (h_arr < hi)])
-    dense_v = np.interp(dense, h_arr, v_arr)
-    cumulative = np.concatenate(
-        ([0.0], np.cumsum(0.5 * (dense_v[1:] + dense_v[:-1]) * np.diff(dense)))
-    )
-    edge_integrals = np.interp(edges, dense, cumulative)
-    means = np.asarray(np.diff(edge_integrals) / np.diff(edges), dtype=np.float64)
-    return edges, means

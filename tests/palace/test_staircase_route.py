@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import gdsfactory as gf
 import numpy as np
 import pytest
 
-from gsim.common.cross_section import build_doped_cross_section
 from gsim.common.stack.staircase import (
-    make_staircase_profile,
+    build_staircase_cross_section,
     strip_averages_from_nodes,
 )
 from gsim.palace import BoundaryModeSim
@@ -45,27 +45,19 @@ def _build_staircase_device(n_strips=N_STRIPS):
     slab.y = -5.0
 
     y, electrons, holes = _synthetic_carriers()
-    edges, n_means = strip_averages_from_nodes(y, electrons, n_strips=n_strips)
-    _edges, p_means = strip_averages_from_nodes(y, holes, n_strips=n_strips)
-    staircase = make_staircase_profile(
-        comp,
-        length=10.0,
-        edges=edges,
-        n_strips_cm3=n_means,
-        p_strips_cm3=p_means,
-        base_layer=(40, 0),
+    staircase = build_staircase_cross_section(
+        SimpleNamespace(
+            x_um=y, y_um=np.full(y.size, 0.11), electrons_cm3=electrons, holes_cm3=holes
+        ),
+        n_strips=n_strips,
+        junction=(float(y[0]), float(y[-1])),
         zmin=0.0,
         zmax=0.22,
+        electrodes=None,
+        base_layer=(40, 0),
+        component=comp,
     )
-    stack, _section = build_doped_cross_section(
-        comp,
-        axis="x",
-        value=0.0,
-        substrate_thickness=2.0,
-        doping=staircase,
-        verbose=False,
-    )
-    return comp, stack, staircase
+    return comp, staircase.stack("rf"), staircase
 
 
 @pytest.fixture(scope="module")
@@ -96,7 +88,7 @@ class TestStaircaseDomains:
         sim, config, staircase = staircase_sim
         volumes = sim.mesh_groups["volumes"]
         materials = config["Domains"]["Materials"]
-        sigma = staircase["strips"]["sigma_s_per_m"]
+        sigma = staircase.strips["sigma_s_per_m"]
         for i in range(N_STRIPS):
             attr = volumes[f"strip_{i}"]["phys_group"]
             entries = [m for m in materials if attr in m.get("Attributes", [])]
@@ -110,7 +102,7 @@ class TestStaircaseDomains:
         # The synthetic profile is n-heavy on one side, p-heavy on the other;
         # strip averages must preserve that asymmetry end to end.
         _sim, _config, staircase = staircase_sim
-        sigma = staircase["strips"]["sigma_s_per_m"]
+        sigma = staircase.strips["sigma_s_per_m"]
         assert sigma[0] > sigma[-1]  # mu_n > mu_p: n-side more conductive
 
 

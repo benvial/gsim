@@ -21,7 +21,7 @@ import meshio
 import numpy as np
 import pytest
 
-from gsim.common.carriers import staircase_profile
+from gsim.common.stack.staircase import staircase_profile
 from gsim.femwell.adapter import solve_modes
 
 pytest.importorskip("femwell")
