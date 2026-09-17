@@ -64,8 +64,8 @@ class TestSharedStaircaseBuilder:
         rf = biased.rf.staircase()
 
         np.testing.assert_allclose(
-            np.asarray(optical.strips["edges_um"], dtype=float),
-            np.asarray(rf.strips["edges_um"], dtype=float),
+            np.asarray(optical.strips.edges_um, dtype=float),
+            np.asarray(rf.strips.edges_um, dtype=float),
         )
         assert optical.strip_names == rf.strip_names
 

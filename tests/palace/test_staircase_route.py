@@ -88,7 +88,7 @@ class TestStaircaseDomains:
         sim, config, staircase = staircase_sim
         volumes = sim.mesh_groups["volumes"]
         materials = config["Domains"]["Materials"]
-        sigma = staircase.strips["sigma_s_per_m"]
+        sigma = staircase.strips.conductivity_s_per_m
         for i in range(N_STRIPS):
             attr = volumes[f"strip_{i}"]["phys_group"]
             entries = [m for m in materials if attr in m.get("Attributes", [])]
@@ -102,7 +102,7 @@ class TestStaircaseDomains:
         # The synthetic profile is n-heavy on one side, p-heavy on the other;
         # strip averages must preserve that asymmetry end to end.
         _sim, _config, staircase = staircase_sim
-        sigma = staircase.strips["sigma_s_per_m"]
+        sigma = staircase.strips.conductivity_s_per_m
         assert sigma[0] > sigma[-1]  # mu_n > mu_p: n-side more conductive
 
 

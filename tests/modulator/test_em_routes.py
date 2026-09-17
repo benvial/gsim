@@ -72,7 +72,7 @@ class TestOpticalStaircase:
     def test_it_tiles_the_doped_slab_with_the_asked_for_strips(self, biased, staircase):
         span = biased.layout.doped_span
         assert len(staircase.strip_names) == 4
-        edges = staircase.strips["edges_um"]
+        edges = staircase.strips.edges_um
         assert edges[0] == pytest.approx(span[0])
         assert edges[-1] == pytest.approx(span[1])
 
@@ -93,7 +93,7 @@ class TestOpticalStaircase:
     def test_its_strips_carry_the_carrier_perturbed_permittivity(
         self, biased, staircase
     ):
-        eps = staircase.strips["eps_complex"]
+        eps = staircase.strips.permittivity
         assert eps.size == 4
         # Free carriers lower the index and add loss (exp(+i omega t)).
         assert np.all(eps.real < biased.optical.unperturbed_index() ** 2)
@@ -106,7 +106,7 @@ class TestOpticalStaircase:
     def test_the_strip_span_is_overridable(self, biased):
         biased.optical(route="palace", n_strips=2, strip_span=SLAB)
         staircase = biased.optical.staircase(biased.carriers.run().points[-1])
-        edges = staircase.strips["edges_um"]
+        edges = staircase.strips.edges_um
         assert edges[0] == pytest.approx(SLAB[0])
         assert edges[-1] == pytest.approx(SLAB[1])
 

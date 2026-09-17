@@ -332,21 +332,15 @@ class RFStage(EMStage):
         """The loaded solve's Staircase with the carriers switched off.
 
         Same Bias point's Carrier map, same Strips, same electrodes and
-        the same Window — every electron and hole concentration set to
-        zero, so the Strips carry no Drude conductivity and the solve
-        answers for the bare Traveling-wave electrode.
+        the same Window — every Strip at zero electron and hole
+        concentration, so it carries no Drude conductivity and the solve
+        answers for the bare Traveling-wave electrode
+        (:meth:`~gsim.common.stack.staircase.StaircaseCrossSection.unloaded`).
 
         Returns:
             The Staircase Cross-section, drawn on its own component.
         """
-        carriers = self.bias_point().carriers
-        zeroed = carriers.model_copy(
-            update={
-                "electrons_cm3": np.zeros_like(carriers.electrons_cm3),
-                "holes_cm3": np.zeros_like(carriers.holes_cm3),
-            }
-        )
-        return self._staircase_for(zeroed)
+        return self.staircase().unloaded()
 
     def _staircase_for(self, carriers: CarrierMap) -> StaircaseCrossSection:
         """The Staircase this Stage meshes, built from one Carrier map."""

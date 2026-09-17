@@ -81,7 +81,7 @@ class TestOneCall:
         )
 
     def test_strips_tile_the_junction_extent(self):
-        edges = build().strips["edges_um"]
+        edges = build().strips.edges_um
         assert edges[0] == pytest.approx(JUNCTION[0])
         assert edges[-1] == pytest.approx(JUNCTION[1])
         assert np.all(np.diff(edges) > 0)
@@ -94,10 +94,11 @@ class TestOneCall:
 class TestBothMaterialResponses:
     def test_strips_carry_the_rf_and_the_optical_response(self):
         strips = build().strips
-        for key in ("sigma_s_per_m", "dn", "dalpha_cm", "eps_complex"):
-            assert len(strips[key]) == 5
-        assert np.all(strips["sigma_s_per_m"] > 0)
-        assert np.all(strips["dn"] < 0)  # free carriers lower the index
+        assert strips.count == 5
+        assert strips.conductivity_s_per_m.size == 5
+        assert strips.permittivity.size == 5
+        assert np.all(strips.conductivity_s_per_m > 0)
+        assert np.all(strips.index_shift < 0)  # free carriers lower the index
 
     def test_the_rf_stack_carries_conductivity(self):
         staircase = build()
@@ -105,14 +106,14 @@ class TestBothMaterialResponses:
         sigmas = [
             material_of(stack, name).conductivity for name in staircase.strip_names
         ]
-        assert sigmas == pytest.approx(list(staircase.strips["sigma_s_per_m"]))
+        assert sigmas == pytest.approx(list(staircase.strips.conductivity_s_per_m))
 
     def test_the_optical_stack_carries_the_perturbed_permittivity(self):
         staircase = build(electrodes=None)
         stack = staircase.stack("optical")
         for i, name in enumerate(staircase.strip_names):
             props = material_of(stack, name)
-            expected = complex(staircase.strips["eps_complex"][i])
+            expected = complex(staircase.strips.permittivity[i])
             assert props.permittivity == pytest.approx(expected.real)
             assert props.loss_tangent > 0
 
@@ -129,23 +130,52 @@ class TestBothMaterialResponses:
         solved = build(electrodes=None, wavelength_um=1.31).strips
 
         # alpha is the model's answer and does not move with the solve.
-        assert solved["dalpha_cm"] == pytest.approx(fitted["dalpha_cm"])
-        assert solved["dn"] == pytest.approx(fitted["dn"])
+        assert solved.absorption_cm == pytest.approx(fitted.absorption_cm)
+        assert solved.index_shift == pytest.approx(fitted.index_shift)
         for at_fit, at_solve in zip(
-            fitted["eps_complex"], solved["eps_complex"], strict=True
+            fitted.permittivity, solved.permittivity, strict=True
         ):
             assert at_solve.imag == pytest.approx(at_fit.imag * 1.31 / 1.55)
 
     def test_the_solve_wavelength_defaults_to_the_fitted_one(self):
         """Omitting it keeps the model's own wavelength, as before."""
-        assert build(electrodes=None).strips["eps_complex"] == pytest.approx(
-            build(electrodes=None, wavelength_um=1.55).strips["eps_complex"]
+        assert build(electrodes=None).strips.permittivity == pytest.approx(
+            build(electrodes=None, wavelength_um=1.55).strips.permittivity
         )
 
     def test_both_stacks_share_one_component(self):
         staircase = build(electrodes=None)
         assert staircase.stack("rf") is not staircase.stack("optical")
         assert staircase.stack("rf") is staircase.stack("rf")
+
+
+class TestUnloaded:
+    """The same Staircase with its carriers switched off."""
+
+    def test_the_strips_carry_no_response(self):
+        bare = build().unloaded()
+        strips = bare.strips
+        assert np.all(strips.electrons_cm3 == 0.0)
+        assert np.all(strips.holes_cm3 == 0.0)
+        assert np.all(strips.conductivity_s_per_m == 0.0)
+        assert np.all(strips.index_shift == 0.0)
+        assert np.all(strips.permittivity.imag == 0.0)
+
+    def test_the_drawing_is_the_loaded_staircases(self):
+        loaded = build()
+        bare = loaded.unloaded()
+        assert bare.component is loaded.component
+        assert bare.strip_names == loaded.strip_names
+        assert bare.electrode_spans == loaded.electrode_spans
+        assert bare.layers == loaded.layers
+        np.testing.assert_allclose(bare.strips.edges_um, loaded.strips.edges_um)
+
+    def test_the_bare_stack_carries_no_conductivity(self):
+        loaded = build()
+        bare = loaded.unloaded()
+        for name in bare.strip_names:
+            assert material_of(bare.stack("rf"), name).conductivity == 0.0
+            assert material_of(loaded.stack("rf"), name).conductivity > 0.0
 
 
 class TestElectrodes:
@@ -266,10 +296,10 @@ class TestStripCount:
         strips = staircase.strips
 
         assert staircase.strip_names == ["strip_0"]
-        assert len(strips["edges_um"]) == 2
+        assert len(strips.edges_um) == 2
         h = np.linspace(*JUNCTION, 20001)
         electrons, _holes = analytic_carriers(h)
-        assert strips["n_cm3"][0] == pytest.approx(
+        assert strips.electrons_cm3[0] == pytest.approx(
             np.trapezoid(electrons, h) / (JUNCTION[1] - JUNCTION[0]), rel=1e-3
         )
 
@@ -277,11 +307,11 @@ class TestStripCount:
         errors = []
         for n_strips in (1, 4, 16):
             strips = build(n_strips=n_strips).strips
-            edges = np.asarray(strips["edges_um"])
+            edges = np.asarray(strips.edges_um)
             centres = 0.5 * (edges[1:] + edges[:-1])
             exact, _holes = analytic_carriers(centres)
             errors.append(
-                float(np.mean(np.abs(strips["n_cm3"] - exact)) / np.max(exact))
+                float(np.mean(np.abs(strips.electrons_cm3 - exact)) / np.max(exact))
             )
         assert errors[0] > errors[1] > errors[2]
         assert errors[-1] < 0.01
@@ -316,7 +346,7 @@ class TestDrawnGeometry:
         staircase = build(n_strips=8)
         drawn = {
             (spec.gds_layer[0], spec.gds_layer[1])
-            for name, spec in staircase._layer_specs.items()
+            for name, spec in staircase.layers.items()
             if name in staircase.strip_names
         }
         assert DEFAULT_STRIP_LAYER in drawn
@@ -338,7 +368,7 @@ class TestDrawnGeometry:
 
         spans = []
         for name in staircase.strip_names:
-            spec = staircase._layer_specs[name]
+            spec = staircase.layers[name]
             raw = component.get_polygons(layers=(tuple(spec.gds_layer),), merge=False)
             points = [
                 (point.y * dbu)

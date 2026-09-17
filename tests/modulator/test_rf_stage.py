@@ -73,7 +73,7 @@ class TestStaircase:
         staircase = biased.rf.staircase()
 
         assert len(staircase.strip_names) == 4
-        edges = np.asarray(staircase.strips["edges_um"], dtype=float)
+        edges = np.asarray(staircase.strips.edges_um, dtype=float)
         assert edges[0] == pytest.approx(CENTER_Y - HALF_WIDTH)
         assert edges[-1] == pytest.approx(CENTER_Y + HALF_WIDTH)
 
@@ -82,7 +82,7 @@ class TestStaircase:
         slab = (CENTER_Y - HALF_WIDTH - PAD_WIDTH, CENTER_Y + HALF_WIDTH + PAD_WIDTH)
         biased.rf(n_strips=4, strip_span=slab)
 
-        edges = np.asarray(biased.rf.staircase().strips["edges_um"], dtype=float)
+        edges = np.asarray(biased.rf.staircase().strips.edges_um, dtype=float)
 
         assert edges[0] == pytest.approx(slab[0])
         assert edges[-1] == pytest.approx(slab[1])
@@ -102,17 +102,21 @@ class TestStaircase:
     def test_the_strips_carry_the_carrier_derived_conductivity(self, biased):
         staircase = biased.rf.staircase()
 
-        sigma = np.asarray(staircase.strips["sigma_s_per_m"], dtype=float)
+        sigma = np.asarray(staircase.strips.conductivity_s_per_m, dtype=float)
         assert np.all(sigma > 0.0)
         # mu_n > mu_p, and the n side is the low-h one on this device.
         assert sigma[0] > sigma[-1]
 
     def test_the_mobilities_come_from_the_carriers_stage(self, biased):
         biased.carriers(mu_n_cm2=1.0, mu_p_cm2=1.0)
-        slow = np.asarray(biased.rf.staircase().strips["sigma_s_per_m"], dtype=float)
+        slow = np.asarray(
+            biased.rf.staircase().strips.conductivity_s_per_m, dtype=float
+        )
 
         biased.carriers(mu_n_cm2=1000.0, mu_p_cm2=1000.0)
-        fast = np.asarray(biased.rf.staircase().strips["sigma_s_per_m"], dtype=float)
+        fast = np.asarray(
+            biased.rf.staircase().strips.conductivity_s_per_m, dtype=float
+        )
 
         assert np.all(fast > slow)
 
@@ -228,8 +232,15 @@ class TestStripMaterials:
     def test_the_strips_are_valid_up_to_the_highest_frequency_solved(self, biased):
         biased.rf(frequencies_hz=[10e9, 90e9])
 
-        materials = biased.rf.staircase().doping("rf")["materials"]
-        model = materials["strip_0"].dispersion_models[0]
+        from gsim.common.stack.materials import MaterialProperties
+
+        props = biased.rf.staircase().stack("rf").materials["strip_0"]
+        material = (
+            props
+            if isinstance(props, MaterialProperties)
+            else MaterialProperties.model_validate(props)
+        )
+        model = material.dispersion_models[0]
 
         assert model.validity.valid_frequency == (0, 90e9)
 
@@ -342,7 +353,7 @@ class TestUnloadedStaircase:
     def test_the_carriers_are_switched_off(self, biased):
         staircase = biased.rf.unloaded_staircase()
 
-        sigma = np.asarray(staircase.strips["sigma_s_per_m"], dtype=float)
+        sigma = np.asarray(staircase.strips.conductivity_s_per_m, dtype=float)
         assert np.all(sigma == 0.0)
 
     def test_the_geometry_is_the_loaded_solves(self, biased):
@@ -351,8 +362,8 @@ class TestUnloadedStaircase:
 
         assert unloaded.strip_names == loaded.strip_names
         assert unloaded.electrode_spans == loaded.electrode_spans
-        assert np.asarray(unloaded.strips["edges_um"], dtype=float) == pytest.approx(
-            np.asarray(loaded.strips["edges_um"], dtype=float)
+        assert np.asarray(unloaded.strips.edges_um, dtype=float) == pytest.approx(
+            np.asarray(loaded.strips.edges_um, dtype=float)
         )
 
 

@@ -20,9 +20,9 @@ Everything that turns a Carrier map into per-Strip averages lives here:
 - :func:`build_staircase_cross_section` does the whole job in one call: a
   Carrier map, a strip count and the Junction extent in, a meshable
   Staircase cross-section out — the strip Regions, their material
-  response for *both* EM Stages, and the flanking electrodes. The
-  drawing of the Strips and the material of each one are its own
-  private steps.
+  response for *both* EM Stages (:class:`Strips`), and the flanking
+  electrodes. The drawing of the Strips and the material of each one are
+  its own private steps.
 - :func:`surroundings_from_section` supplies what the Strips are *not*:
   every other Region of the drawn Cross-section, cut against the Strip
   footprint, so the Staircase is the drawn waveguide with its doped
@@ -36,9 +36,9 @@ the window carrying the profile average.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, cast
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -69,6 +69,7 @@ __all__ = [
     "ConductorModel",
     "ElectrodeSpec",
     "StaircaseCrossSection",
+    "Strips",
     "SurroundingRegion",
     "build_staircase_cross_section",
     "carrier_map_extent",
@@ -245,17 +246,78 @@ def strip_averages_from_nodes(
     return staircase_profile(h_arr, v_arr, n_bins=n_strips, h_min=h_min, h_max=h_max)
 
 
+@dataclass(frozen=True)
+class Strips:
+    """The Strips of a Staircase: what each carries, Strip by Strip.
+
+    One entry per Strip, low edge first. The concentrations are the
+    Carrier map's averages over the Strip; the response is what those
+    averages turn into — the Drude conductivity the RF Stage meshes and
+    the plasma-dispersion permittivity the optical Stage meshes.
+
+    Attributes:
+        edges_um: Ascending Strip edges along the junction axis (um),
+            one more than the Strip count.
+        electrons_cm3: Average electron concentration per Strip (cm^-3).
+        holes_cm3: Average hole concentration per Strip (cm^-3).
+        index_shift: Refractive-index shift per Strip.
+        absorption_cm: Free-carrier absorption per Strip (cm^-1).
+        conductivity_s_per_m: Drude conductivity per Strip (S/m).
+        permittivity: Complex relative permittivity per Strip at the
+            optical wavelength (``exp(+i omega t)``: lossy means
+            ``Im < 0``).
+    """
+
+    edges_um: NDArray[np.float64]
+    electrons_cm3: NDArray[np.float64]
+    holes_cm3: NDArray[np.float64]
+    index_shift: NDArray[np.float64]
+    absorption_cm: NDArray[np.float64]
+    conductivity_s_per_m: NDArray[np.float64]
+    permittivity: NDArray[np.complex128]
+
+    def __post_init__(self) -> None:
+        """Every per-Strip array has one entry per Strip."""
+        count = self.edges_um.size - 1
+        if count < 1:
+            raise ValueError("edges_um needs at least two values (one strip).")
+        if np.any(np.diff(self.edges_um) <= 0):
+            raise ValueError("edges_um must be strictly ascending.")
+        for name in (
+            "electrons_cm3",
+            "holes_cm3",
+            "index_shift",
+            "absorption_cm",
+            "conductivity_s_per_m",
+            "permittivity",
+        ):
+            if getattr(self, name).size != count:
+                raise ValueError(
+                    f"{name} has {getattr(self, name).size} values for {count} strips."
+                )
+
+    @property
+    def count(self) -> int:
+        """Number of Strips."""
+        return int(self.edges_um.size - 1)
+
+    @property
+    def span(self) -> tuple[float, float]:
+        """``(min, max)`` extent the Strips tile (um)."""
+        return (float(self.edges_um[0]), float(self.edges_um[-1]))
+
+
 def _strip_response(
     edges: ArrayLike,
     n_strips_cm3: ArrayLike,
     p_strips_cm3: ArrayLike,
     *,
-    n0: float = DEFAULT_SI_INDEX,
-    dispersion: PlasmaDispersionModel | None = None,
-    wavelength_um: float | None = None,
-    mu_n_cm2: float = DEFAULT_MU_N_CM2,
-    mu_p_cm2: float = DEFAULT_MU_P_CM2,
-) -> dict[str, Any]:
+    n0: float,
+    dispersion: PlasmaDispersionModel,
+    wavelength_um: float | None,
+    mu_n_cm2: float,
+    mu_p_cm2: float,
+) -> Strips:
     """Per-strip material response of a Staircase, for both EM Stages.
 
     Args:
@@ -263,9 +325,7 @@ def _strip_response(
         n_strips_cm3: Per-strip average electron concentration (cm^-3).
         p_strips_cm3: Per-strip average hole concentration (cm^-3).
         n0: Unperturbed refractive index of the strips.
-        dispersion: Plasma-dispersion coefficients. The optical response
-            (``dn``, ``dalpha_cm``, ``eps_complex``) is only computed when
-            a model is given.
+        dispersion: Plasma-dispersion coefficients.
         wavelength_um: Vacuum wavelength the optical Stage solves at (um),
             which sets each Strip's extinction
             ``kappa = dalpha_cm lambda / 4 pi``. The model's own
@@ -276,58 +336,54 @@ def _strip_response(
         mu_p_cm2: Hole mobility (cm^2/Vs) for the RF conductivity.
 
     Returns:
-        Dict with ``edges_um``, ``n_cm3``, ``p_cm3``, ``sigma_s_per_m``
-        and — with a dispersion model — ``dn``, ``dalpha_cm`` and
-        ``eps_complex``.
+        The typed :class:`Strips` record.
     """
     edge_arr = np.asarray(edges, dtype=np.float64).ravel()
     n_arr = np.asarray(n_strips_cm3, dtype=np.float64).ravel()
     p_arr = np.asarray(p_strips_cm3, dtype=np.float64).ravel()
-    sigma = carrier_conductivity(n_arr, p_arr, mu_n_cm2=mu_n_cm2, mu_p_cm2=mu_p_cm2)
-    strips_info: dict[str, Any] = {
-        "edges_um": edge_arr,
-        "n_cm3": n_arr,
-        "p_cm3": p_arr,
-        "sigma_s_per_m": np.asarray(sigma, dtype=np.float64),
-    }
-    if dispersion is not None:
-        dn = np.asarray(carrier_index_shift(n_arr, p_arr, model=dispersion))
-        dalpha = np.asarray(carrier_absorption_cm(n_arr, p_arr, model=dispersion))
-        strips_info["dn"] = dn
-        strips_info["dalpha_cm"] = dalpha
-        strips_info["eps_complex"] = np.asarray(
+    dn = np.asarray(carrier_index_shift(n_arr, p_arr, model=dispersion))
+    dalpha = np.asarray(carrier_absorption_cm(n_arr, p_arr, model=dispersion))
+    at_um = wavelength_um if wavelength_um is not None else dispersion.wavelength_um
+    return Strips(
+        edges_um=edge_arr,
+        electrons_cm3=n_arr,
+        holes_cm3=p_arr,
+        index_shift=np.asarray(dn, dtype=np.float64),
+        absorption_cm=np.asarray(dalpha, dtype=np.float64),
+        conductivity_s_per_m=np.asarray(
+            carrier_conductivity(n_arr, p_arr, mu_n_cm2=mu_n_cm2, mu_p_cm2=mu_p_cm2),
+            dtype=np.float64,
+        ),
+        permittivity=np.asarray(
             [
                 permittivity_perturbation(
                     n0=n0,
                     dn=float(dn[i]),
                     dalpha_cm=float(dalpha[i]),
-                    wavelength_um=(
-                        wavelength_um
-                        if wavelength_um is not None
-                        else dispersion.wavelength_um
-                    ),
+                    wavelength_um=at_um,
                 )
                 for i in range(n_arr.size)
-            ]
-        )
-    return strips_info
+            ],
+            dtype=np.complex128,
+        ),
+    )
 
 
 def _strip_material(
     name: str,
-    strips_info: dict[str, Any],
+    strips: Strips,
     index: int,
     *,
-    target: Literal["rf", "optical"] = "rf",
-    permittivity: float = 11.9,
-    fmax: float = 200e9,
+    target: Literal["rf", "optical"],
+    permittivity: float,
+    fmax: float,
 ) -> dict[str, MaterialProperties]:
     """Material of one Strip, for the RF or the optical Stage.
 
     Args:
         name: Region (and material) name of the strip.
-        strips_info: Per-strip response from :func:`_strip_response`.
-        index: Strip index within that response.
+        strips: The Staircase's Strips.
+        index: Strip index within them.
         target: ``"rf"`` (Drude sigma) or ``"optical"`` (perturbed eps).
         permittivity: Relative permittivity of the RF strips.
         fmax: Upper validity frequency (Hz) of the RF Drude material.
@@ -341,15 +397,13 @@ def _strip_material(
                 (
                     name,
                     permittivity,
-                    float(strips_info["sigma_s_per_m"][index]),
+                    float(strips.conductivity_s_per_m[index]),
                     f"carrier staircase ({name}) -- Drude sigma",
                 )
             ],
             fmax=fmax,
         )
-    if "eps_complex" not in strips_info:
-        raise ValueError("target='optical' requires a dispersion model.")
-    eps = complex(strips_info["eps_complex"][index])
+    eps = complex(strips.permittivity[index])
     eps_re = float(eps.real)
     # exp(+i omega t) convention: lossy medium has Im(eps) < 0.
     loss_tangent = -float(eps.imag) / eps_re if eps_re > 0 else 0.0
@@ -362,123 +416,52 @@ def _strip_material(
     }
 
 
-def _make_staircase_profile(
+def _draw_strips(
     comp: gf.Component,
     *,
+    edges: NDArray[np.float64],
     length: float,
-    edges: ArrayLike,
-    n_strips_cm3: ArrayLike,
-    p_strips_cm3: ArrayLike,
     base_layer: tuple[int, int],
     zmin: float,
     zmax: float,
-    name_prefix: str = "strip_",
-    target: Literal["rf", "optical"] = "rf",
-    permittivity: float = 11.9,
-    n0: float = DEFAULT_SI_INDEX,
-    dispersion: PlasmaDispersionModel | None = None,
-    wavelength_um: float | None = None,
-    mu_n_cm2: float = DEFAULT_MU_N_CM2,
-    mu_p_cm2: float = DEFAULT_MU_P_CM2,
-    fmax: float = 200e9,
-    mesh_resolution: str | float = "fine",
-) -> dict[str, Any]:
-    """Draw N carrier strips and build their layer specs and materials.
+    name_prefix: str,
+    mesh_resolution: str | float,
+) -> tuple[dict[str, Layer], dict[str, float]]:
+    """Draw N Strips on a component and build their layer specs.
 
     Strip ``i`` spans ``[edges[i], edges[i+1]]`` along y and gets a
-    rectangle on GDS layer ``(base_layer[0], base_layer[1] + i)``, a
-    ``Layer`` spec named ``"{name_prefix}{i}"``, and a material from its
-    average carrier concentrations:
-
-    - ``target="rf"``: Drude conductivity
-      ``sigma_i = q (mu_n n_i + mu_p p_i)`` with the shared real
-      *permittivity* (same machinery as the doped-slab regions).
-    - ``target="optical"``: complex permittivity
-      ``(n0 + Delta n_i - i kappa_i)^2`` from the plasma-dispersion
-      *dispersion* model, stored as permittivity + loss tangent.
-
-    The returned dict has the same shape as
-    :func:`gsim.common.stack.pn_junction.make_doping_profile` (``layer_specs``,
-    ``materials``, ``centres``) so it feeds directly into
-    ``build_doped_cross_section(doping=...)``; a ``strips`` entry carries
-    the per-strip numbers for inspection and convergence checks.
+    rectangle on GDS layer ``(base_layer[0], base_layer[1] + i)`` and a
+    ``Layer`` spec named ``"{name_prefix}{i}"`` whose material shares the
+    name, so the per-Strip material registered under it is what the
+    mesher resolves.
 
     Args:
         comp: gdsfactory component the strip rectangles are added to.
+        edges: Ascending strip edges along y (um), length N+1.
         length: Rectangle length along the propagation direction (um).
-        edges: Ascending strip edges along y (um), length N+1 (e.g. from
-            :func:`strip_averages_from_nodes`).
-        n_strips_cm3: Per-strip average electron concentration (cm^-3).
-        p_strips_cm3: Per-strip average hole concentration (cm^-3).
         base_layer: ``(layer, datatype)`` of strip 0; strip ``i`` uses
             ``datatype + i``.
         zmin: Bottom z of the strips (um).
         zmax: Top z of the strips (um).
         name_prefix: Region-name prefix.
-        target: ``"rf"`` (Drude sigma) or ``"optical"`` (Soref eps).
-        permittivity: Relative permittivity of the RF strips (and the
-            unperturbed lattice for optics bookkeeping).
-        n0: Unperturbed refractive index for ``target="optical"``.
-        dispersion: Plasma-dispersion coefficients; required for
-            ``target="optical"``.
-        wavelength_um: Vacuum wavelength the optical Stage solves at (um);
-            the dispersion model's own wavelength stands in when omitted.
-        mu_n_cm2: Electron mobility (cm^2/Vs) for the RF conductivity.
-        mu_p_cm2: Hole mobility (cm^2/Vs) for the RF conductivity.
-        fmax: Upper validity frequency (Hz) of the RF Drude materials.
         mesh_resolution: Mesh resolution assigned to the strip layers.
 
     Returns:
-        Dict with keys ``layer_specs``, ``materials``, ``centres`` and
-        ``strips`` (per-strip edges/values).
+        ``(layer_specs, centres)`` keyed by Strip name, low edge first.
     """
     from gsim.common.stack.extractor import Layer
 
-    edge_arr = np.asarray(edges, dtype=np.float64).ravel()
-    n_arr = np.asarray(n_strips_cm3, dtype=np.float64).ravel()
-    p_arr = np.asarray(p_strips_cm3, dtype=np.float64).ravel()
-
-    if edge_arr.size < 2:
-        raise ValueError("edges needs at least two values (one strip).")
-    if np.any(np.diff(edge_arr) <= 0):
-        raise ValueError("edges must be strictly ascending.")
-    n_strips = edge_arr.size - 1
-    if n_arr.size != n_strips or p_arr.size != n_strips:
-        raise ValueError(
-            f"Expected {n_strips} per-strip values for {n_strips + 1} edges, "
-            f"got {n_arr.size} electron and {p_arr.size} hole values."
-        )
     if length <= 0:
         raise ValueError("length must be positive.")
     if zmax <= zmin:
         raise ValueError("zmax must exceed zmin.")
-    if target == "optical" and dispersion is None:
-        raise ValueError("target='optical' requires a dispersion model.")
 
-    result: dict[str, Any] = {
-        "layer_specs": {},
-        "materials": {},
-        "centres": {},
-    }
-    layer_specs = cast("dict[str, Layer]", result["layer_specs"])
-    materials: dict[str, Any] = result["materials"]
-    centres: dict[str, float] = result["centres"]
-
-    strips_info = _strip_response(
-        edge_arr,
-        n_arr,
-        p_arr,
-        n0=n0,
-        dispersion=dispersion,
-        wavelength_um=wavelength_um,
-        mu_n_cm2=mu_n_cm2,
-        mu_p_cm2=mu_p_cm2,
-    )
-
-    for i in range(n_strips):
+    layer_specs: dict[str, Layer] = {}
+    centres: dict[str, float] = {}
+    for i in range(edges.size - 1):
         name = f"{name_prefix}{i}"
         gds_layer = (base_layer[0], base_layer[1] + i)
-        y0, y1 = float(edge_arr[i]), float(edge_arr[i + 1])
+        y0, y1 = float(edges[i]), float(edges[i + 1])
 
         # Drawn from its two edges rather than from a width and a centre:
         # adjacent Strips then hand the GDS grid the identical coordinate
@@ -488,7 +471,6 @@ def _make_staircase_profile(
             [(0.0, y0), (length, y0), (length, y1), (0.0, y1)], layer=gds_layer
         )
         centres[name] = (y0 + y1) / 2
-
         layer_specs[name] = Layer(
             name=name,
             gds_layer=gds_layer,
@@ -499,20 +481,7 @@ def _make_staircase_profile(
             layer_type="dielectric",
             mesh_resolution=mesh_resolution,
         )
-
-        materials.update(
-            _strip_material(
-                name,
-                strips_info,
-                i,
-                target=target,
-                permittivity=permittivity,
-                fmax=fmax,
-            )
-        )
-
-    result["strips"] = strips_info
-    return result
+    return layer_specs, centres
 
 
 #: How the drawn conductors of a Traveling-wave electrode are expressed
@@ -580,26 +549,26 @@ class StaircaseCrossSection:
     Attributes:
         component: The gdsfactory component carrying the strip and
             electrode rectangles.
-        strips: Per-strip numbers from :func:`_strip_response` — edges,
-            average concentrations, Drude conductivity, and the optical
-            index shift, absorption and permittivity.
+        strips: The :class:`Strips` — edges, average concentrations, and
+            the conductivity and permittivity each carries.
         strip_names: Region names of the strips, low edge first.
         electrode_names: Region names of the electrodes (empty when the
             Staircase was built without them).
         electrode_spans: ``(min, max)`` extent of each electrode along the
             junction axis (um), in the same order as the names.
-        strip_span: ``(min, max)`` extent the Strips tile (um).
         surroundings: The drawn device's own Regions redrawn around the
             Strips (empty on a Staircase built without them).
+        layers: Every Region the Staircase drew — Strips, electrodes and
+            surroundings — as the layer spec the mesher reads, by name.
     """
 
     component: gf.Component
-    strips: dict[str, Any]
+    strips: Strips
     strip_names: list[str]
     electrode_names: tuple[str, ...]
     electrode_spans: tuple[tuple[float, float], ...]
     surroundings: tuple[SurroundingRegion, ...]
-    _layer_specs: dict[str, Layer]
+    layers: dict[str, Layer]
     _centres: dict[str, float]
     _electrodes: ElectrodeSpec | None
     _axis: Literal["x", "y", "z"]
@@ -607,13 +576,13 @@ class StaircaseCrossSection:
     _substrate_thickness: float
     _permittivity: float
     _fmax: float
+    _respond: Callable[[ArrayLike, ArrayLike], Strips]
     _stacks: dict[str, LayerStack] = field(default_factory=dict)
 
     @property
     def strip_span(self) -> tuple[float, float]:
         """``(min, max)`` extent the Strips actually tile (um)."""
-        edges = np.asarray(self.strips["edges_um"], dtype=np.float64).ravel()
-        return (float(edges[0]), float(edges[-1]))
+        return self.strips.span
 
     @property
     def conductor_model(self) -> ConductorModel | None:
@@ -649,10 +618,27 @@ class StaircaseCrossSection:
                 f"{list(self.electrode_names)}."
             )
         index = self.electrode_names.index(name)
-        layer = self._layer_specs[name]
+        layer = self.layers[name]
         return (self.electrode_spans[index], (layer.zmin, layer.zmax))
 
-    def doping(self, target: Literal["rf", "optical"] = "rf") -> dict[str, Any]:
+    def unloaded(self) -> StaircaseCrossSection:
+        """The same Staircase with its carriers switched off.
+
+        Same Strips, same electrodes, same surroundings and the same
+        drawing — every Strip's electron and hole concentration set to
+        zero, so it carries no Drude conductivity and no plasma
+        dispersion, and a solve of it answers for the bare
+        Traveling-wave electrode. The "EM solve of the bare electrode"
+        half of the classic loaded-line workflow.
+
+        Returns:
+            A new Staircase over the same component.
+        """
+        zeros = np.zeros(self.strips.count, dtype=np.float64)
+        bare = self._respond(zeros, zeros)
+        return replace(self, strips=bare, _stacks={})
+
+    def _doping(self, target: Literal["rf", "optical"]) -> dict[str, Any]:
         """Layer specs, materials and centres for ``build_doped_cross_section``.
 
         Args:
@@ -681,7 +667,7 @@ class StaircaseCrossSection:
             if region.properties is not None
         }
         return {
-            "layer_specs": dict(self._layer_specs),
+            "layer_specs": dict(self.layers),
             # The drawn stack's own material entries first, so a Strip or
             # an electrode sharing a name still wins: the Staircase is
             # what the Carrier map speaks for.
@@ -770,7 +756,7 @@ class StaircaseCrossSection:
                 axis=self._axis,
                 value=self._value,
                 substrate_thickness=self._substrate_thickness,
-                doping=self.doping(target),
+                doping=self._doping(target),
                 verbose=False,
             )
             self._stacks[target] = stack
@@ -1179,33 +1165,37 @@ def build_staircase_cross_section(
         v_range=band_range,
     )
 
+    model = (
+        dispersion
+        if dispersion is not None
+        else PlasmaDispersionModel.nedeljkovic_1550()
+    )
+
+    def respond(n_cm3: ArrayLike, p_cm3: ArrayLike) -> Strips:
+        """The Strips these averages make, under this Staircase's coupling."""
+        return _strip_response(
+            edges,
+            n_cm3,
+            p_cm3,
+            n0=n0,
+            dispersion=model,
+            wavelength_um=wavelength_um,
+            mu_n_cm2=mu_n_cm2,
+            mu_p_cm2=mu_p_cm2,
+        )
+
+    strips = respond(n_means, p_means)
     comp = component if component is not None else gf.Component()
-    profile = _make_staircase_profile(
+    layer_specs, centres = _draw_strips(
         comp,
+        edges=strips.edges_um,
         length=length,
-        edges=edges,
-        n_strips_cm3=n_means,
-        p_strips_cm3=p_means,
         base_layer=base_layer,
         zmin=zmin,
         zmax=zmax,
         name_prefix=name_prefix,
-        target="rf",
-        permittivity=permittivity,
-        n0=n0,
-        dispersion=(
-            dispersion
-            if dispersion is not None
-            else PlasmaDispersionModel.nedeljkovic_1550()
-        ),
-        wavelength_um=wavelength_um,
-        mu_n_cm2=mu_n_cm2,
-        mu_p_cm2=mu_p_cm2,
-        fmax=fmax,
         mesh_resolution=mesh_resolution,
     )
-    layer_specs = cast("dict[str, Layer]", profile["layer_specs"])
-    centres = cast("dict[str, float]", profile["centres"])
     strip_names = list(layer_specs)
 
     electrode_names: tuple[str, ...] = ()
@@ -1242,12 +1232,12 @@ def build_staircase_cross_section(
 
     return StaircaseCrossSection(
         component=comp,
-        strips=cast("dict[str, Any]", profile["strips"]),
+        strips=strips,
         strip_names=strip_names,
         electrode_names=electrode_names,
         electrode_spans=electrode_spans,
         surroundings=tuple(surroundings),
-        _layer_specs=layer_specs,
+        layers=layer_specs,
         _centres=centres,
         _electrodes=electrodes,
         _axis=axis,
@@ -1255,4 +1245,5 @@ def build_staircase_cross_section(
         _substrate_thickness=substrate_thickness,
         _permittivity=permittivity,
         _fmax=fmax,
+        _respond=respond,
     )

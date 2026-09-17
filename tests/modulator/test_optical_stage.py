@@ -354,19 +354,19 @@ class TestStaircaseWavelength:
         assert study.carriers.dispersion.wavelength_um != wavelength_um
         strips = self._strips(study, wavelength_um=wavelength_um)
 
-        for i, eps in enumerate(strips["eps_complex"]):
+        for i, eps in enumerate(strips.permittivity):
             expected = permittivity_perturbation(
                 n0=study.optical.unperturbed_index(),
-                dn=float(strips["dn"][i]),
-                dalpha_cm=float(strips["dalpha_cm"][i]),
+                dn=float(strips.index_shift[i]),
+                dalpha_cm=float(strips.absorption_cm[i]),
                 wavelength_um=wavelength_um,
             )
             assert eps == pytest.approx(expected)
 
     def test_moving_the_solve_wavelength_moves_the_strip_loss(self, study):
         """And it is the solve wavelength that moves it, not the fit."""
-        at_fit = self._strips(study, wavelength_um=1.55)["eps_complex"]
-        at_solve = self._strips(study, wavelength_um=1.31)["eps_complex"]
+        at_fit = self._strips(study, wavelength_um=1.55).permittivity
+        at_solve = self._strips(study, wavelength_um=1.31).permittivity
 
         for fitted, solved in zip(at_fit, at_solve, strict=True):
             assert solved.imag == pytest.approx(fitted.imag * 1.31 / 1.55)

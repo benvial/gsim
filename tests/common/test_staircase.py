@@ -237,7 +237,7 @@ class TestDrawnStripsRF:
         assert spec.zmin == 0.0
         assert spec.zmax == pytest.approx(0.22)
         expected_sigma = carrier_conductivity(1e18, 0.0)
-        assert staircase.strips["sigma_s_per_m"][0] == pytest.approx(expected_sigma)
+        assert staircase.strips.conductivity_s_per_m[0] == pytest.approx(expected_sigma)
         assert _material(stack, "strip_0").conductivity == pytest.approx(expected_sigma)
 
     def test_arbitrary_strip_count_layers_and_materials(self):
@@ -255,7 +255,7 @@ class TestDrawnStripsRF:
             assert stack.layers[name].material in stack.materials
         # Linear profiles: each strip average is the value at its centre.
         np.testing.assert_allclose(
-            staircase.strips["sigma_s_per_m"],
+            staircase.strips.conductivity_s_per_m,
             carrier_conductivity(rise(centres), fall(centres)),
             rtol=1e-6,
         )
@@ -286,4 +286,4 @@ class TestDrawnStripsOptical:
         assert material.permittivity < n0**2
         assert material.loss_tangent > 0.0
         assert dalpha > 0.0
-        np.testing.assert_allclose(staircase.strips["dn"], [dn])
+        np.testing.assert_allclose(staircase.strips.index_shift, [dn])
