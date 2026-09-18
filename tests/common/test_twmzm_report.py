@@ -132,6 +132,109 @@ class TestFiguresOfMerit:
         )
 
 
+class TestMachZehnder:
+    """The Phase shifter put in the arms of a Mach-Zehnder, in the report."""
+
+    RF = line_params_from_neff(FREQ, 3.8 + 0j, z0_ohm=50.0)
+    SLOPE = -2e-4
+    LENGTH_M = 5e-3
+    #: lambda / (2 |slope| L) for the linear sweep of ``_optical``: 0.775 V.
+    V_PI = WL_UM * 1e-6 / (2.0 * abs(SLOPE) * LENGTH_M)
+
+    def _report(self, optical=None, **settings):
+        optical = _optical(slope=self.SLOPE) if optical is None else optical
+        return twmzm_figures_of_merit(
+            self.RF, optical, length_m=self.LENGTH_M, **settings
+        )
+
+    def test_push_pull_at_quadrature_is_the_default(self):
+        report = self._report()
+        assert report.drive == "push-pull"
+        # The arms rest on the middle of the 0-4 V sweep, and the voltage
+        # between them can then reach +/- 4 V.
+        assert report.arm_bias_v == pytest.approx(2.0)
+        assert report.drive_v[[0, -1]] == pytest.approx([-4.0, 4.0])
+        assert report.transfer.shape == report.drive_v.shape
+        assert np.interp(0.0, report.drive_v, report.transfer) == pytest.approx(0.5)
+
+    def test_v_pi_is_the_modulation_efficiency_over_the_length(self):
+        report = self._report()
+        assert report.v_pi_v == pytest.approx(self.V_PI)
+        assert report.v_pi_v == pytest.approx(
+            report.vpi_l_vcm[0] / (self.LENGTH_M * 1e2)
+        )
+        assert report.transfer_message is None
+
+    def test_a_lossless_balanced_modulator_has_no_loss_and_full_extinction(self):
+        report = self._report()
+        assert report.insertion_loss_db == pytest.approx(0.0, abs=1e-12)
+        assert report.extinction_ratio_db == np.inf
+        assert report.transfer.max() == pytest.approx(1.0, abs=1e-4)
+        assert report.transfer.min() == pytest.approx(0.0, abs=1e-4)
+
+    def test_the_loss_sweep_reaches_the_insertion_loss(self):
+        optical = _optical(slope=self.SLOPE)
+        optical.alpha_opt_db_cm = np.full_like(optical.voltages_v, 8.0)
+        report = self._report(optical)
+        # 8 dB/cm over 5 mm, in both arms alike.
+        assert report.insertion_loss_db == pytest.approx(4.0)
+        assert report.extinction_ratio_db == np.inf
+
+    def test_the_arm_imbalance_reaches_the_extinction_ratio(self):
+        report = self._report(arm_imbalance_db=0.5)
+        q = 10.0 ** (-0.5 / 20.0)
+        assert report.extinction_ratio_db == pytest.approx(
+            20.0 * np.log10((1.0 + q) / (1.0 - q))
+        )
+
+    def test_the_phase_offset_moves_the_rest_point(self):
+        report = self._report(phase_offset_rad=0.0)
+        assert np.interp(0.0, report.drive_v, report.transfer) == pytest.approx(1.0)
+
+    def test_the_chirp_follows_the_drive_configuration(self):
+        push_pull = self._report()
+        single = self._report(drive="single-drive")
+        assert push_pull.chirp.shape == push_pull.voltages_v.shape
+        assert np.all(push_pull.chirp == 0.0)
+        assert single.chirp == pytest.approx(1.0)
+        assert self._report(
+            drive="single-drive", phase_offset_rad=-np.pi / 2.0
+        ).chirp == pytest.approx(-1.0)
+
+    def test_a_single_drive_rests_where_it_is_told_to(self):
+        report = self._report(drive="single-drive", arm_bias_v=0.0)
+        assert report.arm_bias_v == 0.0
+        assert report.drive_v[[0, -1]] == pytest.approx([0.0, 4.0])
+
+    def test_a_sweep_too_short_to_reach_v_pi_says_so(self):
+        # A tenth of the index shift: V_pi is 7.75 V and the sweep spans 4.
+        report = self._report(_optical(slope=self.SLOPE / 10.0), drive="single-drive")
+        assert report.v_pi_v is None
+        assert report.insertion_loss_db is None
+        assert report.extinction_ratio_db is None
+        assert "too short to reach V_pi" in report.transfer_message
+        # The transfer it did cover is still reported.
+        assert np.all(np.isfinite(report.transfer))
+
+    def test_a_sweep_out_of_bias_order_is_read_in_order(self):
+        ordered = _optical(slope=self.SLOPE)
+        ordered.alpha_opt_db_cm = 8.0 - ordered.voltages_v + 0.1 * ordered.voltages_v**2
+        shuffle = np.array([3, 0, 8, 1, 5, 2, 7, 4, 6])
+        shuffled = OpticalPhaseSweep(
+            voltages_v=ordered.voltages_v[shuffle],
+            dn_eff=ordered.dn_eff[shuffle],
+            alpha_opt_db_cm=ordered.alpha_opt_db_cm[shuffle],
+            wavelength_um=WL_UM,
+            n_group=3.8,
+        )
+        expected = self._report(ordered, drive="single-drive")
+        report = self._report(shuffled, drive="single-drive")
+        assert report.transfer == pytest.approx(expected.transfer)
+        assert report.v_pi_v == pytest.approx(expected.v_pi_v)
+        # The chirp is per bias point, so it stays in the sweep's own order.
+        assert report.chirp == pytest.approx(expected.chirp[shuffle])
+
+
 class TestUnloadedFlag:
     def test_line_params_are_loaded_unless_said_otherwise(self):
         rf = line_params_from_neff(FREQ, 2.5 + 0j, z0_ohm=50.0)

@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 import pytest
 
+from gsim.common.twmzm import mzm_transfer, mzm_transfer_figures
 from gsim.common.twmzm_report import (
     OpticalPhaseSweep,
     line_params_from_neff,
@@ -220,6 +221,108 @@ class TestReport:
 
         with pytest.raises(ValueError, match="charge"):
             study.line.run()
+
+
+class TestMachZehnder:
+    """The Phase shifter in the arms of a Mach-Zehnder: transfer and chirp."""
+
+    #: Long enough for the canned sweep's 1.3e-4 index shift to reach V_pi.
+    LENGTH_UM = 30000.0
+
+    def test_push_pull_at_quadrature_is_the_default(self, study):
+        assert study.line.drive == "push-pull"
+        assert study.line.arm_bias_v is None
+        assert study.line.arm_imbalance_db == 0.0
+        assert study.line.phase_offset_rad == pytest.approx(np.pi / 2.0)
+
+    def test_an_unknown_drive_configuration_is_rejected(self, study):
+        with pytest.raises(ValueError, match="drive"):
+            study.line(drive="dual-drive")
+
+    def test_the_report_carries_the_transfer_and_its_figures(self, solved):
+        solved.line(length_um=self.LENGTH_UM, n_group=N_GROUP)
+        report = solved.line.run()
+
+        sweep = optical_sweep()
+        settings = {"length_m": self.LENGTH_UM * 1e-6, "wavelength_um": WAVELENGTH_UM}
+        figures = mzm_transfer_figures(
+            sweep.voltages, sweep.index_shift, sweep.loss_db_cm, **settings
+        )
+        assert report.drive == "push-pull"
+        assert report.arm_bias_v == pytest.approx(1.0)
+        assert report.drive_v[[0, -1]] == pytest.approx([-2.0, 2.0])
+        assert report.transfer == pytest.approx(
+            mzm_transfer(
+                report.drive_v,
+                sweep.voltages,
+                sweep.index_shift,
+                sweep.loss_db_cm,
+                **settings,
+            )
+        )
+        assert report.v_pi_v == pytest.approx(figures.v_pi_v)
+        assert report.insertion_loss_db == pytest.approx(figures.insertion_loss_db)
+        assert report.extinction_ratio_db == pytest.approx(figures.extinction_ratio_db)
+        assert report.transfer_message is None
+        # 0.01 dB/cm over 3 cm: next to nothing lost, and a loss that barely
+        # moves with bias leaves the arms all but balanced at the null.
+        assert 0.35 < report.v_pi_v < 0.45
+        assert report.insertion_loss_db == pytest.approx(0.027, abs=1e-3)
+        assert report.extinction_ratio_db > 60.0
+
+    def test_both_drive_configurations_come_from_one_solve(self, solved):
+        solved.line(length_um=self.LENGTH_UM, n_group=N_GROUP, drive="push-pull")
+        push_pull = solved.line.run()
+        solved.line(drive="single-drive")
+        single = solved.line.run()
+
+        assert solved.solves == {"optical": 1, "rf": 1}
+        assert single.drive == "single-drive"
+        # The voltage between the arms reaches half as far on one arm alone.
+        assert single.drive_v[[0, -1]] == pytest.approx([-1.0, 1.0])
+        # Chirp per Bias point: none push-pull, unit at quadrature driven
+        # from one side, each up to the canned sweep's slight loss slope.
+        assert push_pull.chirp.shape == push_pull.voltages_v.shape
+        assert push_pull.chirp == pytest.approx(0.0, abs=1e-3)
+        assert single.chirp == pytest.approx(1.0, abs=1e-3)
+
+    def test_the_other_quadrature_point_flips_the_single_drive_chirp(self, solved):
+        solved.line(n_group=N_GROUP, drive="single-drive", phase_offset_rad=-np.pi / 2)
+        assert solved.line.run().chirp == pytest.approx(-1.0, abs=1e-3)
+
+    def test_the_arm_imbalance_limits_the_extinction_ratio(self, solved):
+        solved.line(length_um=self.LENGTH_UM, n_group=N_GROUP, arm_imbalance_db=0.5)
+        report = solved.line.run()
+        # 0.5 dB between the arms alone allows 30.8 dB.
+        assert report.extinction_ratio_db == pytest.approx(30.8, abs=0.1)
+
+    def test_the_arm_bias_is_where_a_single_drive_starts_from(self, solved):
+        solved.line(
+            length_um=self.LENGTH_UM,
+            n_group=N_GROUP,
+            drive="single-drive",
+            arm_bias_v=0.0,
+        )
+        report = solved.line.run()
+        assert report.arm_bias_v == 0.0
+        assert report.drive_v[[0, -1]] == pytest.approx([0.0, 2.0])
+
+    def test_an_arm_bias_outside_the_sweep_is_an_error(self, solved):
+        solved.line(n_group=N_GROUP, arm_bias_v=5.0)
+        with pytest.raises(ValueError, match="outside the bias sweep"):
+            solved.line.run()
+
+    def test_a_sweep_too_short_to_reach_v_pi_says_so(self, solved):
+        solved.line(length_um=1000.0, n_group=N_GROUP)
+        report = solved.line.run()
+
+        assert report.v_pi_v is None
+        assert report.insertion_loss_db is None
+        assert report.extinction_ratio_db is None
+        assert "too short to reach V_pi" in report.transfer_message
+        # What the sweep does cover is still there to plot.
+        assert np.all(np.isfinite(report.transfer))
+        assert np.all(np.isfinite(report.chirp))
 
 
 class TestBiasOrder:

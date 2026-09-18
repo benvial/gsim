@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- The report goes past the Phase shifter to the modulator. The line Stage puts the Phase shifter in both arms of a
+  Mach-Zehnder and reports the static intensity transfer against the drive voltage (`TWMZMReport.drive_v`, `transfer`)
+  and the datasheet numbers read off it — `v_pi_v` at this length, `insertion_loss_db`, `extinction_ratio_db` — plus the
+  small-signal `chirp` per Bias point.
+  `study.line(drive="push-pull" | "single-drive", arm_bias_v=, arm_imbalance_db=, phase_offset_rad=)` sets how the arms
+  are driven, where they rest, how evenly the light is split and where the interferometer is parked (quadrature by
+  default); the drive voltage is the voltage between the arms in both configurations. The extinction ratio is limited by
+  the splitter imbalance and by the bias-dependent loss unbalancing the arms. Chirp follows the Koyama-Iga definition
+  under `exp(+j omega t)`, positive for a frequency that rises with the intensity: `+1` for a lossless single drive at
+  the default quadrature point, exactly 0 for a balanced push-pull drive whose absorption does not move with bias. A
+  Bias sweep too short to take the transfer from a peak to a null leaves the three figures `None` and says why in
+  `transfer_message`, rather than extrapolating. The pure functions are `gsim.common.twmzm.mzm_transfer`,
+  `mzm_transfer_figures`, `mzm_chirp` and `mzm_drive_range`.
+
 - Carrier mobility follows the doping. `gsim.common.carriers.MobilityModel` is the Masetti low-field fit for silicon
   (`masetti_silicon()`, or `constant(mu_n_cm2=, mu_p_cm2=)` for doping-independent values), and one model now serves
   both places a mobility enters: `ChargeTransportSim.mobility` sets DEVSIM's electron and hole mobilities node by node

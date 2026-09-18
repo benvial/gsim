@@ -14,6 +14,15 @@ the Study's results and hand back its
 3 dB bandwidth, the Velocity mismatch and the Walk-off bandwidth, the
 RLGC line parameters, and the Modulation efficiency along the Bias sweep.
 
+The length also turns the Phase shifter into a modulator. The report puts
+it in both arms of a Mach-Zehnder interferometer and reads off what the
+device does to the light: the static intensity transfer against the drive
+voltage, and from it the datasheet numbers — V_pi at this length, insertion
+loss, extinction ratio — and the small-signal chirp per Bias point. How the
+arms are driven, how evenly the light is split between them and where the
+interferometer rests are settings here, since none is cross-section
+physics.
+
 Two numbers the solvers do not produce are configured here. The optical
 group index is not a single-wavelength solve's output, so it is a setting;
 without one the Stage stands the phase index in and says so. And the EO
@@ -45,6 +54,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from gsim.common.twmzm import QUADRATURE_RAD, DriveConfiguration
 from gsim.modulator.stage import Stage
 
 if TYPE_CHECKING:
@@ -237,6 +247,26 @@ class LineStage(Stage):
             handful of solved frequencies. The grid is not extrapolated:
             beyond the solved range the end values hold, and the Stage
             warns.
+        drive: How the Mach-Zehnder's two arms share the drive voltage,
+            which is the voltage between them either way.
+            ``"single-drive"`` puts all of it on one arm and leaves the
+            other at the arm bias; ``"push-pull"`` moves the arms by half
+            of it each, in opposite directions, which cancels the chirp
+            and doubles the drive a Bias sweep can answer for.
+        arm_bias_v: The bias both arms rest at (V), inside the Bias
+            sweep. The middle of the sweep when unset, which gives a
+            push-pull drive the most room; a single-drive modulator
+            resting on the first Bias point has the whole sweep to move
+            through.
+        arm_imbalance_db: Power the splitter sends down the driven arm
+            over the other (dB); 0 is a balanced interferometer. With the
+            bias-dependent loss, which unbalances the arms by itself, it
+            is what limits the extinction ratio.
+        phase_offset_rad: Static phase offset between the arms (rad) —
+            where the heater parks the interferometer. The quadrature
+            point by default, where the modulator rests at half its peak
+            transmission; ``-pi/2`` is the other quadrature point, of
+            opposite single-drive chirp.
     """
 
     stage_name: ClassVar[str] = "line"
@@ -246,6 +276,10 @@ class LineStage(Stage):
     z_gen_ohm: complex = 50.0 + 0.0j
     n_group: float | None = Field(default=None, gt=0.0)
     response_frequencies_hz: list[float] | None = Field(default=None, min_length=1)
+    drive: DriveConfiguration = "push-pull"
+    arm_bias_v: float | None = None
+    arm_imbalance_db: float = 0.0
+    phase_offset_rad: float = QUADRATURE_RAD
 
     @field_validator("z_load_ohm", "z_gen_ohm", mode="after")
     @classmethod
@@ -594,4 +628,8 @@ class LineStage(Stage):
             length_m=self.length_m,
             z_load_ohm=self.z_load_ohm,
             z_gen_ohm=self.z_gen_ohm,
+            drive=self.drive,
+            arm_bias_v=self.arm_bias_v,
+            arm_imbalance_db=self.arm_imbalance_db,
+            phase_offset_rad=self.phase_offset_rad,
         )

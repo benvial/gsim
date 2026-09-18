@@ -12,6 +12,11 @@ into the standard traveling-wave modulator figures of merit:
   moves with frequency (:func:`walkoff_bandwidth_dispersive`);
 - modulation efficiency ``V_pi L`` from a bias sweep of the effective-index
   shift (:func:`vpi_length_vcm`);
+- the static Mach-Zehnder intensity transfer of two such Phase shifters, for
+  a single-drive and a push-pull configuration (:func:`mzm_transfer`), the
+  datasheet figures read off it — ``V_pi``, insertion loss, extinction ratio
+  (:func:`mzm_transfer_figures`) — and the small-signal chirp parameter per
+  Bias point (:func:`mzm_chirp`);
 - RLGC line parameters from the propagation constant and characteristic
   impedance (:func:`rlgc_from_line_params`, Marks-Williams relations).
 
@@ -23,7 +28,8 @@ wave on a lossy line of length L terminated in ``Z_L`` and driven through
 
 from __future__ import annotations
 
-from typing import NamedTuple
+import itertools
+from typing import Literal, NamedTuple
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -31,11 +37,18 @@ from scipy.constants import speed_of_light as C0  # noqa: N812
 from scipy.optimize import brentq
 
 __all__ = [
+    "QUADRATURE_RAD",
     "SINC_3DB_ARGUMENT",
+    "DriveConfiguration",
     "JunctionBranch",
+    "MZMTransferFigures",
     "eo_bandwidth",
     "eo_response",
     "loaded_line_params",
+    "mzm_chirp",
+    "mzm_drive_range",
+    "mzm_transfer",
+    "mzm_transfer_figures",
     "rlgc_from_line_params",
     "series_rc_from_admittance",
     "vpi_length_vcm",
@@ -312,6 +325,481 @@ def vpi_length_vcm(
         raise ValueError("dn_eff slope vanishes; V_pi L is unbounded there.")
     # lambda[um] / (2 |slope|) is in V*um; 1 V*cm = 1e4 V*um.
     return wavelength_um / (2.0 * np.abs(slope)) / 1e4
+
+
+# ----------------------------------------------------------------------
+# Mach-Zehnder transfer and chirp
+# ----------------------------------------------------------------------
+
+#: How the two arms of the Mach-Zehnder share the drive voltage.
+DriveConfiguration = Literal["single-drive", "push-pull"]
+
+#: Static phase offset of the quadrature point — the transfer's half-power
+#: point and steepest slope (rad).
+QUADRATURE_RAD: float = float(np.pi / 2.0)
+
+#: Points of the drive grid the transfer's peak and null are located on.
+_MZM_GRID_POINTS = 2049
+
+#: A Bias sweep as validated arrays: voltages, index shift, loss (dB/cm).
+_Sweep = tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
+
+
+class MZMTransferFigures(NamedTuple):
+    """The datasheet figures read off a static Mach-Zehnder transfer.
+
+    All three figures come from one adjacent peak and null of the transfer,
+    so they are reported together or not at all: a Bias sweep that does not
+    drive the modulator from a peak to a null leaves them ``None`` and says
+    why in ``message``, rather than extrapolating the sweep.
+
+    Attributes:
+        v_pi_v: Drive swing between the peak and the null (V).
+        insertion_loss_db: Loss at the peak, ``-10 log10(T_peak)`` (dB).
+        extinction_ratio_db: ``10 log10(T_peak / T_null)`` (dB); infinite
+            when the arms cancel exactly.
+        peak_v: Drive voltage of the peak (V).
+        null_v: Drive voltage of the null (V).
+        message: Why the figures are absent, when they are.
+    """
+
+    v_pi_v: float | None
+    insertion_loss_db: float | None
+    extinction_ratio_db: float | None
+    peak_v: float | None
+    null_v: float | None
+    message: str | None
+
+
+def _mzm_sweep(
+    voltages: ArrayLike,
+    dn_eff: ArrayLike,
+    alpha_opt_db_cm: ArrayLike | None,
+) -> _Sweep:
+    """The Bias sweep as validated arrays, a missing loss sweep as no loss."""
+    v = np.asarray(voltages, dtype=np.float64)
+    dn = np.asarray(dn_eff, dtype=np.float64)
+    if v.ndim != 1 or v.shape != dn.shape or v.size < 2:
+        raise ValueError("voltages and dn_eff must be equal-length with >= 2 points.")
+    if np.any(np.diff(v) <= 0.0):
+        raise ValueError("voltages must be strictly ascending.")
+    alpha = (
+        np.zeros_like(v)
+        if alpha_opt_db_cm is None
+        else np.asarray(alpha_opt_db_cm, dtype=np.float64)
+    )
+    if alpha.shape != v.shape:
+        raise ValueError("alpha_opt_db_cm must have the same shape as voltages.")
+    return v, dn, alpha
+
+
+def _unknown_drive(drive: str) -> ValueError:
+    """The error for a drive configuration that is neither of the two."""
+    return ValueError(
+        f"Unknown drive configuration {drive!r}; use 'single-drive' or 'push-pull'."
+    )
+
+
+def _arm_power_fraction(arm_imbalance_db: float) -> float:
+    """Fraction of the input power the splitter sends down arm 1."""
+    return float(1.0 / (1.0 + 10.0 ** (-arm_imbalance_db / 10.0)))
+
+
+def _arm_bias(voltages: NDArray[np.float64], bias_v: float | None) -> float:
+    """The bias both arms rest at: the middle of the sweep unless given."""
+    if bias_v is None:
+        return float(0.5 * (voltages[0] + voltages[-1]))
+    return float(bias_v)
+
+
+def mzm_drive_range(
+    voltages: ArrayLike,
+    *,
+    drive: DriveConfiguration = "push-pull",
+    bias_v: float | None = None,
+) -> tuple[float, float]:
+    """Drive voltages a Bias sweep can answer for without extrapolation.
+
+    The drive voltage is the voltage between the two arms,
+    ``v = V_1 - V_2``, in both configurations. Both arms rest at the bias
+    ``V_b``; a single-drive modulator puts the whole drive on arm 1
+    (``V_b + v`` against ``V_b``), a push-pull one splits it evenly and
+    oppositely (``V_b + v/2`` against ``V_b - v/2``). The reachable drive
+    is whatever keeps both arms inside the sweep.
+
+    Args:
+        voltages: Bias voltages of the sweep in volts (ascending).
+        drive: The drive configuration.
+        bias_v: The bias both arms rest at (V); the middle of the sweep
+            when omitted.
+
+    Returns:
+        ``(lowest, highest)`` drive voltage in volts.
+
+    Raises:
+        ValueError: When the bias lies outside the sweep, or a push-pull
+            bias sits on an end of it and leaves one arm no room to move.
+    """
+    v = np.asarray(voltages, dtype=np.float64)
+    low, high = float(v[0]), float(v[-1])
+    bias = _arm_bias(v, bias_v)
+    if not low <= bias <= high:
+        raise ValueError(
+            f"The arm bias {bias:g} V lies outside the bias sweep "
+            f"({low:g} to {high:g} V)."
+        )
+    if drive == "single-drive":
+        return low - bias, high - bias
+    if drive == "push-pull":
+        room = min(bias - low, high - bias)
+        if room <= 0.0:
+            raise ValueError(
+                "A push-pull drive moves the arms either side of the bias, and "
+                f"{bias:g} V is an end of the bias sweep ({low:g} to {high:g} V)."
+            )
+        return -2.0 * room, 2.0 * room
+    raise _unknown_drive(drive)
+
+
+def _mzm_arms(
+    drive_v: NDArray[np.float64],
+    sweep: _Sweep,
+    *,
+    length_m: float,
+    wavelength_um: float,
+    drive: DriveConfiguration,
+    bias_v: float | None,
+    arm_imbalance_db: float,
+    phase_offset_rad: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """Both arms' field amplitudes at the combiner, and their phase difference."""
+    if length_m <= 0:
+        raise ValueError("length_m must be positive.")
+    if wavelength_um <= 0:
+        raise ValueError("wavelength_um must be positive.")
+    voltages, dn, alpha_db_cm = sweep
+    low, high = mzm_drive_range(voltages, drive=drive, bias_v=bias_v)
+    slack = 1e-9 * (high - low)
+    if np.any(drive_v < low - slack) or np.any(drive_v > high + slack):
+        raise ValueError(
+            f"The {drive} drive reaches {drive_v.min():g} to {drive_v.max():g} V, "
+            f"outside the {low:g} to {high:g} V the bias sweep covers; the "
+            "transfer is not extrapolated."
+        )
+    bias = _arm_bias(voltages, bias_v)
+    share = 1.0 if drive == "single-drive" else 0.5
+    arm_v = (bias + share * drive_v, bias - (1.0 - share) * drive_v)
+    amplitude = [
+        10.0 ** (-np.interp(v, voltages, alpha_db_cm) * (length_m * 1e2) / 20.0)
+        for v in arm_v
+    ]
+    phase = [
+        2.0 * np.pi * np.interp(v, voltages, dn) * length_m / (wavelength_um * 1e-6)
+        for v in arm_v
+    ]
+    fraction = _arm_power_fraction(arm_imbalance_db)
+    return (
+        np.asarray(np.sqrt(fraction) * amplitude[0], dtype=np.float64),
+        np.asarray(np.sqrt(1.0 - fraction) * amplitude[1], dtype=np.float64),
+        np.asarray(phase[0] - phase[1] + phase_offset_rad, dtype=np.float64),
+    )
+
+
+def mzm_transfer(
+    drive_v: ArrayLike,
+    voltages: ArrayLike,
+    dn_eff: ArrayLike,
+    alpha_opt_db_cm: ArrayLike | None = None,
+    *,
+    length_m: float,
+    wavelength_um: float,
+    drive: DriveConfiguration = "push-pull",
+    bias_v: float | None = None,
+    arm_imbalance_db: float = 0.0,
+    phase_offset_rad: float = QUADRATURE_RAD,
+) -> NDArray[np.float64]:
+    """Static intensity transfer ``T(v)`` of a Mach-Zehnder modulator.
+
+    The same Phase shifter sits in both arms. A splitter sends the
+    fraction ``r`` of the input power down arm 1 and the rest down arm 2,
+    each arm attenuates and delays its field by what the Bias sweep says
+    at that arm's voltage, and an ideal 3 dB combiner adds them::
+
+        T = (r a_1^2 + (1 - r) a_2^2 + 2 sqrt(r (1 - r)) a_1 a_2 cos(dphi)) / 2
+        a_k = 10^(-alpha(V_k) L / 20)
+        dphi = 2 pi L (dn(V_1) - dn(V_2)) / lambda + phi_0
+
+    See :func:`mzm_drive_range` for how the drive voltage ``v`` sets the
+    arm voltages ``V_1``, ``V_2`` in each configuration. The index shift
+    and the loss are interpolated linearly between the Bias points and
+    never extrapolated.
+
+    Args:
+        drive_v: Drive voltages ``V_1 - V_2`` to evaluate at (V).
+        voltages: Bias voltages of the sweep in volts (ascending).
+        dn_eff: Effective-index shift at each bias.
+        alpha_opt_db_cm: Optical loss at each bias (dB/cm); no loss when
+            omitted.
+        length_m: Phase shifter length in each arm, in meters (> 0).
+        wavelength_um: Vacuum wavelength in um.
+        drive: The drive configuration.
+        bias_v: The bias both arms rest at (V); the middle of the sweep
+            when omitted.
+        arm_imbalance_db: Power the splitter sends down arm 1 over the
+            power it sends down arm 2, ``10 log10(r / (1 - r))`` (dB);
+            0 is a balanced interferometer.
+        phase_offset_rad: Static phase delay ``phi_0`` added to arm 1
+            (rad) — the heater. The default is the quadrature point,
+            where a balanced modulator rests at half its peak.
+
+    Returns:
+        ``T`` at each drive voltage, as a fraction of the input power.
+
+    Raises:
+        ValueError: When a drive voltage takes an arm outside the sweep.
+    """
+    field_1, field_2, dphi = _mzm_arms(
+        np.asarray(drive_v, dtype=np.float64),
+        _mzm_sweep(voltages, dn_eff, alpha_opt_db_cm),
+        length_m=length_m,
+        wavelength_um=wavelength_um,
+        drive=drive,
+        bias_v=bias_v,
+        arm_imbalance_db=arm_imbalance_db,
+        phase_offset_rad=phase_offset_rad,
+    )
+    return np.asarray(
+        (field_1**2 + field_2**2 + 2.0 * field_1 * field_2 * np.cos(dphi)) / 2.0,
+        dtype=np.float64,
+    )
+
+
+def _phase_crossings(
+    drive_v: NDArray[np.float64], dphi: NDArray[np.float64]
+) -> list[tuple[float, int]]:
+    """Drive voltages where the arm phase difference is a multiple of pi.
+
+    Returns ``(voltage, multiple)`` pairs ordered by voltage. The phase
+    difference is piecewise linear on the grid, so each crossing is
+    interpolated linearly.
+    """
+    crossings: list[tuple[float, int]] = []
+    first = int(np.ceil(dphi.min() / np.pi))
+    last = int(np.floor(dphi.max() / np.pi))
+    for multiple in range(first, last + 1):
+        excess = dphi - multiple * np.pi
+        crossings.extend(
+            (float(drive_v[i]), multiple) for i in np.nonzero(excess == 0.0)[0]
+        )
+        for i in np.nonzero(excess[:-1] * excess[1:] < 0.0)[0]:
+            step = excess[i] / (excess[i] - excess[i + 1])
+            crossings.append(
+                (float(drive_v[i] + step * (drive_v[i + 1] - drive_v[i])), multiple)
+            )
+    return sorted(crossings)
+
+
+def mzm_transfer_figures(
+    voltages: ArrayLike,
+    dn_eff: ArrayLike,
+    alpha_opt_db_cm: ArrayLike | None = None,
+    *,
+    length_m: float,
+    wavelength_um: float,
+    drive: DriveConfiguration = "push-pull",
+    bias_v: float | None = None,
+    arm_imbalance_db: float = 0.0,
+    phase_offset_rad: float = QUADRATURE_RAD,
+) -> MZMTransferFigures:
+    """``V_pi``, insertion loss and extinction ratio of the static transfer.
+
+    Read off :func:`mzm_transfer` the way a bench measurement reads them:
+    the peak and the null are the adjacent drive voltages where the arm
+    phase difference is an even and an odd multiple of pi — the pair
+    nearest zero drive; ``V_pi`` is the swing between them, the insertion
+    loss is the transfer at the peak and the extinction ratio the peak
+    over the null. Where the index shift is linear in bias ``V_pi`` is the
+    Modulation efficiency over the length, in either configuration, the
+    drive voltage being the voltage between the arms in both. The
+    extinction is limited by what unbalances the two fields at the null:
+    the splitter's imbalance, and the loss differing between two arms that
+    sit at different voltages. A loss both arms share lowers the peak and
+    the null alike.
+
+    Args:
+        voltages: Bias voltages of the sweep in volts (ascending).
+        dn_eff: Effective-index shift at each bias.
+        alpha_opt_db_cm: Optical loss at each bias (dB/cm); no loss when
+            omitted.
+        length_m: Phase shifter length in each arm, in meters (> 0).
+        wavelength_um: Vacuum wavelength in um.
+        drive: The drive configuration.
+        bias_v: The bias both arms rest at (V); the middle of the sweep
+            when omitted.
+        arm_imbalance_db: Splitter power imbalance, arm 1 over arm 2 (dB).
+        phase_offset_rad: Static phase delay added to arm 1 (rad).
+
+    Returns:
+        The figures, or all ``None`` with a message when the sweep does
+        not drive the modulator from a peak to a null.
+    """
+    sweep = _mzm_sweep(voltages, dn_eff, alpha_opt_db_cm)
+
+    def arms(
+        drive_v: NDArray[np.float64],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        return _mzm_arms(
+            drive_v,
+            sweep,
+            length_m=length_m,
+            wavelength_um=wavelength_um,
+            drive=drive,
+            bias_v=bias_v,
+            arm_imbalance_db=arm_imbalance_db,
+            phase_offset_rad=phase_offset_rad,
+        )
+
+    low, high = mzm_drive_range(sweep[0], drive=drive, bias_v=bias_v)
+    # The phase difference bends where an arm passes a Bias point, so those
+    # drive voltages join the grid and the linear interpolation between
+    # grid points is exact.
+    reach = (1.0 if drive == "single-drive" else 2.0) * (
+        sweep[0] - _arm_bias(sweep[0], bias_v)
+    )
+    bends = np.concatenate([reach, -reach])
+    grid = np.unique(
+        np.concatenate(
+            [
+                np.linspace(low, high, _MZM_GRID_POINTS),
+                bends[(bends > low) & (bends < high)],
+            ]
+        )
+    )
+    dphi = arms(grid)[2]
+
+    pairs = [
+        (one, other)
+        for one, other in itertools.pairwise(_phase_crossings(grid, dphi))
+        if (one[1] - other[1]) % 2
+    ]
+    if not pairs:
+        swing = (dphi.max() - dphi.min()) / np.pi
+        return MZMTransferFigures(
+            v_pi_v=None,
+            insertion_loss_db=None,
+            extinction_ratio_db=None,
+            peak_v=None,
+            null_v=None,
+            message=(
+                f"The bias sweep is too short to reach V_pi: its {drive} span of "
+                f"{low:g} to {high:g} V moves the arm phase difference by "
+                f"{swing:.2f} pi and does not take the transfer from a peak to "
+                "a null, so V_pi, the insertion loss and the extinction ratio "
+                "are not reported rather than extrapolated. Widen the bias "
+                "sweep or lengthen the electrode."
+            ),
+        )
+    one, other = min(pairs, key=lambda pair: abs(pair[0][0] + pair[1][0]))
+    peak_v, null_v = (one[0], other[0]) if one[1] % 2 == 0 else (other[0], one[0])
+    field_1, field_2, _ = arms(np.array([peak_v, null_v]))
+    # At the peak the two fields add and at the null they subtract, exactly.
+    t_peak = float((field_1[0] + field_2[0]) ** 2 / 2.0)
+    t_null = float((field_1[1] - field_2[1]) ** 2 / 2.0)
+    return MZMTransferFigures(
+        v_pi_v=abs(peak_v - null_v),
+        insertion_loss_db=float(-10.0 * np.log10(t_peak)),
+        extinction_ratio_db=(
+            float(10.0 * np.log10(t_peak / t_null)) if t_null > 0.0 else float("inf")
+        ),
+        peak_v=peak_v,
+        null_v=null_v,
+        message=None,
+    )
+
+
+def mzm_chirp(
+    voltages: ArrayLike,
+    dn_eff: ArrayLike,
+    alpha_opt_db_cm: ArrayLike | None = None,
+    *,
+    wavelength_um: float,
+    drive: DriveConfiguration = "push-pull",
+    arm_imbalance_db: float = 0.0,
+    phase_offset_rad: float = QUADRATURE_RAD,
+) -> NDArray[np.float64]:
+    """Small-signal chirp parameter of the modulator at each Bias point.
+
+    The standard (Koyama-Iga) definition, for both arms resting at the
+    Bias point and a small drive ``v`` on top of it::
+
+        chirp = (d Phi / dv) / ((1 / 2I) dI / dv)
+
+    with ``I`` the output intensity and ``Phi`` the output field's phase.
+    Each arm's field ``t`` follows its voltage through the local slopes of
+    the sweep, ``d ln(t) / dV = -(L/2) d(alpha)/dV - j (2 pi L / lambda)
+    d(n_eff)/dV`` with ``alpha`` the power attenuation, so the chirp
+    depends on the ratio of the absorption and index slopes,
+    ``rho = lambda alpha' / (4 pi n')``, on the drive configuration, the
+    splitter imbalance and the static phase offset — and not on the
+    length, which scales both slopes alike.
+
+    Sign convention: fields follow ``exp(+j omega t)`` as everywhere in
+    gsim, so an arm contributes ``exp(-j 2 pi n L / lambda)``, and ``Phi``
+    is the phase of the output field in that convention. The instantaneous
+    optical frequency is then ``omega + d Phi / dt``, and a positive chirp
+    is a frequency that rises (a blue shift) while the intensity rises.
+
+    A single-drive modulator with no absorption slope has chirp ``+1`` at
+    the default quadrature point ``+pi/2`` and ``-1`` at the other one,
+    ``-pi/2``, whichever way the index moves with bias; the absorption
+    slope pulls it to ``(1 - rho) / (1 + rho)``. A balanced push-pull
+    modulator has chirp exactly 0 where the absorption does not move with
+    bias — the ideal push-pull drive. A real Phase shifter leaves the
+    residue ``-rho``, the two arms' losses moving oppositely, and a
+    splitter imbalance adds ``(r - 1/2) / (sqrt(r (1 - r)) sin(phi_0))``.
+
+    Args:
+        voltages: Bias voltages of the sweep in volts (ascending).
+        dn_eff: Effective-index shift at each bias.
+        alpha_opt_db_cm: Optical loss at each bias (dB/cm); no loss when
+            omitted.
+        wavelength_um: Vacuum wavelength in um.
+        drive: The drive configuration.
+        arm_imbalance_db: Splitter power imbalance, arm 1 over arm 2 (dB).
+        phase_offset_rad: Static phase delay added to arm 1 (rad).
+
+    Returns:
+        The chirp parameter at each Bias point; NaN or infinite where the
+        drive does not modulate the intensity (resting on a peak or a null).
+    """
+    v, dn, alpha_db_cm = _mzm_sweep(voltages, dn_eff, alpha_opt_db_cm)
+    if wavelength_um <= 0:
+        raise ValueError("wavelength_um must be positive.")
+    # d ln(t)/dV per meter of arm: the real part from the power attenuation
+    # (dB/cm to 1/m), the imaginary part from the index.
+    gain_real = -0.5 * np.gradient(alpha_db_cm, v) * 1e2 * np.log(10.0) / 10.0
+    gain_imag = -2.0 * np.pi * np.gradient(dn, v) / (wavelength_um * 1e-6)
+
+    # w = (c_1 s_1 + c_2 s_2) / (c_1 + c_2): the resting arm fields c_k
+    # weighted by the share s_k of the drive each arm takes. Written out in
+    # real arithmetic so a balanced push-pull drive has Re(w) = 0 exactly;
+    # the denominator |c_1 + c_2|^2 is common to both parts and cancels.
+    fraction = _arm_power_fraction(arm_imbalance_db)
+    cross = np.sqrt(fraction * (1.0 - fraction))
+    if drive == "single-drive":
+        weight_real = fraction + cross * np.cos(phase_offset_rad)
+    elif drive == "push-pull":
+        weight_real = fraction - 0.5
+    else:
+        raise _unknown_drive(drive)
+    weight_imag = -cross * np.sin(phase_offset_rad)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.asarray(
+            (gain_real * weight_imag + gain_imag * weight_real)
+            / (gain_real * weight_real - gain_imag * weight_imag),
+            dtype=np.float64,
+        )
 
 
 def series_rc_from_admittance(

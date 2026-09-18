@@ -6,8 +6,10 @@ and bias; the charge/optics side produces the effective-index shift along
 the bias sweep. This module packages those into typed containers and one
 entry point, :func:`twmzm_figures_of_merit`, that returns the full device
 report: EO frequency response and 3 dB bandwidth, velocity mismatch and
-the analytic walk-off limit, RLGC line parameters, and V_pi·L — all
-computed with the pure analysis functions of :mod:`gsim.common.twmzm`.
+the analytic walk-off limit, RLGC line parameters, V_pi·L, and the
+Mach-Zehnder built from that Phase shifter — its static transfer, V_pi,
+insertion loss, extinction ratio and chirp — all computed with the pure
+analysis functions of :mod:`gsim.common.twmzm`.
 
 Sign convention for complex effective indices is ``exp(+i omega t)``
 (lossy: ``Im(n_eff) < 0``); the extraction accepts either sign of the
@@ -24,8 +26,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
 from gsim.common.twmzm import (
+    QUADRATURE_RAD,
+    DriveConfiguration,
     eo_bandwidth,
     eo_response,
+    mzm_chirp,
+    mzm_drive_range,
+    mzm_transfer,
+    mzm_transfer_figures,
     rlgc_from_line_params,
     vpi_length_vcm,
     walkoff_bandwidth_dispersive,
@@ -410,6 +418,23 @@ class TWMZMReport(BaseModel):
         vpi_l_vcm: V_pi·L in V*cm at each bias point.
         voltages_v: Bias voltages of the V_pi·L sweep.
         length_m: Electrode length (m).
+        drive: Drive configuration of the Mach-Zehnder the transfer, its
+            figures and the chirp are reported for.
+        arm_bias_v: The bias both arms rest at (V).
+        drive_v: Drive voltages of the transfer — the voltage between the
+            two arms — spanning what the Bias sweep covers (V).
+        transfer: Static intensity transfer ``T`` per drive voltage, as a
+            fraction of the input power.
+        v_pi_v: Drive swing from the transfer's peak to its null at this
+            length (V), or None when the Bias sweep does not reach both.
+        insertion_loss_db: Loss at the transfer's peak (dB), or None with
+            ``v_pi_v``.
+        extinction_ratio_db: Peak over null of the transfer (dB), infinite
+            for arms that cancel exactly, or None with ``v_pi_v``.
+        transfer_message: Why ``v_pi_v``, ``insertion_loss_db`` and
+            ``extinction_ratio_db`` are absent, when they are.
+        chirp: Small-signal chirp parameter at each bias point, in the sign
+            convention of :func:`gsim.common.twmzm.mzm_chirp`.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -426,6 +451,19 @@ class TWMZMReport(BaseModel):
     vpi_l_vcm: NDArray[np.float64]
     voltages_v: NDArray[np.float64]
     length_m: float
+    drive: DriveConfiguration
+    arm_bias_v: float
+    drive_v: NDArray[np.float64]
+    transfer: NDArray[np.float64]
+    v_pi_v: float | None
+    insertion_loss_db: float | None
+    extinction_ratio_db: float | None
+    transfer_message: str | None
+    chirp: NDArray[np.float64]
+
+
+#: Drive voltages the report's Mach-Zehnder transfer is sampled on.
+_TRANSFER_POINTS = 401
 
 
 def twmzm_figures_of_merit(
@@ -435,6 +473,10 @@ def twmzm_figures_of_merit(
     length_m: float,
     z_load_ohm: complex = 50.0,
     z_gen_ohm: complex = 50.0,
+    drive: DriveConfiguration = "push-pull",
+    arm_bias_v: float | None = None,
+    arm_imbalance_db: float = 0.0,
+    phase_offset_rad: float = QUADRATURE_RAD,
 ) -> TWMZMReport:
     """Combine RF line parameters and the optical sweep into the report.
 
@@ -444,6 +486,14 @@ def twmzm_figures_of_merit(
         length_m: Electrode length in meters (> 0).
         z_load_ohm: Termination impedance in ohms.
         z_gen_ohm: Generator impedance in ohms.
+        drive: Drive configuration of the Mach-Zehnder the Phase shifter
+            is put in the arms of, ``"single-drive"`` or ``"push-pull"``.
+        arm_bias_v: The bias both arms rest at (V); the middle of the
+            sweep when omitted.
+        arm_imbalance_db: Power the splitter sends down the first arm over
+            the second (dB); 0 is a balanced interferometer.
+        phase_offset_rad: Static phase offset between the arms (rad); the
+            quadrature point by default.
 
     Returns:
         The assembled :class:`TWMZMReport`.
@@ -470,6 +520,48 @@ def twmzm_figures_of_merit(
         rf.freq_hz, rf.n_rf, length_m=length_m, n_opt=optical.n_group
     )
 
+    # The Phase shifter in both arms of a Mach-Zehnder: the transfer over
+    # the drive the Bias sweep covers, and the figures read off it. The
+    # transfer interpolates along the sweep, so it reads it in bias order.
+    order = np.argsort(optical.voltages_v, kind="stable")
+    sweep = (
+        optical.voltages_v[order],
+        optical.dn_eff[order],
+        None if optical.alpha_opt_db_cm is None else optical.alpha_opt_db_cm[order],
+    )
+    drive_v = np.linspace(
+        *mzm_drive_range(sweep[0], drive=drive, bias_v=arm_bias_v),
+        _TRANSFER_POINTS,
+    )
+    transfer = mzm_transfer(
+        drive_v,
+        *sweep,
+        length_m=length_m,
+        wavelength_um=optical.wavelength_um,
+        drive=drive,
+        bias_v=arm_bias_v,
+        arm_imbalance_db=arm_imbalance_db,
+        phase_offset_rad=phase_offset_rad,
+    )
+    # Per bias point, so back in the order the sweep came in.
+    chirp = np.empty_like(sweep[0])
+    chirp[order] = mzm_chirp(
+        *sweep,
+        wavelength_um=optical.wavelength_um,
+        drive=drive,
+        arm_imbalance_db=arm_imbalance_db,
+        phase_offset_rad=phase_offset_rad,
+    )
+    figures = mzm_transfer_figures(
+        *sweep,
+        length_m=length_m,
+        wavelength_um=optical.wavelength_um,
+        drive=drive,
+        bias_v=arm_bias_v,
+        arm_imbalance_db=arm_imbalance_db,
+        phase_offset_rad=phase_offset_rad,
+    )
+
     return TWMZMReport(
         freq_hz=rf.freq_hz,
         response=np.asarray(response, dtype=np.complex128),
@@ -487,4 +579,17 @@ def twmzm_figures_of_merit(
         ),
         voltages_v=optical.voltages_v,
         length_m=length_m,
+        drive=drive,
+        arm_bias_v=(
+            float(arm_bias_v)
+            if arm_bias_v is not None
+            else float(0.5 * (sweep[0][0] + sweep[0][-1]))
+        ),
+        drive_v=drive_v,
+        transfer=transfer,
+        v_pi_v=figures.v_pi_v,
+        insertion_loss_db=figures.insertion_loss_db,
+        extinction_ratio_db=figures.extinction_ratio_db,
+        transfer_message=figures.message,
+        chirp=chirp,
     )
