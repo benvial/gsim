@@ -17,7 +17,7 @@ stretched, but nothing about it is calibrated to any foundry.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from gsim.modulator.device import Device
 
@@ -25,8 +25,14 @@ if TYPE_CHECKING:
     import gdsfactory as gf
 
     from gsim.common.stack.extractor import LayerStack
+    from gsim.common.stack.staircase import ElectrodeSpec
 
-__all__ = ["DemoPhaseShifter", "demo_phase_shifter"]
+__all__ = [
+    "DemoPhaseShifter",
+    "RibPhaseShifter",
+    "demo_phase_shifter",
+    "rib_phase_shifter",
+]
 
 #: Position of the Junction on the layout's junction axis (um).
 DEFAULT_CENTER_UM: float = -20.0
@@ -236,5 +242,224 @@ def demo_phase_shifter(
         rib_height_um=rib_height_um,
         electrode_thickness_um=electrode_thickness_um,
         waveguide_width_um=waveguide_width_um,
+        length_um=length_um,
+    )
+
+
+#: Doped Regions of :func:`rib_phase_shifter`, low side of the junction
+#: axis first: ``(name, dopant type, kind)``, where the kind names the
+#: dimension and doping level the Region takes.
+RIB_REGIONS: tuple[tuple[str, Literal["donor", "acceptor"], str], ...] = (
+    ("n_contact", "donor", "contact"),
+    ("n_plus", "donor", "plus"),
+    ("n_slab", "donor", "core"),
+    ("n_rib", "donor", "rib"),
+    ("p_rib", "acceptor", "rib"),
+    ("p_slab", "acceptor", "core"),
+    ("p_plus", "acceptor", "plus"),
+    ("p_contact", "acceptor", "contact"),
+)
+
+
+@dataclass(frozen=True)
+class RibPhaseShifter:
+    """A drawn rib-waveguide Phase shifter, its description and its line.
+
+    Attributes:
+        component: The drawn device.
+        stack: The layer stack its Regions are named in.
+        device: The device description matching what was drawn, doping
+            per Region included, ready to hand to
+            :func:`~gsim.modulator.preset.pn_phase_shifter`.
+        electrodes: The Traveling-wave electrodes the RF Staircase
+            flanks its Strips with, sized like the drawn metal.
+        center_um: Position of the Junction on the junction axis (um).
+        rib_width_um: Width of the rib (um).
+        rib_height_um: Height of the rib (um).
+        slab_height_um: Height of the slab either side of it (um).
+        doping_cm3: Doping concentration per Region (cm^-3).
+        length_um: Drawn length of the device (um).
+    """
+
+    component: gf.Component
+    stack: LayerStack
+    device: Device
+    electrodes: ElectrodeSpec
+    center_um: float
+    rib_width_um: float
+    rib_height_um: float
+    slab_height_um: float
+    doping_cm3: dict[str, float]
+    length_um: float
+
+
+def rib_phase_shifter(
+    *,
+    center_um: float = DEFAULT_CENTER_UM,
+    rib_width_um: float = 0.5,
+    rib_height_um: float = 0.22,
+    slab_height_um: float = 0.09,
+    core_width_um: float = 0.5,
+    plus_width_um: float = 1.0,
+    contact_width_um: float = 1.0,
+    p_core_cm3: float = 5e17,
+    n_core_cm3: float = 3e17,
+    plus_cm3: float = 1e19,
+    contact_cm3: float = 1e20,
+    electrode_width_um: float = 10.0,
+    electrode_thickness_um: float = 1.0,
+    length_um: float = DEFAULT_LENGTH_UM,
+    substrate_thickness_um: float = 2.0,
+    permittivity: float = 11.9,
+) -> RibPhaseShifter:
+    """Draw a lateral PN Phase shifter as foundries build one.
+
+    A silicon rib on a thinner slab, split by a lateral PN Junction at
+    its centre. Each side, going out from the Junction: the lightly doped
+    core — the rib half and a stretch of slab beside it, where the
+    carriers the light sees move — then a moderately doped ``plus``
+    Region, then a heavily doped ``contact`` Region under the metal,
+    which keeps the Ohmic contact and the path to it from carrying the
+    line's series resistance. The defaults are generic published values
+    for a 220 nm silicon-on-insulator depletion modulator, not any
+    foundry's.
+
+    The metal is drawn over each contact Region; the Traveling-wave
+    electrodes the RF Staircase flanks its Strips with are returned
+    alongside, as wide and thick as a real line's, since the drawn
+    Cross-section only needs the metal where it lands.
+
+    Args:
+        center_um: Position of the Junction on the junction axis (um).
+        rib_width_um: Width of the rib (um).
+        rib_height_um: Height of the rib (um).
+        slab_height_um: Height of the slab (um).
+        core_width_um: Width of the lightly doped slab beside the rib (um).
+        plus_width_um: Width of each moderately doped Region (um).
+        contact_width_um: Width of each heavily doped contact Region (um).
+        p_core_cm3: Acceptor concentration of the p core (cm^-3).
+        n_core_cm3: Donor concentration of the n core (cm^-3).
+        plus_cm3: Concentration of the moderately doped Regions (cm^-3).
+        contact_cm3: Concentration of the contact Regions (cm^-3).
+        electrode_width_um: Width of each Traveling-wave electrode (um).
+        electrode_thickness_um: Thickness of the electrode metal (um).
+        length_um: Drawn length of the device (um).
+        substrate_thickness_um: Substrate below ``z = 0`` (um).
+        permittivity: Relative permittivity of the doped silicon.
+
+    Returns:
+        The drawn component, its stack, the matching device description
+        and the Traveling-wave electrodes.
+    """
+    import gdsfactory as gf
+
+    from gsim.common.cross_section import build_doped_cross_section
+    from gsim.common.stack.extractor import Layer
+    from gsim.common.stack.materials import make_doped_materials
+    from gsim.common.stack.staircase import ElectrodeSpec
+    from gsim.tcad.doping import StepDoping
+
+    widths = {
+        "rib": rib_width_um / 2.0,
+        "core": core_width_um,
+        "plus": plus_width_um,
+        "contact": contact_width_um,
+    }
+    heights = {
+        "rib": rib_height_um,
+        "core": slab_height_um,
+        "plus": slab_height_um,
+        "contact": slab_height_um,
+    }
+    levels = {"plus": plus_cm3, "contact": contact_cm3}
+
+    spans: dict[str, tuple[float, float]] = {}
+    edge = center_um - sum(widths.values())
+    for name, _dopant, kind in RIB_REGIONS:
+        spans[name] = (edge, edge + widths[kind])
+        edge += widths[kind]
+
+    gf.gpdk.PDK.activate()
+    component = gf.Component()
+    layer_specs: dict[str, Layer] = {}
+    doping: list[StepDoping] = []
+    doping_cm3: dict[str, float] = {}
+    for index, (name, dopant, kind) in enumerate(RIB_REGIONS):
+        low, high = spans[name]
+        gds_layer = (DOPING_LAYER[0], DOPING_LAYER[1] + index)
+        rect = component << gf.c.rectangle((length_um, high - low), layer=gds_layer)
+        rect.y = 0.5 * (low + high)
+        layer_specs[name] = Layer(
+            name=name,
+            gds_layer=gds_layer,
+            zmin=0.0,
+            zmax=heights[kind],
+            thickness=heights[kind],
+            material=name,
+            layer_type="dielectric",
+            # The core is where the depletion edge moves; the plus and
+            # contact Regions only conduct.
+            mesh_resolution="fine" if kind in ("rib", "core") else "medium",
+        )
+        concentration = levels.get(
+            kind, p_core_cm3 if dopant == "acceptor" else n_core_cm3
+        )
+        doping_cm3[name] = concentration
+        doping.append(
+            StepDoping(region=name, dopant_type=dopant, concentration_cm3=concentration)
+        )
+
+    for index, (pad, electrode) in enumerate(
+        (("n_contact", "cathode_metal"), ("p_contact", "anode_metal"))
+    ):
+        low, high = spans[pad]
+        gds_layer = (ELECTRODE_LAYER[0], ELECTRODE_LAYER[1] + index)
+        rect = component << gf.c.rectangle((length_um, high - low), layer=gds_layer)
+        rect.y = 0.5 * (low + high)
+        layer_specs[electrode] = Layer(
+            name=electrode,
+            gds_layer=gds_layer,
+            zmin=slab_height_um,
+            zmax=slab_height_um + electrode_thickness_um,
+            thickness=electrode_thickness_um,
+            material="aluminum",
+            layer_type="conductor",
+            mesh_resolution="fine",
+        )
+
+    materials = make_doped_materials(
+        [(name, 0.0) for name, _dopant, _kind in RIB_REGIONS],
+        permittivity=permittivity,
+    )
+    stack, _section = build_doped_cross_section(
+        component,
+        axis="x",
+        value=0.0,
+        substrate_thickness=substrate_thickness_um,
+        doping={"layer_specs": layer_specs, "materials": materials},
+        verbose=False,
+    )
+
+    device = Device(
+        p_regions=[name for name, dopant, _ in RIB_REGIONS if dopant == "acceptor"],
+        n_regions=[name for name, dopant, _ in RIB_REGIONS if dopant == "donor"],
+        # The core levels, which are the Junction's: what an abrupt-junction
+        # estimate of the capacitance reads.
+        p_doping_cm3=p_core_cm3,
+        n_doping_cm3=n_core_cm3,
+        doping=doping,
+    )
+    return RibPhaseShifter(
+        component=component,
+        stack=stack,
+        device=device,
+        electrodes=ElectrodeSpec(
+            width_um=electrode_width_um, thickness_um=electrode_thickness_um
+        ),
+        center_um=center_um,
+        rib_width_um=rib_width_um,
+        rib_height_um=rib_height_um,
+        slab_height_um=slab_height_um,
+        doping_cm3=doping_cm3,
         length_um=length_um,
     )

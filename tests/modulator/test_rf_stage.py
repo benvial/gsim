@@ -87,11 +87,22 @@ class TestStaircase:
         assert edges[0] == pytest.approx(slab[0])
         assert edges[-1] == pytest.approx(slab[1])
 
-    def test_strips_too_wide_for_the_rib_are_reported(self, biased):
-        """Widening the span without more strips loses the junction."""
-        biased.rf(n_strips=2, strip_span=SLAB)
-        with pytest.warns(UserWarning, match="not resolved"):
-            biased.rf.staircase()
+    def test_the_junction_takes_n_strips_and_each_other_region_its_own(self, biased):
+        """Across the slab: the rib at the configured count, each pad in
+        strips_per_region Strips of its own, none straddling a boundary."""
+        biased.rf(n_strips=4, strips_per_region=2, strip_span=SLAB)
+
+        edges = np.asarray(biased.rf.staircase().strips.edges_um, dtype=float)
+
+        rib = (CENTER_Y - HALF_WIDTH, CENTER_Y + HALF_WIDTH)
+        expected = np.concatenate(
+            (
+                np.linspace(SLAB[0], rib[0], 3),
+                np.linspace(rib[0], rib[1], 5)[1:],
+                np.linspace(rib[1], SLAB[1], 3)[1:],
+            )
+        )
+        np.testing.assert_allclose(edges, expected)
 
     def test_strips_that_resolve_the_rib_are_not_reported(self, biased):
         biased.rf(n_strips=21, strip_span=SLAB)

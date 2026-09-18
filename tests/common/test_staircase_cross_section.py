@@ -15,6 +15,7 @@ from gsim.common.stack.staircase import (
     OpticalStripMaterial,
     RFStripMaterial,
     StaircaseDrawing,
+    StripSegment,
     build_staircase_cross_section,
 )
 from tests._helpers import fake_coupling
@@ -26,6 +27,14 @@ CENTER = -20.0
 HALF_WIDTH = 0.3
 RIB_HEIGHT = 0.22
 JUNCTION = (CENTER - HALF_WIDTH, CENTER + HALF_WIDTH)
+SLAB_HEIGHT = 0.09
+
+#: A rib beside a thinner slab: the low half of the extent at the rib's
+#: height in three Strips, the high half at the slab's in two.
+RIB_AND_SLAB = (
+    StripSegment(span=(JUNCTION[0], CENTER), z=(0.0, RIB_HEIGHT), n_strips=3),
+    StripSegment(span=(CENTER, JUNCTION[1]), z=(0.0, SLAB_HEIGHT), n_strips=2),
+)
 
 
 def analytic_carriers(h):
@@ -55,21 +64,21 @@ def material_of(stack, region):
     )
 
 
-def build(**kwargs):
+def build(carriers=None, **kwargs):
     """Build a staircase with the shared device description."""
     import gdsfactory as gf
 
     gf.gpdk.PDK.activate()
     params = dict(
-        n_strips=5,
-        junction=JUNCTION,
-        zmin=0.0,
-        zmax=RIB_HEIGHT,
         response=fake_coupling,
         material=RFStripMaterial(),
     )
+    if "segments" not in kwargs:
+        params.update(n_strips=5, junction=JUNCTION, zmin=0.0, zmax=RIB_HEIGHT)
     params.update(kwargs)
-    return build_staircase_cross_section(carrier_map(), **params)
+    return build_staircase_cross_section(
+        carriers if carriers is not None else carrier_map(), **params
+    )
 
 
 class TestOneCall:
@@ -442,6 +451,68 @@ class TestDrawnGeometry:
         spans.sort()
         for (_low, high), (next_low, _next_high) in pairwise(spans):
             assert high == next_low
+
+
+class TestSegments:
+    """Strips that follow the drawn device: a run per Region, at its height."""
+
+    def test_each_segment_is_tiled_by_its_own_strips(self):
+        edges = build(segments=RIB_AND_SLAB).strips.edges_um
+
+        expected = np.concatenate(
+            (
+                np.linspace(JUNCTION[0], CENTER, 4),
+                np.linspace(CENTER, JUNCTION[1], 3)[1:],
+            )
+        )
+        np.testing.assert_allclose(edges, expected)
+
+    def test_each_strip_is_drawn_at_its_segments_height(self):
+        staircase = build(segments=RIB_AND_SLAB)
+        stack = staircase.stack()
+
+        heights = [
+            (stack.layers[name].zmin, stack.layers[name].zmax)
+            for name in staircase.strip_names
+        ]
+        assert heights == [(0.0, RIB_HEIGHT)] * 3 + [(0.0, SLAB_HEIGHT)] * 2
+        np.testing.assert_allclose(
+            staircase.strips.zmax_um, [RIB_HEIGHT] * 3 + [SLAB_HEIGHT] * 2
+        )
+
+    def test_a_strip_averages_the_carriers_over_its_own_height(self):
+        """Electrons only in the bottom 90 nm: the slab Strips hold them
+        undiluted, a rib-height Strip over the same ground would not."""
+        h = np.linspace(JUNCTION[0], JUNCTION[1], 61)
+        z = np.linspace(0.0, RIB_HEIGHT, 23)
+        hh, zz = (a.ravel() for a in np.meshgrid(h, z))
+        low = np.where(zz <= SLAB_HEIGHT, 1e18, 0.0)
+        carriers = SimpleNamespace(
+            x_um=hh, y_um=zz, electrons_cm3=low, holes_cm3=np.zeros_like(low)
+        )
+
+        strips = build(carriers, segments=RIB_AND_SLAB).strips
+
+        np.testing.assert_allclose(strips.electrons_cm3[3:], 1e18)
+        assert np.all(strips.electrons_cm3[:3] < 0.5e18)
+
+    def test_overlapping_segments_are_refused(self):
+        clash = (
+            StripSegment(span=(JUNCTION[0], CENTER + 0.1), z=(0.0, 0.22), n_strips=2),
+            StripSegment(span=(CENTER, JUNCTION[1]), z=(0.0, 0.09), n_strips=2),
+        )
+        with pytest.raises(ValueError, match="overlap"):
+            build(segments=clash)
+
+    def test_segments_replace_the_single_extent(self):
+        with pytest.raises(ValueError, match="segments"):
+            build(segments=RIB_AND_SLAB, n_strips=5)
+
+    def test_the_unloaded_staircase_keeps_the_heights(self):
+        loaded = build(segments=RIB_AND_SLAB)
+        np.testing.assert_allclose(
+            loaded.unloaded().strips.zmax_um, loaded.strips.zmax_um
+        )
 
 
 def test_builds_without_any_solver_runtime(monkeypatch):

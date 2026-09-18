@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `rib_phase_shifter` draws a depletion Phase shifter as foundries build one — a 500 x 220 nm rib on a 90 nm slab, a
+  lightly doped core, 1e19 plus and 1e20 contact Regions under 10 x 1 um electrodes — and the TCAD TW-MZM notebook now
+  runs on it. The RF Staircase follows the drawn device: no Strip straddles two Regions and each stands at its own
+  Region's height, so a slab is not drawn as tall as the rib (`StripSegment`,
+  `build_staircase_cross_section(segments=...)`, `EMStage.region_segments`, `Strips.zmin_um` / `zmax_um`).
+  `RFStage.n_strips` now counts the Strips across the Junction extent and `strips_per_region` those across every other
+  doped Region; the rib-resolution warning is gone, since the rib keeps its count however wide the slab.
+  `pn_phase_shifter` takes the Traveling-wave `electrodes=`. The optical Staircase still draws every Strip at the rib's
+  height, and warns on a device whose slab is thinner.
+
 - The RF Stage lands on the line Mode at its defaults. It builds its Staircase with 21 Strips (the preset's
   `DEFAULT_N_STRIPS` and `RFStage.n_strips`, both 5 before; the preset's Palace optical Staircase takes the same count),
   and its `max_loss_ratio` defaults to one (0.5 before): the loaded line of a depletion Phase shifter loses most of a

@@ -55,7 +55,12 @@ from gsim.modulator.carriers import (
     MaterialResponse,
 )
 from gsim.modulator.charge import ChargeStage
-from gsim.modulator.demo import DemoPhaseShifter, demo_phase_shifter
+from gsim.modulator.demo import (
+    DemoPhaseShifter,
+    RibPhaseShifter,
+    demo_phase_shifter,
+    rib_phase_shifter,
+)
 from gsim.modulator.device import Device
 from gsim.modulator.femwell_route import FemwellRoute
 from gsim.modulator.layout import (
@@ -96,6 +101,7 @@ __all__ = [
     "PalaceMode",
     "PalaceRoute",
     "RFStage",
+    "RibPhaseShifter",
     "Route",
     "Span",
     "Stage",
@@ -104,4 +110,5 @@ __all__ = [
     "demo_phase_shifter",
     "derive_layout",
     "pn_phase_shifter",
+    "rib_phase_shifter",
 ]

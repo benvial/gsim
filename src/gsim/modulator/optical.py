@@ -423,12 +423,47 @@ class OpticalStage(EMStage):
                 f"study.{self.stage_name}(n_strips=...)."
             )
         span = self.strip_extent(point.carriers)
+        self._check_heights(span)
         return self.build_staircase(
             point.carriers,
             n_strips=n_strips,
             electrodes=None,
             span=span,
             surroundings=self.surroundings(span),
+        )
+
+    def _check_heights(self, span: tuple[float, float]) -> None:
+        """Warn when the Strips stand taller than the silicon they replace.
+
+        The optical Staircase draws every Strip at the Junction's height.
+        That is the device only when every doped Region the Strips tile
+        stands as tall as the rib; beside a thinner slab it thickens the
+        slab to the rib's height, and the guide it answers for is not the
+        drawn one. The RF Staircase follows the Regions instead
+        (:meth:`~gsim.modulator.em.EMStage.region_segments`).
+
+        Args:
+            span: The extent the Strips will tile (um).
+        """
+        layout = self._require_study().layout
+        height = layout.junction_span.z
+        lower = sorted(
+            name
+            for name in layout.doped_regions
+            if layout.region_spans[name].z != height
+            and layout.region_spans[name].h[1] > span[0]
+            and layout.region_spans[name].h[0] < span[1]
+        )
+        if not lower:
+            return
+        warnings.warn(
+            f"The {self.stage_name} stage's staircase draws every strip at the "
+            f"rib's height, {height[0]:.3g}..{height[1]:.3g} um, but the doped "
+            f"regions {lower} stand lower: the strips thicken them to the "
+            "rib's height, and the mode solved is not the drawn guide's. "
+            f"Narrow study.{self.stage_name}(strip_span=...) to the rib, or "
+            "solve the continuous profile on the femwell route.",
+            stacklevel=3,
         )
 
     def strip_material(self) -> OpticalStripMaterial:

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
@@ -59,6 +60,7 @@ __all__ = [
     "DEFAULT_SI_INDEX",
     "DEFAULT_STRIP_LAYER",
     "DEFAULT_SURROUND_LAYER",
+    "SEGMENT_TOL_UM",
     "STRIP_LENGTH_UM",
     "CarrierCoupling",
     "ConductorModel",
@@ -69,6 +71,7 @@ __all__ = [
     "StaircaseCrossSection",
     "StaircaseDrawing",
     "StripMaterial",
+    "StripSegment",
     "Strips",
     "SurroundingRegion",
     "build_staircase_cross_section",
@@ -351,6 +354,62 @@ def strip_averages_from_nodes(
 
 
 @dataclass(frozen=True)
+class StripSegment:
+    """A run of equal Strips across one stretch of the drawn device.
+
+    A Staircase built from segments rather than from one extent follows
+    the device: each segment is tiled with its own number of equal
+    Strips, and every Strip in it is drawn at the segment's own height
+    and averages the Carrier map over that height. A rib beside a
+    thinner slab is then two segments, not a slab drawn as tall as the
+    rib; a lightly doped stretch where the carriers move and a heavily
+    doped one where they do not take as many Strips as each needs.
+
+    Attributes:
+        span: ``(min, max)`` extent along the junction axis (um).
+        z: ``(min, max)`` vertical extent of the silicon there (um).
+        n_strips: Number of equal Strips tiling the span.
+    """
+
+    span: tuple[float, float]
+    z: tuple[float, float]
+    n_strips: int
+
+    def __post_init__(self) -> None:
+        """An ascending span and height, and at least one Strip."""
+        if self.span[1] <= self.span[0]:
+            raise ValueError(f"Segment span {self.span} must be ascending.")
+        if self.z[1] <= self.z[0]:
+            raise ValueError(f"Segment height {self.z} must be ascending.")
+        if self.n_strips < 1:
+            raise ValueError("A segment needs at least one strip.")
+
+
+#: Segments closer than this count as touching (um).
+SEGMENT_TOL_UM: float = 1e-9
+
+
+def _check_segments(segments: Sequence[StripSegment]) -> None:
+    """Segments tile one extent end to end, low edge first.
+
+    Raises:
+        ValueError: When two segments overlap or leave a gap.
+    """
+    for low, high in pairwise(segments):
+        step = high.span[0] - low.span[1]
+        if step < -SEGMENT_TOL_UM:
+            raise ValueError(
+                f"Strip segments {low.span} and {high.span} overlap; segments "
+                "tile one extent end to end, low edge first."
+            )
+        if step > SEGMENT_TOL_UM:
+            raise ValueError(
+                f"Strip segments {low.span} and {high.span} leave a gap; "
+                "segments tile one extent end to end, low edge first."
+            )
+
+
+@dataclass(frozen=True)
 class Strips:
     """The Strips of a Staircase: what each carries, Strip by Strip.
 
@@ -362,6 +421,10 @@ class Strips:
     Attributes:
         edges_um: Ascending Strip edges along the junction axis (um),
             one more than the Strip count.
+        zmin_um: Bottom of each Strip (um).
+        zmax_um: Top of each Strip (um): the height of the silicon the
+            Strip stands for, which a Staircase built from segments
+            varies along the junction axis.
         electrons_cm3: Average electron concentration per Strip (cm^-3).
         holes_cm3: Average hole concentration per Strip (cm^-3).
         index_shift: Refractive-index shift per Strip.
@@ -373,6 +436,8 @@ class Strips:
     """
 
     edges_um: NDArray[np.float64]
+    zmin_um: NDArray[np.float64]
+    zmax_um: NDArray[np.float64]
     electrons_cm3: NDArray[np.float64]
     holes_cm3: NDArray[np.float64]
     index_shift: NDArray[np.float64]
@@ -388,6 +453,8 @@ class Strips:
         if np.any(np.diff(self.edges_um) <= 0):
             raise ValueError("edges_um must be strictly ascending.")
         for name in (
+            "zmin_um",
+            "zmax_um",
             "electrons_cm3",
             "holes_cm3",
             "index_shift",
@@ -416,6 +483,8 @@ def _strip_response(
     n_strips_cm3: ArrayLike,
     p_strips_cm3: ArrayLike,
     *,
+    zmin: ArrayLike,
+    zmax: ArrayLike,
     response: CarrierCoupling,
     material: StripMaterial,
 ) -> Strips:
@@ -428,6 +497,8 @@ def _strip_response(
         edges: Ascending strip edges (um), length N+1.
         n_strips_cm3: Per-strip average electron concentration (cm^-3).
         p_strips_cm3: Per-strip average hole concentration (cm^-3).
+        zmin: Per-strip bottom (um).
+        zmax: Per-strip top (um).
         response: The carriers Stage's coupling.
         material: The per-Stage strip input: an optical one builds each
             Strip's complex permittivity at the solve wavelength from
@@ -462,6 +533,8 @@ def _strip_response(
         permittivity = np.full(n_arr.size, material.permittivity, dtype=np.complex128)
     return Strips(
         edges_um=edge_arr,
+        zmin_um=np.asarray(zmin, dtype=np.float64).ravel(),
+        zmax_um=np.asarray(zmax, dtype=np.float64).ravel(),
         electrons_cm3=n_arr,
         holes_cm3=p_arr,
         index_shift=dn,
@@ -516,8 +589,8 @@ def _draw_strips(
     edges: NDArray[np.float64],
     length: float,
     base_layer: tuple[int, int],
-    zmin: float,
-    zmax: float,
+    zmin: NDArray[np.float64],
+    zmax: NDArray[np.float64],
     name_prefix: str,
     mesh_resolution: str | float,
 ) -> tuple[dict[str, Layer], dict[str, float]]:
@@ -535,8 +608,8 @@ def _draw_strips(
         length: Rectangle length along the propagation direction (um).
         base_layer: ``(layer, datatype)`` of strip 0; strip ``i`` uses
             ``datatype + i``.
-        zmin: Bottom z of the strips (um).
-        zmax: Top z of the strips (um).
+        zmin: Bottom z of each strip (um).
+        zmax: Top z of each strip (um).
         name_prefix: Region-name prefix.
         mesh_resolution: Mesh resolution assigned to the strip layers.
 
@@ -547,7 +620,7 @@ def _draw_strips(
 
     if length <= 0:
         raise ValueError("length must be positive.")
-    if zmax <= zmin:
+    if np.any(zmax <= zmin):
         raise ValueError("zmax must exceed zmin.")
 
     layer_specs: dict[str, Layer] = {}
@@ -565,12 +638,13 @@ def _draw_strips(
             [(0.0, y0), (length, y0), (length, y1), (0.0, y1)], layer=gds_layer
         )
         centres[name] = (y0 + y1) / 2
+        bottom, top = float(zmin[i]), float(zmax[i])
         layer_specs[name] = Layer(
             name=name,
             gds_layer=gds_layer,
-            zmin=zmin,
-            zmax=zmax,
-            thickness=zmax - zmin,
+            zmin=bottom,
+            zmax=top,
+            thickness=top - bottom,
             material=name,
             layer_type="dielectric",
             mesh_resolution=mesh_resolution,
@@ -1141,13 +1215,56 @@ def _surrounding_layers(
     return layer_specs, centres
 
 
+def _resolve_segments(
+    segments: Sequence[StripSegment],
+    *,
+    n_strips: int | None,
+    junction: tuple[float, float] | None,
+    zmin: float | None,
+    zmax: float | None,
+    band: tuple[float, float] | None,
+) -> tuple[tuple[StripSegment, ...], tuple[tuple[float, float], ...]]:
+    """The segments a Staircase is built from, and the band each averages.
+
+    One extent is one segment; segments are taken as given. The two ways
+    are exclusive, so a Staircase never silently drops one of them.
+
+    Returns:
+        ``(segments, bands)``, one band per segment.
+    """
+    single = (n_strips, junction, zmin, zmax)
+    if segments:
+        if any(value is not None for value in single):
+            raise ValueError(
+                "Give the strips either as segments or as n_strips, junction, "
+                "zmin and zmax, not both."
+            )
+        runs = tuple(segments)
+        _check_segments(runs)
+        return runs, tuple(run.z for run in runs)
+    if n_strips is None or junction is None or zmin is None or zmax is None:
+        raise ValueError(
+            "A staircase needs its strips: either segments, or n_strips, "
+            "junction, zmin and zmax."
+        )
+    if junction[1] <= junction[0]:
+        raise ValueError("junction must be an ascending (min, max) extent.")
+    run = StripSegment(
+        span=(float(junction[0]), float(junction[1])),
+        z=(float(zmin), float(zmax)),
+        n_strips=n_strips,
+    )
+    return (run,), (band if band is not None else run.z,)
+
+
 def build_staircase_cross_section(
     carriers: Any,
     *,
-    n_strips: int,
-    junction: tuple[float, float],
-    zmin: float,
-    zmax: float,
+    n_strips: int | None = None,
+    junction: tuple[float, float] | None = None,
+    zmin: float | None = None,
+    zmax: float | None = None,
+    segments: Sequence[StripSegment] = (),
     response: CarrierCoupling,
     material: StripMaterial,
     band: tuple[float, float] | None = None,
@@ -1163,6 +1280,11 @@ def build_staircase_cross_section(
     own Region beside the Traveling-wave electrodes and whatever of the
     drawn device is redrawn around them.
 
+    The Strips come either from one extent — *n_strips* equal Strips
+    across *junction*, all between *zmin* and *zmax* — or from
+    *segments*, each tiled with its own Strips at its own height, which
+    is how a Staircase follows a rib standing beside a thinner slab.
+
     Coordinates follow the Carrier map's own frame: ``carriers.x_um`` runs
     along the junction axis (the in-plane coordinate of the Cross-section)
     and ``carriers.y_um`` is the vertical one, which is how the
@@ -1176,6 +1298,10 @@ def build_staircase_cross_section(
             (um) the Strips tile.
         zmin: Bottom z of the Strips (um).
         zmax: Top z of the Strips (um).
+        segments: The Strips as :class:`StripSegment` runs, low edge
+            first, tiling one extent end to end — in place of
+            *n_strips*, *junction*, *zmin* and *zmax*, which then stay
+            unset.
         response: The carriers Stage's coupling — the one thing that
             turns electron and hole concentrations into index shift,
             absorption and conductivity.
@@ -1184,7 +1310,8 @@ def build_staircase_cross_section(
             index) or an :class:`RFStripMaterial` (lattice permittivity
             and top frequency).
         band: ``(min, max)`` vertical band of Carrier-map samples averaged
-            into the Strips; defaults to ``(zmin, zmax)``.
+            into the Strips; defaults to ``(zmin, zmax)``. Segments
+            always average over their own height.
         electrodes: Flanking electrodes; ``None`` draws none.
         surroundings: The drawn device's own Regions to redraw around the
             Strips — see :func:`surroundings_from_section`. Empty leaves
@@ -1198,52 +1325,74 @@ def build_staircase_cross_section(
         The :class:`StaircaseCrossSection`.
 
     Raises:
-        ValueError: When the Junction extent reaches outside the Carrier
-            map, or the strip count or geometry is not usable.
+        ValueError: When the extent reaches outside the Carrier map, the
+            segments overlap or leave a gap, both ways of giving the
+            Strips are used at once, or the strip count or geometry is
+            not usable.
     """
     import gdsfactory as gf
 
-    h_min, h_max = float(junction[0]), float(junction[1])
-    if h_max <= h_min:
-        raise ValueError("junction must be an ascending (min, max) extent.")
-    band_range = band if band is not None else (zmin, zmax)
+    runs, bands = _resolve_segments(
+        segments,
+        n_strips=n_strips,
+        junction=junction,
+        zmin=zmin,
+        zmax=zmax,
+        band=band,
+    )
+    h_min, h_max = runs[0].span[0], runs[-1].span[1]
 
     h_um = np.asarray(carriers.x_um, dtype=np.float64).ravel()
     v_um = np.asarray(carriers.y_um, dtype=np.float64).ravel()
-    covered = carrier_map_extent(carriers, band_range)
-    if h_min < covered[0] or h_max > covered[1]:
-        raise ValueError(
-            f"Junction extent {junction} reaches outside the carrier map, "
-            f"which covers [{covered[0]:.3g}, {covered[1]:.3g}] um along the "
-            "junction axis. Widen the charge Window or narrow the extent."
-        )
-
-    edges, n_means = strip_averages_from_nodes(
-        h_um,
-        carriers.electrons_cm3,
-        n_strips=n_strips,
-        h_min=h_min,
-        h_max=h_max,
-        v_um=v_um,
-        v_range=band_range,
-    )
-    _edges, p_means = strip_averages_from_nodes(
-        h_um,
-        carriers.holes_cm3,
-        n_strips=n_strips,
-        h_min=h_min,
-        h_max=h_max,
-        v_um=v_um,
-        v_range=band_range,
-    )
+    edge_runs: list[NDArray[np.float64]] = []
+    n_runs: list[NDArray[np.float64]] = []
+    p_runs: list[NDArray[np.float64]] = []
+    bottoms: list[NDArray[np.float64]] = []
+    tops: list[NDArray[np.float64]] = []
+    for run, band_range in zip(runs, bands, strict=True):
+        covered = carrier_map_extent(carriers, band_range)
+        if run.span[0] < covered[0] or run.span[1] > covered[1]:
+            raise ValueError(
+                f"Strip extent {run.span} reaches outside the carrier map, "
+                f"which covers [{covered[0]:.3g}, {covered[1]:.3g}] um along the "
+                "junction axis. Widen the charge Window or narrow the extent."
+            )
+        averages = [
+            strip_averages_from_nodes(
+                h_um,
+                values,
+                n_strips=run.n_strips,
+                h_min=run.span[0],
+                h_max=run.span[1],
+                v_um=v_um,
+                v_range=band_range,
+            )
+            for values in (carriers.electrons_cm3, carriers.holes_cm3)
+        ]
+        run_edges = averages[0][0]
+        # A segment shares its low edge with the one before it.
+        edge_runs.append(run_edges if not edge_runs else run_edges[1:])
+        n_runs.append(averages[0][1])
+        p_runs.append(averages[1][1])
+        bottoms.append(np.full(run.n_strips, run.z[0], dtype=np.float64))
+        tops.append(np.full(run.n_strips, run.z[1], dtype=np.float64))
+    edges = np.concatenate(edge_runs)
+    strip_zmin = np.concatenate(bottoms)
+    strip_zmax = np.concatenate(tops)
 
     def respond(n_cm3: ArrayLike, p_cm3: ArrayLike) -> Strips:
         """The Strips these averages make, under this Staircase's coupling."""
         return _strip_response(
-            edges, n_cm3, p_cm3, response=response, material=material
+            edges,
+            n_cm3,
+            p_cm3,
+            zmin=strip_zmin,
+            zmax=strip_zmax,
+            response=response,
+            material=material,
         )
 
-    strips = respond(n_means, p_means)
+    strips = respond(np.concatenate(n_runs), np.concatenate(p_runs))
     length = drawing.length_um
     comp = drawing.component if drawing.component is not None else gf.Component()
     layer_specs, centres = _draw_strips(
@@ -1251,8 +1400,8 @@ def build_staircase_cross_section(
         edges=strips.edges_um,
         length=length,
         base_layer=drawing.base_layer,
-        zmin=zmin,
-        zmax=zmax,
+        zmin=strip_zmin,
+        zmax=strip_zmax,
         name_prefix=drawing.name_prefix,
         mesh_resolution=drawing.mesh_resolution,
     )
@@ -1266,7 +1415,7 @@ def build_staircase_cross_section(
             electrodes,
             junction=(h_min, h_max),
             length=length,
-            zmin=zmin,
+            zmin=float(strip_zmin.min()),
             mesh_resolution=drawing.mesh_resolution,
         )
         layer_specs.update(specs)

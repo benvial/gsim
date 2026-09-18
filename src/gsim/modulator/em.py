@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import Field, model_validator
 
-from gsim.common.stack.staircase import STRIP_LENGTH_UM, StaircaseDrawing
+from gsim.common.stack.staircase import (
+    SEGMENT_TOL_UM,
+    STRIP_LENGTH_UM,
+    StaircaseDrawing,
+    StripSegment,
+)
 from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
 from gsim.modulator.route import EMRoute, Route, route_for
 from gsim.modulator.stage import Stage
@@ -212,6 +217,64 @@ class EMStage(Stage):
             )
         return clipped
 
+    def region_segments(
+        self, extent: tuple[float, float], *, n_strips: int, strips_per_region: int
+    ) -> list[StripSegment]:
+        """Strips that follow the drawn device across *extent*.
+
+        Every doped Region the extent crosses is a segment of its own,
+        at the Region's own height, so no Strip straddles a doping step
+        or a step in the silicon's thickness: a rib beside a thinner slab
+        stays a rib beside a slab, and a lightly doped Region beside a
+        heavily doped one is not averaged into a resistance neither of
+        them has. The Junction extent is where the carriers move, so it
+        takes *n_strips* between its two Regions — as one run when they
+        stand at one height, split by width otherwise — and every other
+        Region takes *strips_per_region*.
+
+        Args:
+            extent: ``(min, max)`` the Strips tile along the junction
+                axis (um).
+            n_strips: Strips across the Junction extent.
+            strips_per_region: Strips across each other doped Region.
+
+        Returns:
+            The segments, low edge first.
+        """
+        layout = self._require_study().layout
+        low, high = extent
+        runs: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
+        for name in sorted(
+            layout.doped_regions, key=lambda region: layout.region_spans[region].h
+        ):
+            span = layout.region_spans[name]
+            start, stop = max(span.h[0], low), min(span.h[1], high)
+            if stop - start > SEGMENT_TOL_UM:
+                runs.append((name, (start, stop), span.z))
+
+        junction = set(layout.junction.regions)
+        inside = [run for run in runs if run[0] in junction]
+        merged = len(inside) == 2 and inside[0][2] == inside[1][2]
+        widths = [run[1][1] - run[1][0] for run in inside]
+        shares = [n_strips] if merged or len(inside) < 2 else _split(n_strips, widths)
+
+        segments: list[StripSegment] = []
+        for name, span, z in runs:
+            if name not in junction:
+                segments.append(
+                    StripSegment(span=span, z=z, n_strips=strips_per_region)
+                )
+            elif merged:
+                if name == inside[0][0]:
+                    segments.append(
+                        StripSegment(
+                            span=(span[0], inside[1][1][1]), z=z, n_strips=n_strips
+                        )
+                    )
+            else:
+                segments.append(StripSegment(span=span, z=z, n_strips=shares.pop(0)))
+        return segments
+
     def strip_material(self) -> StripMaterial:
         """What this Stage adds to a Strip's material.
 
@@ -229,6 +292,7 @@ class EMStage(Stage):
         electrodes: ElectrodeSpec | None,
         surroundings: Sequence[SurroundingRegion] = (),
         span: tuple[float, float] | None = None,
+        segments: Sequence[StripSegment] = (),
     ) -> StaircaseCrossSection:
         """Reduce a Carrier map to a meshable Staircase.
 
@@ -247,6 +311,9 @@ class EMStage(Stage):
                 background medium.
             span: The extent to tile, when the caller has already
                 resolved it; :meth:`strip_extent` decides otherwise.
+            segments: Strips that follow the drawn device
+                (:meth:`region_segments`), in place of *n_strips* equal
+                Strips at the Junction's height across the extent.
 
         Returns:
             The Staircase Cross-section, drawn on its own component.
@@ -255,12 +322,19 @@ class EMStage(Stage):
 
         study = self._require_study()
         junction = study.layout.junction_span
+        extent: dict[str, Any] = (
+            {"segments": segments}
+            if segments
+            else {
+                "n_strips": n_strips,
+                "junction": span if span is not None else self.strip_extent(carriers),
+                "zmin": junction.z[0],
+                "zmax": junction.z[1],
+            }
+        )
         return build_staircase_cross_section(
             carriers,
-            n_strips=n_strips,
-            junction=span if span is not None else self.strip_extent(carriers),
-            zmin=junction.z[0],
-            zmax=junction.z[1],
+            **extent,
             response=study.carriers.response,
             material=self.strip_material(),
             electrodes=electrodes,
@@ -413,3 +487,14 @@ class EMStage(Stage):
                 stacklevel=3,
             )
         return mode, ratio
+
+
+def _split(total: int, widths: Sequence[float]) -> list[int]:
+    """Share *total* Strips between Regions in proportion to their widths.
+
+    Every Region keeps at least one Strip, and the shares add up to
+    *total* unless that is fewer than the Regions.
+    """
+    shares = [max(1, round(total * width / sum(widths))) for width in widths]
+    shares[-1] = max(1, total - sum(shares[:-1]))
+    return shares

@@ -86,10 +86,6 @@ if TYPE_CHECKING:
 
 __all__ = ["RFStage"]
 
-#: Strips the Junction extent should span before the Staircase is warned
-#: about: fewer, and the depletion edge sits inside one Strip.
-MIN_STRIPS_ACROSS_RIB: int = 2
-
 
 class RFStage(EMStage):
     """The line parameters of the Traveling-wave electrode, versus frequency.
@@ -116,9 +112,17 @@ class RFStage(EMStage):
             metal Region takes over. Set it to the same value on both to
             compare them.
         frequencies_hz: RF frequencies to solve at (Hz), kept ascending.
-        n_strips: Number of Strips the Carrier map is reduced to; more
-            strips approximate the continuous profile more closely at the
-            cost of mesh size.
+        n_strips: Number of Strips across the Junction extent — the two
+            Regions the Junction separates, where the carriers move; more
+            approximate the continuous profile more closely at the cost
+            of mesh size.
+        strips_per_region: Number of Strips across every other doped
+            Region the Strips tile. The Strips follow the drawn device
+            (:meth:`~gsim.modulator.em.EMStage.region_segments`): no
+            Strip straddles two Regions, and each stands at its own
+            Region's height, so a slab beside the rib is drawn as thin as
+            it is and a heavily doped contact Region is not averaged into
+            the lighter one beside it.
         bias_v: Bias point the Staircase is built from; the last point of
             the Bias sweep when unset.
         strip_span: ``(min, max)`` extent the Strips tile along the
@@ -129,11 +133,8 @@ class RFStage(EMStage):
             :func:`~gsim.modulator.preset.pn_phase_shifter` therefore
             widens it to the doped slab
             (:attr:`~gsim.modulator.layout.DeviceLayout.doped_span`).
-            The Strips are of equal width, so on a device whose pads are
-            much wider than the rib, widening dilutes the resolution
-            around the Junction; the Stage says so when the rib stops
-            spanning :data:`MIN_STRIPS_ACROSS_RIB` Strips, and the answer
-            is to raise ``n_strips`` with the span.
+            Widening it costs no resolution at the Junction, which keeps
+            its ``n_strips`` whatever else the span takes in.
         electrodes: The drawn conductors of the Traveling-wave
             electrode, flanking the Strips.
         signal_contact: Contact the RF drive is applied to, naming the
@@ -183,6 +184,7 @@ class RFStage(EMStage):
         default_factory=lambda: [10e9, 40e9], min_length=1
     )
     n_strips: int = Field(default=21, ge=1)
+    strips_per_region: int = Field(default=2, ge=1)
     bias_v: float | None = None
     conductor_model: ConductorModel | None = None
     electrodes: ElectrodeSpec = Field(default=DEFAULT_ELECTRODES)
@@ -373,49 +375,18 @@ class RFStage(EMStage):
 
     def _staircase_for(self, carriers: CarrierMap) -> StaircaseCrossSection:
         """The Staircase this Stage meshes, built from one Carrier map."""
-        # Resolved once: the check and the Strips have to agree on which
-        # extent is real, and resolving it twice would warn twice.
-        span = self.strip_extent(carriers)
-        self._check_strip_resolution(span)
+        segments = self.region_segments(
+            self.strip_extent(carriers),
+            n_strips=self.n_strips,
+            strips_per_region=self.strips_per_region,
+        )
         return self.build_staircase(
             carriers,
             n_strips=self.n_strips,
-            span=span,
+            segments=segments,
             electrodes=replace(
                 self.electrodes, conductor_model=self.effective_conductor_model()
             ),
-        )
-
-    def _check_strip_resolution(self, extent: tuple[float, float]) -> None:
-        """Warn when the Strips are too wide to resolve the Junction.
-
-        Strips are of equal width, so tiling an extent wider than the rib
-        — the doped slab, which is what carries the pads' series
-        resistance into the line — buys that resistance at the cost of
-        resolution where the carriers actually move. Below two Strips
-        across the rib the depletion edge is inside a single Strip and the
-        Staircase has stopped resolving what it exists for.
-
-        Args:
-            extent: The extent the Strips will actually tile (um).
-        """
-        span = self._require_study().layout.junction_span
-        strip_width = (extent[1] - extent[0]) / self.n_strips
-        rib_width = span.h[1] - span.h[0]
-        if strip_width * MIN_STRIPS_ACROSS_RIB <= rib_width:
-            return
-        wanted = int(
-            np.ceil(MIN_STRIPS_ACROSS_RIB * (extent[1] - extent[0]) / rib_width)
-        )
-        warnings.warn(
-            f"The {self.stage_name} stage tiles {extent[1] - extent[0]:.3g} um "
-            f"with {self.n_strips} strips of {strip_width:.3g} um, so the "
-            f"{rib_width:.3g} um junction extent falls inside fewer than "
-            f"{MIN_STRIPS_ACROSS_RIB} of them and the carrier profile across "
-            "it is not resolved. Raise the count with "
-            f"study.{self.stage_name}(n_strips={wanted}) or narrow the span "
-            f"with study.{self.stage_name}(strip_span=...).",
-            stacklevel=2,
         )
 
     def simulation(

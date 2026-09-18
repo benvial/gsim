@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     import gdsfactory as gf
 
     from gsim.common.stack.extractor import LayerStack
+    from gsim.common.stack.staircase import ElectrodeSpec
     from gsim.modulator.device import Device
     from gsim.modulator.route import EMRoute
 
@@ -112,6 +113,7 @@ def pn_phase_shifter(
     wavelength_um: float = 1.55,
     frequencies_hz: Sequence[float] = DEFAULT_FREQUENCIES_HZ,
     n_strips: int = DEFAULT_N_STRIPS,
+    electrodes: ElectrodeSpec | None = None,
     length_um: float = DEFAULT_LENGTH_UM,
     n_group: float | None = None,
     route: EMRoute = "femwell",
@@ -143,9 +145,11 @@ def pn_phase_shifter(
         n_strips: Strips the RF Staircase is built with, and the optical
             one wherever the optical Stage needs a Staircase at all —
             which the Palace Route does and the femwell Route does not.
-            Both Staircases span the whole doped slab, so raise this on
-            a device whose pads are much wider than its rib — the RF
-            Stage warns when the Strips stop resolving the rib.
+            On the RF Staircase these Strips cross the Junction extent,
+            and every other doped Region of the slab takes Strips of its
+            own.
+        electrodes: The Traveling-wave electrodes flanking the RF
+            Staircase; the RF Stage's default pair when omitted.
         length_um: Length of the Traveling-wave electrode (um).
         n_group: Optical group index the Velocity mismatch is measured
             against; the line Stage stands the phase index in, and warns,
@@ -211,13 +215,14 @@ def pn_phase_shifter(
     # The RF Staircase tiles the doped slab rather than the rib alone:
     # the pads are part of the line the drive sees, and a Staircase that
     # stops at the rib puts the electrodes against it, dropping their
-    # series resistance. Strips are of equal width, so a device with pads
-    # far wider than its rib wants more of them than the default.
+    # series resistance. The rib keeps n_strips however wide the slab.
     study.rf(
         route=route,
         frequencies_hz=list(frequencies_hz),
         n_strips=n_strips,
         strip_span=layout.doped_span,
     )
+    if electrodes is not None:
+        study.rf(electrodes=electrodes)
     study.line(length_um=length_um, n_group=n_group)
     return study
