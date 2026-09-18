@@ -339,8 +339,15 @@ class LineStage(Stage):
 
     @property
     def length_m(self) -> float:
-        """Electrode length in meters, as the analysis functions take it."""
-        return float(self.length_um) * 1e-6
+        """Electrode length in meters, as the analysis functions take it.
+
+        A segmented electrode is the whole number of periods nearest
+        ``length_um``, so the report and the exports describe one device.
+        """
+        length_m = float(self.length_um) * 1e-6
+        if self.fill_factor < 1.0:
+            return max(1, round(length_m / self.period_m)) * self.period_m
+        return length_m
 
     @property
     def period_m(self) -> float:

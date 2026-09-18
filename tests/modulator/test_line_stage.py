@@ -563,6 +563,13 @@ class TestSegmentedElectrode:
         with pytest.raises(ValueError, match="period"):
             study.line(length_um=1000.0, fill_factor=0.5, period_um=2000.0)
 
+    def test_a_segmented_electrode_is_a_whole_number_of_periods(self, study):
+        study.line(length_um=3020.0, fill_factor=0.5, period_um=50.0)
+        assert study.line.length_m == pytest.approx(3e-3)
+        # Loaded all the way, the length is the configured one.
+        study.line(fill_factor=1.0)
+        assert study.line.length_m == pytest.approx(3.02e-3)
+
     def test_a_fill_factor_of_one_is_todays_report_exactly(self, segmented):
         segmented.line(length_um=3000.0, n_group=N_GROUP, fill_factor=1.0)
 

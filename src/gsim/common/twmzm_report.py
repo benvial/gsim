@@ -420,7 +420,8 @@ class TWMZMReport(BaseModel):
         rlgc: RLGC per-unit-length parameters per frequency.
         vpi_l_vcm: V_pi·L in V*cm at each bias point.
         voltages_v: Bias voltages of the V_pi·L sweep.
-        length_m: Electrode length (m).
+        length_m: Electrode length (m); for a segmented electrode, the
+            whole number of periods nearest the length asked for.
         drive: Drive configuration of the Mach-Zehnder the transfer, its
             figures and the chirp are reported for.
         arm_bias_v: The bias both arms rest at (V).
@@ -599,6 +600,10 @@ def twmzm_figures_of_merit(
             )
         if period_m is None:
             raise ValueError("A fill factor below one needs a period: pass period_m=.")
+        # The electrode is the whole number of periods nearest the length
+        # asked for, and every figure of the report is taken over it.
+        n_periods = max(1, round(length_m / period_m))
+        length_m = n_periods * period_m
         # From here on ``rf`` is the periodic line: every line quantity of
         # the report is the Bloch one.
         loaded = rf
@@ -607,7 +612,7 @@ def twmzm_figures_of_merit(
         )
         response = segmented_eo_response(
             rf.freq_hz,
-            n_periods=max(1, round(length_m / period_m)),
+            n_periods=n_periods,
             period_m=period_m,
             fill_factor=fill_factor,
             n_opt=optical.n_group,

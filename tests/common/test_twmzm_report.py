@@ -317,6 +317,23 @@ class TestSegmentedElectrode:
         full, half = self.segmented(1.0), self.segmented(0.5)
         assert half.vpi_l_vcm == pytest.approx(full.vpi_l_vcm / 0.5)
 
+    def test_the_electrode_is_a_whole_number_of_periods(self):
+        # 3.02 mm holds 60.4 periods of 50 um: the device reported is the 60
+        # period one, and every figure is taken over its 3 mm.
+        report = twmzm_figures_of_merit(
+            self.loaded(),
+            _optical(),
+            length_m=3.02e-3,
+            unloaded=self.unloaded(),
+            fill_factor=0.5,
+            period_m=50e-6,
+        )
+        whole = self.segmented(0.5)
+        assert report.length_m == pytest.approx(3e-3)
+        assert report.walkoff_bandwidth_hz == pytest.approx(whole.walkoff_bandwidth_hz)
+        assert report.v_pi_v == pytest.approx(whole.v_pi_v)
+        assert report.response == pytest.approx(whole.response)
+
     def test_the_mach_zehnder_swings_over_the_loaded_length_only(self):
         full, half = self.segmented(1.0), self.segmented(0.5)
         # Half the electrode modulates, so the same index shift needs twice

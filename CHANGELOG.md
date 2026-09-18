@@ -7,21 +7,25 @@
   the Study the result through `Device.doping` as `TableDoping` profiles — one per dopant present in each Region, so
   donors and acceptors overlap across the Junction and compensate there. Zero, the default, keeps today's `StepDoping`
   exactly. The net doping changes sign at the drawn Junction when the two cores are doped alike, and a fraction of a
-  straggle into the lighter one when they are not. The mobility reads the total doping in the compensated zone, not the
-  net. The TCAD TW-MZM notebook solves the graded device next to the abrupt one: a lower Junction capacitance and a
-  higher Modulation efficiency figure, with the analytic depletion check left to the abrupt device it describes.
+  straggle into the lighter one when they are not. The charge solve's mobility reads the total doping in the compensated
+  zone, not the net; the RF conductivity keeps its stand-in for the impurities, the carriers themselves (`n + p`), which
+  reads the net doping there, on silicon the reverse bias depletes. The TCAD TW-MZM notebook solves the graded device
+  next to the abrupt one: a lower Junction capacitance and a higher Modulation efficiency figure, with the analytic
+  depletion check left to the abrupt device it describes.
 
 - A segmented Traveling-wave electrode, by fill factor. `study.line(fill_factor=, period_um=)` loads the electrode part
   of the way — loaded sections alternating with unloaded ones, which is how a modulator reaches 50 ohm — and the report
   becomes the periodic line's: Bloch impedance, RF index and loss (`TWMZMReport.z0_ohm`, and the new `n_rf` /
   `alpha_rf_np_m`), an EO response in which only the loaded sections modulate, and a Modulation efficiency divided by
-  the fill factor. The second line is the RF Stage's unloaded solve, run through the RF Stage when it holds no result;
-  the Stage warns when the period approaches the Bragg condition inside the reported band. The pure functions are
-  `segmented_period_abcd`, `segmented_line_params` (passive branch; within 1e-3 of the length-weighted average of the
-  two lines' series impedance and shunt admittance while `bragg_fraction` stays under 0.05), `bragg_fraction` and
-  `segmented_eo_response`, and `twmzm_figures_of_merit` takes `unloaded=`, `fill_factor=`, `period_m=`. A fill factor of
-  one — the default — is the report as it was, bit for bit. An approximation of the 3D structure: both sections share
-  one electrode Cross-section, with no loading fins drawn.
+  the fill factor; the Mach-Zehnder figures (`v_pi_v`, insertion loss, extinction ratio) are taken over the loaded
+  length, `fill_factor * length`. A segmented electrode is the whole number of periods nearest `length_um`, in the
+  report (`TWMZMReport.length_m`) and in the exports alike. The second line is the RF Stage's unloaded solve, run
+  through the RF Stage when it holds no result; the Stage warns when the period approaches the Bragg condition inside
+  the reported band. The pure functions are `segmented_period_abcd`, `segmented_line_params` (passive branch; within
+  1e-3 of the length-weighted average of the two lines' series impedance and shunt admittance while `bragg_fraction`
+  stays under 0.05), `bragg_fraction` and `segmented_eo_response`, and `twmzm_figures_of_merit` takes `unloaded=`,
+  `fill_factor=`, `period_m=`. A fill factor of one — the default — is the report as it was, bit for bit. An
+  approximation of the 3D structure: both sections share one electrode Cross-section, with no loading fins drawn.
 
 - The report goes past the Phase shifter to the modulator. The line Stage puts the Phase shifter in both arms of a
   Mach-Zehnder and reports the static intensity transfer against the drive voltage (`TWMZMReport.drive_v`, `transfer`)

@@ -287,7 +287,7 @@ def _graded_doping(
     error function and carries each dopant into the Regions beside its
     own: donors and acceptors overlap across the Junction, and partly
     compensate there. The outer ends of the row are left unsmeared, as an
-    implant window reaching past the drawn device would leave them.
+    implant mask opening reaching past the drawn device would leave them.
 
     A profile reaches the solve on the nodes of the Region it names, so
     each Region takes one sampled profile per dopant present in it, dense
