@@ -33,7 +33,7 @@ from gsim.tcad.doping import (
 )
 from gsim.tcad.mesh import UM_TO_CM, write_scaled_msh
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
-from gsim.tcad.runtime import import_simple_physics, require_devsim
+from gsim.tcad.runtime import devsim_output, import_simple_physics, require_devsim
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +444,7 @@ class ChargeTransportSim(BaseModel):
             equation="Donors - Acceptors",
         )
 
-    def setup_device(self, device: str | None = None) -> str:
+    def setup_device(self, device: str | None = None, *, verbose: bool = False) -> str:
         """Create the DEVSIM device from the shared mesh.
 
         Loads the cm-scaled mesh, registers one DEVSIM region per doped
@@ -462,10 +462,16 @@ class ChargeTransportSim(BaseModel):
         Args:
             device: DEVSIM device name; a process-unique one is generated
                 when omitted.
+            verbose: Stream DEVSIM's own output (silent by default).
 
         Returns:
             The device name.
         """
+        with devsim_output(verbose):
+            return self._setup_device(device)
+
+    def _setup_device(self, device: str | None) -> str:
+        """Build the DEVSIM device; see :meth:`setup_device`."""
         regions = self._validate_setup()
         device = device if device is not None else _unique_devsim_name("device")
         devsim = require_devsim()
@@ -603,11 +609,11 @@ class ChargeTransportSim(BaseModel):
         if self._dd_initialized:
             return
         if self._device is None:
-            self.setup_device()
+            self._setup_device(None)
         devsim = require_devsim()
         sp = import_simple_physics()
         device = self._device
-        if device is None:  # pragma: no cover - setup_device() above set it
+        if device is None:  # pragma: no cover - _setup_device() above set it
             raise RuntimeError("DEVSIM device setup did not complete.")
         regions = self._device_regions()
 
@@ -715,13 +721,21 @@ class ChargeTransportSim(BaseModel):
             raise ValueError(f"Unknown contact '{contact}'. Declared contacts: {names}")
         return contact
 
-    def solve(self, bias: float = 0.0, *, contact: str | None = None) -> BiasPoint:
+    def solve(
+        self,
+        bias: float = 0.0,
+        *,
+        contact: str | None = None,
+        verbose: bool = False,
+    ) -> BiasPoint:
         """Solve the drift-diffusion system at one bias point.
 
         Args:
             bias: Bias voltage applied to the swept contact (V); the other
                 contacts stay at 0 V.
             contact: Swept contact name (defaults to the first declared).
+            verbose: Stream DEVSIM's own output, Newton iterations
+                included (silent by default).
 
         Returns:
             The solved :class:`BiasPoint` including carrier maps, terminal
@@ -729,6 +743,11 @@ class ChargeTransportSim(BaseModel):
             the quasi-static AC solve.
         """
         contact = self._resolve_sweep_contact(contact)
+        with devsim_output(verbose):
+            return self._solve_point(bias, contact)
+
+    def _solve_point(self, bias: float, contact: str) -> BiasPoint:
+        """Solve one bias point on a resolved contact; see :meth:`solve`."""
         self._initialize_drift_diffusion()
         devsim = require_devsim()
 
@@ -783,19 +802,26 @@ class ChargeTransportSim(BaseModel):
         )
 
     def sweep(
-        self, biases: list[float] | Any, *, contact: str | None = None
+        self,
+        biases: list[float] | Any,
+        *,
+        contact: str | None = None,
+        verbose: bool = False,
     ) -> BiasSweepResult:
         """Solve a bias sweep and return carrier maps and C(V) per point.
 
         Args:
             biases: Bias voltages (V) applied in order to the swept contact.
             contact: Swept contact name (defaults to the first declared).
+            verbose: Stream DEVSIM's own output, Newton iterations
+                included (silent by default).
 
         Returns:
             :class:`BiasSweepResult` with one :class:`BiasPoint` per bias.
         """
         contact = self._resolve_sweep_contact(contact)
-        points = [self.solve(float(bias), contact=contact) for bias in biases]
+        with devsim_output(verbose):
+            points = [self._solve_point(float(bias), contact) for bias in biases]
         return BiasSweepResult(contact=contact, points=points)
 
 

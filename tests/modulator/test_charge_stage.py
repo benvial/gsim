@@ -79,7 +79,7 @@ class TestSweptContact:
         )
         monkeypatch.setattr(
             "gsim.tcad.sim.ChargeTransportSim.sweep",
-            lambda self, biases, contact=None: (
+            lambda self, biases, contact=None, verbose=False: (
                 calls.append(contact)
                 or BiasSweepResult(contact=str(contact), points=[])
             ),
@@ -104,7 +104,7 @@ class TestDevsimRelease:
         )
         monkeypatch.setattr(
             "gsim.tcad.sim.ChargeTransportSim.sweep",
-            lambda self, biases, contact=None: BiasSweepResult(
+            lambda self, biases, contact=None, verbose=False: BiasSweepResult(
                 contact=str(contact), points=[]
             ),
         )
@@ -127,7 +127,7 @@ class TestRun:
         sweep = BiasSweepResult(contact="cathode", points=[])
         calls = []
 
-        def fake_sweep(_self, biases, *, contact=None):
+        def fake_sweep(_self, biases, *, contact=None, verbose=False):  # noqa: ARG001
             calls.append((list(biases), contact))
             return sweep
 
@@ -154,10 +154,13 @@ class TestRun:
         monkeypatch.setattr(
             "gsim.tcad.sim.ChargeTransportSim.mesh", lambda s, **k: None
         )
-        monkeypatch.setattr(
-            "gsim.tcad.sim.ChargeTransportSim.sweep",
-            lambda self, biases, contact=None: BiasSweepResult(contact="c", points=[]),
-        )
+        streamed: list[bool] = []
+
+        def fake_sweep(_self, _biases, *, contact=None, verbose=False):  # noqa: ARG001
+            streamed.append(verbose)
+            return BiasSweepResult(contact="c", points=[])
+
+        monkeypatch.setattr("gsim.tcad.sim.ChargeTransportSim.sweep", fake_sweep)
         monkeypatch.setattr("gsim.modulator.charge.require_devsim", lambda: None)
 
         component, stack = phase_shifter
@@ -173,6 +176,8 @@ class TestRun:
         out = capsys.readouterr().out.splitlines()
         assert len(out) == 2
         assert all("charge" in line for line in out)
+        # The Study's verbosity reaches DEVSIM's own output.
+        assert streamed == [True]
 
 
 class TestJunctionModelExport:

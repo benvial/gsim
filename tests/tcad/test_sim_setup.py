@@ -280,6 +280,16 @@ class TestSolveWiring:
         assert result.capacitance_f_per_m.shape == (3,)
 
     @pytest.mark.usefixtures("fake_devsim")
+    def test_devsim_output_silent_by_default(self, meshed_sim, capsys):
+        meshed_sim.sweep([0.0, -0.5], contact="cathode")
+        assert "Iteration" not in capsys.readouterr().out
+
+    @pytest.mark.usefixtures("fake_devsim")
+    def test_verbose_streams_devsim_output(self, meshed_sim, capsys):
+        meshed_sim.solve(0.0, contact="cathode", verbose=True)
+        assert "Iteration: dc" in capsys.readouterr().out
+
+    @pytest.mark.usefixtures("fake_devsim")
     def test_unknown_sweep_contact_raises(self, meshed_sim):
         with pytest.raises(ValueError, match="gate"):
             meshed_sim.solve(0.0, contact="gate")

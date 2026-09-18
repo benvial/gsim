@@ -100,6 +100,8 @@ class FakeDevsim(types.ModuleType):
 
     def solve(self, **kwargs):
         self._record("solve", **kwargs)
+        # DEVSIM reports every Newton iteration on sys.stdout.
+        print(f"Iteration: {kwargs.get('type')}")
         if kwargs.get("type") == "ac":
             self.last_ac_frequency = float(kwargs["frequency"])
 

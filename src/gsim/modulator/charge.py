@@ -197,4 +197,8 @@ class ChargeStage(Stage):
         sim = self.simulation()
         self._sim = sim
         sim.mesh(**self.mesh)
-        return sim.sweep(list(self.biases), contact=self.swept_contact())
+        return sim.sweep(
+            list(self.biases),
+            contact=self.swept_contact(),
+            verbose=self._is_verbose(),
+        )
