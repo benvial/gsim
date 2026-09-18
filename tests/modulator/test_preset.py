@@ -104,6 +104,24 @@ class TestPresetConfiguresEveryStage:
         assert study.rf.strip_span[0] < study.layout.junction_span.h[0]
         assert study.rf.strip_span[1] > study.layout.junction_span.h[1]
 
+    def test_the_default_rf_strips_resolve_a_depleted_junction(self, demo):
+        """Across the whole doped slab, and still one Strip is depleted:
+        the line Mode is between the electrodes, not shunted by the slab."""
+        from gsim.tcad.results import BiasPoint, BiasSweepResult
+
+        from .conftest import carriers_at
+
+        study = _study_over(demo)
+        study.charge.seed(
+            BiasSweepResult(
+                contact="cathode",
+                points=[BiasPoint(bias_v=2.0, carriers=carriers_at(2.0))],
+            )
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            study.rf.staircase()
+
     def test_the_optical_staircase_states_its_extent_too(self, demo):
         """Both EM stages declare their strip extent in the same place."""
         study = _study_over(demo, route="palace", n_strips=3)

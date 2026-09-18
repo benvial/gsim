@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The RF Stage lands on the line Mode at its defaults. It builds its Staircase with 21 Strips (the preset's
+  `DEFAULT_N_STRIPS` and `RFStage.n_strips`, both 5 before; the preset's Palace optical Staircase takes the same count),
+  and its `max_loss_ratio` defaults to one (0.5 before): the loaded line of a depletion Phase shifter loses most of a
+  radian per radian at 10 GHz even at a depleted Bias, and the tighter bound dropped it for the wall Mode. The Stage
+  warns when no Strip of the loaded Staircase is depleted — none a dielectric at the highest frequency — because the
+  slab then shunts the electrodes (ADR 0005).
+
 - The modulator's EM Stages reach their Backend through one Route interface (`gsim.modulator.route.Route`) with a
   femwell and a Palace implementation (`FemwellRoute`, `PalaceRoute`); a Stage no longer tests which Route it is on.
   Each Route reads the selected RF Mode in one call — index, characteristic impedance and whether it is the wall Mode

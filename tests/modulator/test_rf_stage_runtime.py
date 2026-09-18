@@ -9,13 +9,14 @@ off a real charge solve is the ``tcad_local`` test at the bottom.
 
 The fixtures solve the line Mode, not the wall Mode (ADR 0005, ticket 24):
 the Bias is the depleted 4 V point, where the loaded line Mode sits inside
-the default loss bound, and the band starts at 20 GHz, below which the
-lossy 2 um electrodes of the ``"volume"`` model make even the bare line an
-RC slow wave whose loss ratio (0.55 at 10 GHz) the bound rightly refuses.
-Two solves still select the wall Mode: ``TestWallMode``'s undepleted case,
-on purpose, and the ``tcad_local`` end-to-end run, whose real 4 V depletion
-is narrower than the middle of three Strips (``TestCrosscheck`` is the
-real-carrier line Mode, at the Strip count that resolves it).
+the default loss bound, and the band starts at 20 GHz: at 10 GHz the lossy
+2 um electrodes of the ``"volume"`` model make even the bare line an RC
+slow wave (loss ratio 0.55), which the band was chosen to stay clear of.
+The ``tcad_local`` end-to-end runs stand on a real charge solve: one at
+the three Strips of these fixtures, which only reaches the line
+parameters, and one at the preset's defaults, which lands on the line
+Mode across the preset's band (``TestCrosscheck`` compares the two
+loaded-line routes at the Strip count that resolves the junction).
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import pytest
 
 from gsim.common.modes import Conductor, NoLineModeError
 from gsim.common.twmzm_report import RFLineParams
-from gsim.modulator import Device, Study
+from gsim.modulator import Device, Study, pn_phase_shifter
 
 from .conftest import (
     CENTER_Y,
@@ -435,6 +436,31 @@ class TestEndToEnd:
         assert np.all(line.n_rf > 1.0)
         assert line.bias_v == DEPLETED_V
 
+    def test_the_presets_defaults_land_on_the_line_mode(self, tmp_path):
+        """The notebook's path: nothing configured, the line Mode found.
+
+        The preset's Strips tile the whole doped slab and one of them still
+        sits inside the 2 V depletion region, so no Strip shunts the
+        electrodes; the loaded line's loss ratio at 10 GHz is inside the
+        default bound, so the wall Mode (n_eff ~ 2.2, Z0 ~ 170 ohm) is not
+        what the rule falls back to at any frequency of the band.
+        """
+        pytest.importorskip("devsim")
+        demo = build_demo()
+        study = pn_phase_shifter(
+            component=demo.component,
+            stack=demo.stack,
+            device=demo.device,
+            output_dir=tmp_path,
+        )
+
+        line, messages = run_recording(study.rf.run)
+
+        assert not wall_mode_warnings(messages)
+        assert not [m for m in messages if "no depleted strip" in m]
+        assert np.all(line.n_rf > 4.0)
+        assert np.all((line.z0_ohm.real > 20.0) & (line.z0_ohm.real < 80.0))
+
 
 class TestTwoPortExport:
     """The Study hands the Traveling-wave electrode over, no hand-carried arrays."""
@@ -543,12 +569,10 @@ class TestCrosscheck:
     The comparison needs the direct solve to actually resolve the
     junction, which the defaults do not attempt: the Strips must tile
     the whole doped slab (so the pads' series resistance is in), be
-    narrower than the depletion region (61 across 1.2 um), and the mode
-    selection must admit the slow-wave Mode, whose loss ratio sits above
-    the line-tuned default bound. 20-30 GHz is the band where both
-    solves stay on the quasi-TEM branch: lower, the RC slow wave loses
-    about as much as it advances and the selection rightly refuses it;
-    higher, the unloaded solve wanders onto a substrate branch.
+    narrower than the depletion region (61 across 1.2 um), and the
+    eigenvalue search must be aimed at the slow wave. 20-30 GHz is the
+    band the gate's tolerances were set on: higher, the unloaded solve
+    wanders onto a substrate branch.
     """
 
     def test_the_routes_agree_within_the_gates_tolerance(self, tmp_path):
@@ -568,7 +592,6 @@ class TestCrosscheck:
             strip_span=SLAB,
             num_modes=8,
             n_guess=6.0,
-            max_loss_ratio=0.6,
         )
 
         comparison = study.rf.crosscheck()
@@ -587,17 +610,19 @@ class TestCrosscheck:
 
 
 class TestWallMode:
-    """The femwell Route says when it selected the wall Mode (ticket 23).
+    """The femwell Route says when it selected the wall Mode (ADR 0005).
 
-    At 0 V the undepleted 1e18 Strips make the loaded line an RC slow
-    wave losing as fast as it advances, the default loss bound drops it,
-    and what is left inside the bound is the Mode running between both
-    electrodes together and the metallic Window wall. Depleting the
-    Junction puts the line Mode back inside the bound, where the default
-    rule finds it.
+    At 0 V the undepleted 1e18 Strips join the two electrodes through a
+    resistive slab, and the loaded line is an RC slow wave losing as fast
+    as it advances (``n_eff ~ 31.9 - 31.9j``), at the edge of the default
+    loss bound. The Staircase says so before anything is meshed; a
+    tighter bound drops the RC wave and leaves the Mode running between
+    both electrodes together and the metallic Window wall, which the
+    Route reads off the electrode currents. Depleting the Junction puts
+    the line Mode well inside the bound, where the default rule finds it.
     """
 
-    def test_an_undepleted_bias_lands_on_the_wall_mode_and_says_so(self, tmp_path):
+    def test_an_undepleted_bias_is_reported_before_the_solve(self, tmp_path):
         study = build_study(tmp_path)
         study.rf(
             frequencies_hz=[10e9],
@@ -605,9 +630,22 @@ class TestWallMode:
             conductor_model="pec",
             order=2,
             bias_v=0.0,
-            # Aimed straight at the wall Mode's index; the Stage's own
-            # default of 3.0 lands there too, one candidate later.
+        )
+        with pytest.warns(UserWarning, match="no depleted strip"):
+            study.rf.staircase()
+
+    def test_a_tighter_bound_lands_on_the_wall_mode_and_says_so(self, tmp_path):
+        study = build_study(tmp_path)
+        study.rf(
+            frequencies_hz=[10e9],
+            n_strips=N_STRIPS,
+            conductor_model="pec",
+            order=2,
+            bias_v=0.0,
+            # Aimed straight at the wall Mode's index, with the bound the
+            # Stage defaulted to before the RC wave was admitted.
             n_guess=2.0,
+            max_loss_ratio=0.5,
         )
         with pytest.warns(UserWarning, match=WALL_MODE_WARNING):
             study.rf.run()

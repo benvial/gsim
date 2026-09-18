@@ -48,7 +48,13 @@ DEFAULT_BIASES_V: tuple[float, ...] = (0.0, 0.5, 1.0, 1.5, 2.0)
 DEFAULT_FREQUENCIES_HZ: tuple[float, ...] = (10e9, 20e9, 40e9, 60e9, 80e9, 100e9)
 
 #: Strip count the RF Staircase is built with unless the caller says otherwise.
-DEFAULT_N_STRIPS: int = 5
+#: The Strips tile the whole doped slab, so they have to be narrow enough
+#: that one of them sits inside the depletion region: five Strips across
+#: the demo's slab average it away at 2 V, and the slab then shunts the
+#: electrodes. Twenty-one leave a dielectric Strip at 2 V and land within
+#: 4% of sixty-one on the line's index at 10 GHz and 1% at 100 GHz. The
+#: optical Staircase takes the same count wherever its Route needs one.
+DEFAULT_N_STRIPS: int = 21
 
 #: Traveling-wave electrode length (um) unless the caller says otherwise.
 DEFAULT_LENGTH_UM: float = 3000.0

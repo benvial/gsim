@@ -24,7 +24,7 @@ from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, SLAB
 class TestConfiguration:
     def test_defaults_are_readable(self, biased):
         assert biased.rf.frequencies_hz == [10e9, 40e9]
-        assert biased.rf.n_strips == 5
+        assert biased.rf.n_strips == 21
         assert biased.rf.bias_v is None
         assert biased.rf.window is None
         assert biased.rf.has_run is False
@@ -94,10 +94,29 @@ class TestStaircase:
             biased.rf.staircase()
 
     def test_strips_that_resolve_the_rib_are_not_reported(self, biased):
-        biased.rf(n_strips=5, strip_span=SLAB)
+        biased.rf(n_strips=21, strip_span=SLAB)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             biased.rf.staircase()
+
+    def test_strips_that_average_the_depletion_away_are_reported(self, biased):
+        """No dielectric Strip left: the slab shunts the two electrodes."""
+        biased.rf(n_strips=2)
+        with pytest.warns(UserWarning, match="no depleted strip"):
+            biased.rf.staircase()
+
+    def test_a_depleted_strip_is_not_reported(self, biased):
+        biased.rf(n_strips=21)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            biased.rf.staircase()
+
+    def test_the_unloaded_staircase_is_not_reported(self, biased):
+        """Carriers switched off, every Strip is a dielectric."""
+        biased.rf(n_strips=2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            biased.rf.unloaded_staircase()
 
     def test_the_strips_carry_the_carrier_derived_conductivity(self, biased):
         staircase = biased.rf.staircase()
@@ -439,6 +458,17 @@ class TestSolveLoop:
 
         (read,) = fake_route.made("read_line")
         assert read["mode"].n_eff == 3.2 - 0.01j
+
+    def test_a_lossy_loaded_line_is_selected_over_the_wall_mode(
+        self, biased, fake_route
+    ):
+        """The demo's depleted line at 10 GHz on 61 strips, beside its wall
+        Mode: it loses 0.74 of a radian per radian, and is still the line."""
+        wall, line = 2.2486 - 0.7121j, 6.4802 - 4.7918j
+        run_rf(biased, fake_route, modes_at=[wall, line], frequencies_hz=[10e9])
+
+        (read,) = fake_route.made("read_line")
+        assert read["mode"].n_eff == line
 
     def test_the_reading_is_what_the_result_carries(self, biased, fake_route):
         from gsim.common.modes import LineReading

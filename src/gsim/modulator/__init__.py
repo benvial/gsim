@@ -42,7 +42,7 @@ Configuring the Stages one by one is the same workflow spelled out::
     response = study.carriers.run()
     study.optical(wavelength_um=1.55)
     modes = study.optical.run()
-    study.rf(frequencies_hz=[10e9, 40e9], n_strips=5)
+    study.rf(frequencies_hz=[10e9, 40e9])
     line_params = study.rf.run()
     study.line(length_um=3000.0, n_group=3.8)
     report = study.report()

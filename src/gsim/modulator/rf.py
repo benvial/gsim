@@ -60,6 +60,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import Field, PrivateAttr, field_validator
+from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 
 from gsim.common.modes import LineModeRule
 from gsim.common.stack.staircase import (
@@ -141,13 +142,14 @@ class RFStage(EMStage):
         rule: Candidate rule replacing the default one of
             :func:`gsim.common.modes.select_line_mode`.
         max_loss_ratio: Upper bound on ``|Im(n_eff)| / Re(n_eff)`` for
-            the default rule. Tighter here than the bound
-            :func:`gsim.common.modes.select_line_mode` falls back to,
-            because a Traveling-wave electrode is a transmission line
-            rather than an arbitrary waveguide: it advances several
-            radians of phase per radian of loss, and the Modes sitting
-            just inside a bound of one are the discretization's, not the
-            line's.
+            the default rule; one, where a Mode loses as fast as it
+            advances. The loaded line of a Phase shifter is a slow wave
+            carrying the slab's series resistance, and at the bottom of
+            the band it loses most of a radian per radian even at a
+            depleted Bias (0.74 at 10 GHz on the demo), so a tighter
+            bound drops the line Mode and leaves the wall Mode
+            (ADR 0005). The discretization's spurious Modes sit far
+            outside one, at hundreds of radians of loss per radian.
         degeneracy_rtol: Relative spread within which two candidate Modes
             count as ambiguous, and the selection warns.
         strip_permittivity: Relative permittivity of the Strip lattice,
@@ -180,13 +182,13 @@ class RFStage(EMStage):
     frequencies_hz: list[float] = Field(
         default_factory=lambda: [10e9, 40e9], min_length=1
     )
-    n_strips: int = Field(default=5, ge=1)
+    n_strips: int = Field(default=21, ge=1)
     bias_v: float | None = None
     conductor_model: ConductorModel | None = None
     electrodes: ElectrodeSpec = Field(default=DEFAULT_ELECTRODES)
     signal_contact: str | None = None
     rule: LineModeRule | None = None
-    max_loss_ratio: float = Field(default=0.5, gt=0.0)
+    max_loss_ratio: float = Field(default=1.0, gt=0.0)
     degeneracy_rtol: float = Field(default=0.03, gt=0.0)
     strip_permittivity: float = Field(default=11.9, gt=0.0)
     track_modes: bool = True
@@ -301,7 +303,46 @@ class RFStage(EMStage):
         Returns:
             The Staircase Cross-section, drawn on its own component.
         """
-        return self._staircase_for(self.bias_point().carriers)
+        staircase = self._staircase_for(self.bias_point().carriers)
+        self._check_depletion(staircase)
+        return staircase
+
+    def _check_depletion(self, staircase: StaircaseCrossSection) -> None:
+        """Warn when no Strip is depleted, so the slab shunts the line.
+
+        A Strip is depleted when it is a dielectric at the highest
+        frequency solved — its conductivity below ``omega * eps`` there.
+        With none, every Strip conducts, the electrodes are joined by a
+        resistive slab, and the loaded line is an RC wave losing about as
+        fast as it advances: the selection lands either on it, at the
+        edge of ``max_loss_ratio``, or past it on the wall Mode
+        (ADR 0005), and neither is the depleted line. Either the Bias does
+        not deplete the Junction, or the Strips are wider than the
+        depletion region and average it away.
+
+        Args:
+            staircase: The loaded Staircase the Stage built.
+        """
+        fmax = max(self.frequencies_hz)
+        dielectric_below = 2.0 * np.pi * fmax * EPS0 * self.strip_permittivity
+        least = float(
+            np.min(np.asarray(staircase.strips.conductivity_s_per_m, dtype=float))
+        )
+        if least < dielectric_below:
+            return
+        warnings.warn(
+            f"The {self.stage_name} stage's staircase at V = "
+            f"{self.bias_point().bias_v:g} has no depleted strip: the least "
+            f"conductive of its {self.n_strips} strips carries {least:.3g} S/m, "
+            f"above the {dielectric_below:.3g} S/m below which a strip is a "
+            f"dielectric at {fmax / 1e9:g} GHz. The slab shunts the electrodes, "
+            "so the loaded line is an RC wave losing about as fast as it "
+            "advances, and the selection lands on it or on the wall mode, not on "
+            f"the depleted line. Raise study.{self.stage_name}(n_strips=...) until "
+            "a strip resolves the depletion region, or solve at a depleting "
+            "bias_v.",
+            stacklevel=2,
+        )
 
     def unloaded_staircase(self) -> StaircaseCrossSection:
         """The loaded solve's Staircase with the carriers switched off.
@@ -315,7 +356,10 @@ class RFStage(EMStage):
         Returns:
             The Staircase Cross-section, drawn on its own component.
         """
-        return self.staircase().unloaded()
+        # Not through staircase(): the carriers are about to be switched
+        # off, so whether the loaded Strips resolve the depletion is not
+        # this Staircase's question.
+        return self._staircase_for(self.bias_point().carriers).unloaded()
 
     def strip_material(self) -> RFStripMaterial:
         """The Strip lattice permittivity, valid up to the top frequency.
