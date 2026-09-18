@@ -21,11 +21,18 @@ from gsim.common.twmzm_report import (
     line_params_from_neff,
     twmzm_figures_of_merit,
 )
-from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
+from gsim.modulator.optical import (
+    GroupIndex,
+    OpticalMode,
+    OpticalStage,
+    OpticalSweep,
+)
 from gsim.modulator.rf import RFStage
 
 WAVELENGTH_UM = 1.55
 N_GROUP = 3.8
+#: What the optical Stage computes when the line Stage is given none.
+COMPUTED_N_GROUP = 3.9
 RF_FREQS = [10e9, 40e9, 100e9]
 RF_N_EFF = [3.20 - 0.004j, 3.15 - 0.010j, 3.10 - 0.020j]
 RF_Z0 = [46.0 + 1.0j, 44.0 + 0.5j, 42.0 + 0.2j]
@@ -78,18 +85,33 @@ def rf_params():
 def solved(study, monkeypatch):
     """A Study whose EM Stages answer from canned results, counting solves."""
     solves = {"optical": 0, "rf": 0}
+    group_index_solves: list[float] = []
 
     def solve_optical(_stage):
         solves["optical"] += 1
         return optical_sweep()
+
+    def solve_group_index(_stage, sweep):
+        group_index_solves.append(sweep.wavelength_um)
+        return GroupIndex(
+            n_group=COMPUTED_N_GROUP,
+            wavelength_um=sweep.wavelength_um,
+            step_um=0.01,
+            bias_v=sweep.reference_bias_v,
+            wavelengths_um=(sweep.wavelength_um - 0.01, sweep.wavelength_um + 0.01),
+            n_eff=(2.41, 2.39),
+            core_index=(3.48, 3.47),
+        )
 
     def solve_rf(_stage):
         solves["rf"] += 1
         return rf_params()
 
     monkeypatch.setattr(OpticalStage, "_solve", solve_optical)
+    monkeypatch.setattr(OpticalStage, "_solve_group_index", solve_group_index)
     monkeypatch.setattr(RFStage, "_solve", solve_rf)
     study.solves = solves
+    study.group_index_solves = group_index_solves
     return study
 
 
@@ -395,13 +417,41 @@ class TestGroupIndex:
             np.asarray(RF_N_EFF, dtype=complex).real - 2.5
         )
 
-    def test_without_one_the_phase_index_stands_in_and_says_so(self, solved):
-        with pytest.warns(UserWarning, match="group index"):
+    def test_a_configured_group_index_pays_for_no_extra_optical_solve(self, solved):
+        solved.line(n_group=N_GROUP)
+
+        solved.line.run()
+
+        assert solved.group_index_solves == []
+        assert solved.optical.result.group_index is None
+
+    def test_without_one_the_optical_stage_computes_it(self, solved):
+        report = solved.line.run()
+
+        assert len(solved.group_index_solves) == 1
+        assert report.velocity_mismatch == pytest.approx(
+            np.asarray(RF_N_EFF, dtype=complex).real - COMPUTED_N_GROUP
+        )
+
+    def test_the_computed_one_is_not_the_phase_index_and_warns_about_nothing(
+        self, solved
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             report = solved.line.run()
 
-        assert report.velocity_mismatch == pytest.approx(
+        assert report.velocity_mismatch != pytest.approx(
             np.asarray(RF_N_EFF, dtype=complex).real - OPTICAL_N_EFF[0].real
         )
+
+    def test_re_configuring_the_line_keeps_the_computed_one(self, solved):
+        """The two extra solves are the optical Stage's, not the line's."""
+        solved.line.run()
+
+        solved.line(length_um=1000.0)
+        solved.line.run()
+
+        assert len(solved.group_index_solves) == 1
 
     def test_a_configured_group_index_warns_about_nothing(self, solved):
         solved.line(n_group=N_GROUP)

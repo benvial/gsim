@@ -152,8 +152,8 @@ def pn_phase_shifter(
             Staircase; the RF Stage's default pair when omitted.
         length_um: Length of the Traveling-wave electrode (um).
         n_group: Optical group index the Velocity mismatch is measured
-            against; the line Stage stands the phase index in, and warns,
-            when left unset.
+            against — a measured one, say; the optical Stage computes it,
+            with two more solves, when left unset.
         route: Backend both EM Stages use — ``"femwell"`` or ``"palace"``.
         dispersion: Plasma-dispersion coefficients replacing the fit
             selected from ``wavelength_um``; foundry-calibrated values go

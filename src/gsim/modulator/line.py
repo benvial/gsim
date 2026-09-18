@@ -23,12 +23,12 @@ arms are driven, how evenly the light is split between them and where the
 interferometer rests are settings here, since none is cross-section
 physics.
 
-Two numbers the solvers do not produce are configured here. The optical
-group index is not a single-wavelength solve's output, so it is a setting;
-without one the Stage stands the phase index in and says so. And the EO
-bandwidth is read off the frequency axis, which the RF Stage samples only
-where it can afford to solve, so a denser response grid can be asked for
-and the RF result resamples itself onto it.
+The optical group index the Velocity mismatch is measured against is the
+optical Stage's to compute — two more Modes either side of its wavelength
+— and this Stage asks it for one unless a measured value is configured
+here. And the EO bandwidth is read off the frequency axis, which the RF
+Stage samples only where it can afford to solve, so a denser response
+grid can be asked for and the RF result resamples itself onto it.
 
 The Stage is also where the Traveling-wave electrode leaves the Study for
 a circuit tool: as a Touchstone two-port on the solved frequencies
@@ -236,10 +236,11 @@ class LineStage(Stage):
         z_gen_ohm: Generator impedance the line is driven from (ohm);
             complex values are accepted.
         n_group: Optical group index of the Phase shifter, which sets the
-            Velocity mismatch against the RF index. A solve at one
-            wavelength cannot produce it, so it is configured; when unset
-            the optical Mode's phase index at the reference bias stands
-            in, and the Stage warns that it did.
+            Velocity mismatch against the RF index. ``None`` — the
+            default — takes the one the optical Stage computes
+            (:meth:`~gsim.modulator.optical.OpticalStage.group_index`),
+            at the cost of two more optical solves; a value set here — a
+            measured one, say — is used as given and costs none.
         response_frequencies_hz: Frequencies the EO response is reported
             on (Hz), kept ascending. The RF Stage's own frequencies when
             unset; a denser grid interpolates the RF line parameters onto
@@ -306,36 +307,16 @@ class LineStage(Stage):
         """Electrode length in meters, as the analysis functions take it."""
         return float(self.length_um) * 1e-6
 
-    def group_index(self, sweep: OpticalSweep) -> float:
+    def group_index(self) -> float:
         """Optical group index the Velocity mismatch is measured against.
 
-        Args:
-            sweep: The optical Stage's result.
-
         Returns:
-            The configured group index, or the phase index at the
-            reference bias when none is configured.
+            The configured group index, or the one the optical Stage
+            computes when none is configured.
         """
         if self.n_group is not None:
             return float(self.n_group)
-        phase_index = self._reference_phase_index(sweep)
-        warnings.warn(
-            f"The {self.stage_name} stage has no optical group index, so it "
-            f"is standing the phase index Re(n_eff) = {phase_index:.4f} at "
-            "the reference bias in for it. Velocity mismatch and the "
-            "walk-off bandwidth are only as good as that substitution; set "
-            f"the group index with study.{self.stage_name}(n_group=...).",
-            stacklevel=2,
-        )
-        return phase_index
-
-    @staticmethod
-    def _reference_phase_index(sweep: OpticalSweep) -> float:
-        """``Re(n_eff)`` of the Mode solved at the sweep's reference bias."""
-        for point in sweep.points:
-            if point.bias_v == sweep.reference_bias_v:
-                return float(point.n_eff.real)
-        return float(sweep.points[0].n_eff.real)
+        return float(self._require_study().optical.group_index())
 
     def optical_sweep(self, sweep: OpticalSweep) -> OpticalPhaseSweep:
         """The optical Stage's result, as the report's optical input.
@@ -381,7 +362,7 @@ class LineStage(Stage):
             dn_eff=sweep.index_shift[order],
             alpha_opt_db_cm=sweep.loss_db_cm[order],
             wavelength_um=sweep.wavelength_um,
-            n_group=self.group_index(sweep),
+            n_group=self.group_index(),
         )
 
     def line_params(self, solved: RFLineParams) -> RFLineParams:

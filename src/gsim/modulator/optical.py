@@ -9,7 +9,10 @@ an explicit transfer (ADR 0002). Nothing here reuses the charge mesh.
 
 Each Bias point becomes one complex effective index, from which the two
 numbers a designer wants follow: the index shift relative to zero bias,
-which sets modulation efficiency, and the bias-dependent loss.
+which sets modulation efficiency, and the bias-dependent loss. A third
+is there for the asking: the group index the Velocity mismatch is
+measured against, which no solve at one wavelength produces, so
+:meth:`OpticalStage.group_index` solves two more either side of it.
 
 Either Backend can answer, and the choice changes how the carriers reach
 the solver. A Route that carries a continuous permittivity — femwell,
@@ -32,12 +35,12 @@ missing extra or a missing binary costs nothing but the error message.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gsim.common.stack.staircase import DEFAULT_SI_INDEX, OpticalStripMaterial
 from gsim.modulator.em import EMStage
@@ -57,7 +60,10 @@ if TYPE_CHECKING:
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import CarrierMap
 
-__all__ = ["OpticalMode", "OpticalStage", "OpticalSweep"]
+__all__ = ["GroupIndex", "OpticalMode", "OpticalStage", "OpticalSweep"]
+
+#: One solved Mode: ``(bias_v, n_eff, boundary_field_ratio)``.
+_Solved = tuple[float, complex, float]
 
 #: dB per cm of propagation loss per unit of ``|Im(n_eff)| / lambda[cm]``.
 _DB_PER_CM = 40.0 * np.pi / np.log(10.0)
@@ -85,6 +91,39 @@ class OpticalMode(BaseModel):
     boundary_field_ratio: float
 
 
+class GroupIndex(BaseModel):
+    """The Phase shifter's optical group index, and what it was read off.
+
+    ``n_g = n_eff - lambda * d(n_eff)/d(lambda)``, the slope a central
+    difference between two Modes solved either side of the Stage's
+    wavelength, at the reference Bias point and with every material
+    re-resolved at the wavelength it is solved at.
+
+    Attributes:
+        n_group: The group index at ``wavelength_um``.
+        wavelength_um: The wavelength the group index is taken at (um).
+        step_um: The finite-difference step either side of it (um).
+        bias_v: The Bias point the Modes were solved at (V).
+        wavelengths_um: The two wavelengths solved, below and above (um).
+        n_eff: ``Re(n_eff)`` of the Mode at those two wavelengths.
+        core_index: Index the guide's core resolved to at those two
+            wavelengths, before the carriers move it.
+    """
+
+    n_group: float
+    wavelength_um: float
+    step_um: float
+    bias_v: float
+    wavelengths_um: tuple[float, float]
+    n_eff: tuple[float, float]
+    core_index: tuple[float, float]
+
+    @property
+    def material_dispersion(self) -> bool:
+        """Whether the core's own index moved between the two wavelengths."""
+        return self.core_index[0] != self.core_index[1]
+
+
 class OpticalSweep(BaseModel):
     """The optical Mode across the whole Bias sweep.
 
@@ -93,6 +132,9 @@ class OpticalSweep(BaseModel):
         wavelength_um: Vacuum wavelength the Modes were solved at (um).
         reference_bias_v: The bias the index shift is measured from.
         points: One solved Mode per Bias point, in sweep order.
+        group_index: The group index at the reference bias, once it has
+            been asked for (:meth:`OpticalStage.group_index`); it costs
+            two more solves, so the sweep does not pay for it unasked.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -101,6 +143,7 @@ class OpticalSweep(BaseModel):
     wavelength_um: float
     reference_bias_v: float
     points: list[OpticalMode] = Field(default_factory=list)
+    group_index: GroupIndex | None = None
 
     @property
     def voltages(self) -> NDArray[np.float64]:
@@ -188,6 +231,13 @@ class OpticalStage(EMStage):
             falling outside the Strip extent — the sign of Strips too
             narrow to carry the carrier response where the Mode actually
             is. Measured only by a Route that reads its Mode's fields.
+        group_index_step_um: Finite-difference step of the group index
+            (um): :meth:`group_index` solves the Mode this far either
+            side of ``wavelength_um``. The difference is central, so its
+            error falls with the square of the step: a silicon slab's
+            group index moves by 1e-5 between 10 nm and 5 nm. Much
+            smaller, and the difference of two solved indices starts to
+            read the eigensolver's tolerance instead.
     """
 
     stage_name: ClassVar[str] = "optical"
@@ -200,6 +250,18 @@ class OpticalStage(EMStage):
     z_below_um: float = Field(default=1.0, ge=0.0)
     perturbed_regions: list[str] | None = None
     strip_field_tol: float = Field(default=0.5, gt=0.0, le=1.0)
+    group_index_step_um: float = Field(default=0.01, gt=0.0)
+
+    @model_validator(mode="after")
+    def _step_inside_the_wavelength(self) -> OpticalStage:
+        """Both wavelengths the group index is read off must be positive."""
+        if self.group_index_step_um >= self.wavelength_um:
+            raise ValueError(
+                f"group_index_step_um = {self.group_index_step_um:g} reaches "
+                f"past zero from wavelength_um = {self.wavelength_um:g}; the "
+                "step is a small fraction of the wavelength, 0.01 um by default."
+            )
+        return self
 
     # ------------------------------------------------------------------
     # Derivation
@@ -327,7 +389,10 @@ class OpticalStage(EMStage):
         """
         if self.strip_index is not None:
             return float(self.strip_index)
+        return self._drawn_core_index()
 
+    def _drawn_core_index(self) -> float:
+        """Index of the drawn Junction's material at this Stage's wavelength."""
         from gsim.common.stack.materials import (
             MaterialProperties,
             resolve_material_at_wavelength,
@@ -508,12 +573,16 @@ class OpticalStage(EMStage):
             window_z=self.mode_window_z(),
         )
 
-    def simulation(self) -> BoundaryModeSim:
+    def simulation(self, *, output_dir: str | Path | None = None) -> BoundaryModeSim:
         """Assemble the cross-section this Stage meshes.
 
         The Window is the optical one — a box around the rib derived from
         the Junction, never the charge Stage's slab (ADR 0002) — and the
         mesh lands in the Stage's own output directory.
+
+        Args:
+            output_dir: Directory the mesh and solver files land in; the
+                Stage's own when omitted.
 
         Returns:
             The configured (unmeshed) ``BoundaryModeSim``.
@@ -525,7 +594,11 @@ class OpticalStage(EMStage):
             stack=study.stack,
             component=study.component,
             plane=study.plane,
-            output_dir=study.stage_dir(self.stage_name),
+            output_dir=(
+                output_dir
+                if output_dir is not None
+                else study.stage_dir(self.stage_name)
+            ),
             freq_hz=c0 / (self.wavelength_um * 1e-6),
             window=self.mode_window(),
             window_z=self.mode_window_z(),
@@ -669,16 +742,20 @@ class OpticalStage(EMStage):
             )
         return responses
 
-    def _solve_continuous(self, route: Route) -> OpticalSweep:
+    def _solve_continuous(
+        self, route: Route, points: Sequence[CarrierResponse], *, directory: Path
+    ) -> list[_Solved]:
         """Solve the drawn device with a continuous ``eps(x, y)``.
 
-        One mesh serves the whole sweep: the geometry does not move with
+        One mesh serves every Bias point: the geometry does not move with
         the bias, only the per-element permittivity the Carrier maps
         imply.
 
         Args:
             route: The Route answering this run; one that carries
                 continuous materials.
+            points: The Bias points to solve, in order.
+            directory: Where the mesh lands.
         """
         import meshio
         from scipy.constants import speed_of_light as c0
@@ -686,17 +763,15 @@ class OpticalStage(EMStage):
         from gsim.femwell.adapter import epsilon_by_region
 
         study = self._require_study()
-        responses = self._bias_sweep()
-
-        sim = self.simulation()
+        sim = self.simulation(output_dir=directory)
         sim.mesh(**self.mesh)
         mesh = meshio.read(str(sim.mesh_path))
         base_epsilon = epsilon_by_region(
             mesh, study.stack, wavelength_um=self.wavelength_um
         )
 
-        solved: list[tuple[float, complex, float]] = []
-        for point in responses.points:
+        solved: list[_Solved] = []
+        for point in points:
             modes = route.solve(
                 sim,
                 freq_hz=c0 / (self.wavelength_um * 1e-6),
@@ -709,9 +784,11 @@ class OpticalStage(EMStage):
             )
             mode, ratio = self.select_mode(modes, route, at=f"V = {point.bias_v:g}")
             solved.append((point.bias_v, complex(mode.n_eff), ratio))
-        return self._sweep_from(responses.contact, solved)
+        return solved
 
-    def _solve_staircase(self, route: Route) -> OpticalSweep:
+    def _solve_staircase(
+        self, route: Route, points: Sequence[CarrierResponse], *, directory: Path
+    ) -> list[_Solved]:
         """Solve the Staircase of every Bias point, on the Route.
 
         Each Bias point gets its own Staircase, and its own mesh under its
@@ -721,26 +798,14 @@ class OpticalStage(EMStage):
 
         Args:
             route: The Route answering this run.
+            points: The Bias points to solve, in order.
+            directory: Where the per-point directories land.
         """
         from scipy.constants import speed_of_light as c0
 
-        study = self._require_study()
-        responses = self._bias_sweep()
-        stage_dir = study.stage_dir(self.stage_name)
         verbose = self._is_verbose()
-        if self.n_strips is None:
-            warnings.warn(
-                f"The {self.stage_name} stage's {route.name} route cannot carry "
-                "a continuous permittivity, so it is solving a staircase "
-                f"of {DEFAULT_PALACE_STRIPS} strips instead of the "
-                "continuous eps(x, y) a route carrying one would have used. "
-                f"Choose the count with study.{self.stage_name}"
-                "(n_strips=...).",
-                stacklevel=2,
-            )
-
-        solved: list[tuple[float, complex, float]] = []
-        for index, point in enumerate(responses.points):
+        solved: list[_Solved] = []
+        for index, point in enumerate(points):
             staircase = self.staircase(point)
             route.check_staircase(
                 staircase,
@@ -748,7 +813,7 @@ class OpticalStage(EMStage):
                 window_z=self.mode_window_z(),
                 stage_name=self.stage_name,
             )
-            point_dir = stage_dir / f"bias_{index:02d}"
+            point_dir = directory / f"bias_{index:02d}"
             point_dir.mkdir(parents=True, exist_ok=True)
             sim = self.staircase_simulation(staircase, output_dir=point_dir)
             sim.mesh(**self.mesh)
@@ -765,13 +830,160 @@ class OpticalStage(EMStage):
             mode, ratio = self.select_mode(modes, route, at=f"V = {point.bias_v:g}")
             self._check_strip_coverage(route, mode, point.bias_v, staircase.strip_span)
             solved.append((point.bias_v, complex(mode.n_eff), ratio))
-        return self._sweep_from(responses.contact, solved)
+        return solved
+
+    def _solve_points(
+        self, route: Route, points: Sequence[CarrierResponse], *, directory: Path
+    ) -> list[_Solved]:
+        """Solve the Mode at *points*, in whichever representation applies.
+
+        Everything that depends on the wavelength — the stack's materials,
+        the Strips' unperturbed index, the carrier loss, the frequency
+        handed to the Route — is read off this Stage's ``wavelength_um``
+        here and below, which is what lets :meth:`group_index` solve
+        another wavelength by asking a copy of the Stage set to it.
+        """
+        if self.effective_n_strips() is None:
+            return self._solve_continuous(route, points, directory=directory)
+        return self._solve_staircase(route, points, directory=directory)
 
     def _solve(self) -> OpticalSweep:
         """Solve the Mode at every Bias point, on the selected Route."""
         # Before the charge solve and before meshing: a user whose Route
         # cannot run should pay nothing to find that out.
         route = self.check_route()
+        responses = self._bias_sweep()
+        if self.n_strips is None and not route.continuous_materials:
+            warnings.warn(
+                f"The {self.stage_name} stage's {route.name} route cannot carry "
+                "a continuous permittivity, so it is solving a staircase "
+                f"of {DEFAULT_PALACE_STRIPS} strips instead of the "
+                "continuous eps(x, y) a route carrying one would have used. "
+                f"Choose the count with study.{self.stage_name}"
+                "(n_strips=...).",
+                stacklevel=2,
+            )
+        solved = self._solve_points(
+            route,
+            responses.points,
+            directory=self._require_study().stage_dir(self.stage_name),
+        )
+        return self._sweep_from(responses.contact, solved)
+
+    # ------------------------------------------------------------------
+    # Group index
+    # ------------------------------------------------------------------
+
+    def group_index(self) -> float:
+        """The Phase shifter's optical group index at ``wavelength_um``.
+
+        ``n_g = n_eff - lambda * d(n_eff)/d(lambda)``: what the Velocity
+        mismatch is measured against, and nothing a solve at one
+        wavelength produces. The slope is a central difference between
+        two more Modes, solved ``group_index_step_um`` either side of the
+        Stage's wavelength at the reference Bias point. Each is solved
+        with every material resolved again at its own wavelength, so the
+        answer carries the materials' dispersion as well as the guide's.
+
+        Runs the Stage first when it holds no result. The two extra Modes
+        are solved once and kept on the sweep
+        (:attr:`OpticalSweep.group_index`), so they are dropped whenever
+        the sweep is.
+
+        Returns:
+            The group index.
+
+        Warns:
+            UserWarning: When the guide's core resolves to one index at
+                both wavelengths, so the answer carries no material
+                dispersion.
+        """
+        sweep: OpticalSweep = self.run()
+        if sweep.group_index is None:
+            sweep.group_index = self._solve_group_index(sweep)
+        return sweep.group_index.n_group
+
+    def _core_index(self) -> float:
+        """Index the guide's core is solved with, before the carriers move it."""
         if self.effective_n_strips() is None:
-            return self._solve_continuous(route)
-        return self._solve_staircase(route)
+            return self._drawn_core_index()
+        return self.unperturbed_index()
+
+    def _solve_group_index(self, sweep: OpticalSweep) -> GroupIndex:
+        """Solve the two Modes either side of the wavelength, and difference them.
+
+        Args:
+            sweep: This Stage's result, which the centre index is read off.
+        """
+        route = self.check_route()
+        reference = next(
+            point
+            for point in self._bias_sweep().points
+            if point.bias_v == sweep.reference_bias_v
+        )
+        directory = self._require_study().stage_dir(self.stage_name) / "group_index"
+
+        step = float(self.group_index_step_um)
+        wavelengths = (self.wavelength_um - step, self.wavelength_um + step)
+        n_eff: list[float] = []
+        core: list[float] = []
+        for side, wavelength_um in zip(("below", "above"), wavelengths, strict=True):
+            # A copy of this Stage set to the other wavelength, attached to
+            # the same Study: whatever reads wavelength_um re-resolves there.
+            shifted = self.model_copy(update={"wavelength_um": wavelength_um})
+            (directory / side).mkdir(parents=True, exist_ok=True)
+            ((_, index, _),) = shifted._solve_points(  # noqa: SLF001 - this Stage
+                route, [reference], directory=directory / side
+            )
+            n_eff.append(index.real)
+            core.append(shifted._core_index())  # noqa: SLF001 - this Stage
+
+        centre = next(
+            point.n_eff.real
+            for point in sweep.points
+            if point.bias_v == sweep.reference_bias_v
+        )
+        slope = (n_eff[1] - n_eff[0]) / (2.0 * step)
+        record = GroupIndex(
+            n_group=centre - self.wavelength_um * slope,
+            wavelength_um=self.wavelength_um,
+            step_um=step,
+            bias_v=reference.bias_v,
+            wavelengths_um=wavelengths,
+            n_eff=(n_eff[0], n_eff[1]),
+            core_index=(core[0], core[1]),
+        )
+        if not record.material_dispersion:
+            self._warn_no_material_dispersion(record)
+        return record
+
+    def _warn_no_material_dispersion(self, record: GroupIndex) -> None:
+        """Say that the group index is the guide's dispersion alone."""
+        if self.strip_index is not None and self.effective_n_strips() is not None:
+            cause = (
+                f"the strips carry the one strip_index = {self.strip_index:g} "
+                "at every wavelength"
+            )
+            remedy = (
+                f"Leave study.{self.stage_name}(strip_index=None) so the strips "
+                "read the drawn material at each wavelength"
+            )
+        else:
+            region = self._require_study().layout.junction.regions[0]
+            cause = (
+                f"the material of the guide's core ({region!r}) resolves to the "
+                f"one index {record.core_index[0]:.4f}"
+            )
+            remedy = (
+                "Give that material a dispersion model covering the optical "
+                "wavelength in the stack's materials"
+            )
+        warnings.warn(
+            f"The {self.stage_name} stage's group index n_g = "
+            f"{record.n_group:.4f} carries no material dispersion: {cause} at "
+            f"{record.wavelengths_um[0]:g} and {record.wavelengths_um[1]:g} um, "
+            "so only the waveguide's own dispersion is in it, and a silicon "
+            "guide's group index comes out low. "
+            f"{remedy}, or set a measured value with study.line(n_group=...).",
+            stacklevel=4,
+        )

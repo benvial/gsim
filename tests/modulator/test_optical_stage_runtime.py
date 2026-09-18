@@ -309,3 +309,168 @@ class TestStripsTooNarrowForTheMode:
             study.optical.run()
 
         assert not [w for w in caught if "strip extent" in str(w.message)]
+
+
+def _material_index(name: str, wavelength_um: float) -> float:
+    """Index of a database material at one wavelength."""
+    from gsim.common.stack.materials import resolve_material_at_wavelength
+
+    resolved = resolve_material_at_wavelength(name, wavelength_um)
+    assert resolved is not None
+    assert resolved.permittivity_scalar is not None
+    return float(np.sqrt(resolved.permittivity_scalar))
+
+
+def slab_te0_index(wavelength_um: float, *, core: float, cladding: float) -> float:
+    """Effective index of the TE0 Mode of a symmetric slab, in closed form.
+
+    The root of ``kappa d/2 tan(kappa d/2) = gamma d/2`` on the branch
+    ``kappa d/2 < pi/2``, for a slab ``RIB_HEIGHT`` thick.
+    """
+    from scipy.optimize import brentq
+
+    k0 = 2.0 * np.pi / wavelength_um
+    half = RIB_HEIGHT / 2.0
+
+    def mismatch(n_eff: float) -> float:
+        kappa = k0 * np.sqrt(core**2 - n_eff**2)
+        gamma = k0 * np.sqrt(n_eff**2 - cladding**2)
+        return float(kappa * half * np.tan(kappa * half) - gamma * half)
+
+    branch = np.sqrt(max(core**2 - (np.pi / (2.0 * half * k0)) ** 2, 0.0))
+    return float(brentq(mismatch, max(cladding, branch) + 1e-9, core - 1e-9))
+
+
+def slab_group_index(wavelength_um: float, *, dispersive: bool) -> float:
+    """Group index of that slab, its materials dispersive or frozen."""
+
+    def n_eff(at_um: float) -> float:
+        materials_um = at_um if dispersive else wavelength_um
+        return slab_te0_index(
+            at_um,
+            core=_material_index("silicon", materials_um),
+            cladding=_material_index("SiO2", materials_um),
+        )
+
+    step = 1e-4
+    slope = (n_eff(wavelength_um + step) - n_eff(wavelength_um - step)) / (2.0 * step)
+    return n_eff(wavelength_um) - wavelength_um * slope
+
+
+def build_slab_study(output_dir):
+    """A slab guide: the doped slab, seen through a Window narrower than it.
+
+    The four doped Regions stand at one height, so a Window inside the
+    rib sees a uniform silicon layer in oxide, and its metallic side
+    walls are what the TE slab Mode — uniform along them, its field
+    normal to them — satisfies exactly. The doped silicon is given
+    silicon's own Sellmeier model in place of the demo's constant, and
+    the carriers are intrinsic, so nothing perturbs the slab. A Mode
+    uniform along the side walls peaks on them, which is the one thing
+    the Window-containment check is switched off for here.
+    """
+    from gsim.common.stack.materials import MATERIALS_DB, MaterialProperties
+
+    demo = build_demo()
+    stack = demo.stack.model_copy(deep=True)
+    sellmeier = next(
+        model
+        for model in MATERIALS_DB["silicon"].dispersion_models
+        if model.type == "sellmeier"
+    )
+    for name in demo.device.doped_regions:
+        stack.materials[name] = MaterialProperties(
+            dispersion_models=[sellmeier]
+        ).to_dict()
+    study = Study(
+        component=demo.component,
+        stack=stack,
+        device=demo.device,
+        output_dir=output_dir,
+    )
+
+    y = np.linspace(SLAB[0], SLAB[1], 41)
+    z = np.linspace(0.0, RIB_HEIGHT, 5)
+    yy, zz = (a.ravel() for a in np.meshgrid(y, z, indexing="ij"))
+    intrinsic = CarrierMap(
+        x_um=yy,
+        y_um=zz,
+        region=["n_rib" if side else "p_rib" for side in yy < CENTER_Y],
+        electrons_cm3=np.full(yy.shape, DEPLETED_CM3),
+        holes_cm3=np.full(yy.shape, DEPLETED_CM3),
+    )
+    study.charge.seed(
+        BiasSweepResult(
+            contact="cathode", points=[BiasPoint(bias_v=0.0, carriers=intrinsic)]
+        )
+    )
+    study.optical(
+        window=(CENTER_Y - 0.2, CENTER_Y + 0.2),
+        window_z=(-1.5, RIB_HEIGHT + 1.5),
+        boundary_field_tol=2.0,
+    )
+    return study
+
+
+@pytest.fixture(scope="module")
+def slab(tmp_path_factory):
+    """The slab guide's group index, solved once with second-order elements."""
+    study = build_slab_study(tmp_path_factory.mktemp("modulator-slab"))
+    study.optical(order=2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        study.optical.group_index()
+    return study
+
+
+class TestGroupIndexOfASlab:
+    """The group index against a guide whose group index is known.
+
+    The closed form is the symmetric slab's TE0 dispersion relation with
+    the same Sellmeier materials, differentiated at a step a hundred
+    times finer than the Stage's. Second-order elements land the Stage
+    within 1e-3 of it — it measured 1e-5 — where first-order ones on the
+    default mesh sit 0.4% low, the index itself being 0.6% low there.
+    """
+
+    TOLERANCE = 1e-3
+
+    def test_the_mode_solved_is_the_slab_mode(self, slab):
+        expected = slab_te0_index(
+            1.55,
+            core=_material_index("silicon", 1.55),
+            cladding=_material_index("SiO2", 1.55),
+        )
+
+        assert slab.optical.result.n_eff[0].real == pytest.approx(expected, abs=1e-3)
+
+    def test_the_group_index_lands_on_the_closed_form(self, slab):
+        expected = slab_group_index(1.55, dispersive=True)
+
+        assert slab.optical.group_index() == pytest.approx(expected, abs=self.TOLERANCE)
+
+    def test_material_dispersion_is_in_the_answer(self, slab):
+        """Freezing the materials moves the closed form by 0.13."""
+        frozen = slab_group_index(1.55, dispersive=False)
+
+        assert slab.optical.result.group_index.material_dispersion is True
+        assert slab.optical.group_index() - frozen > 100 * self.TOLERANCE
+
+    def test_halving_the_step_does_not_move_it(self, tmp_path):
+        study = build_slab_study(tmp_path)
+        full = study.optical.group_index()
+
+        study.optical(group_index_step_um=study.optical.group_index_step_um / 2.0)
+        halved = study.optical.group_index()
+
+        assert halved == pytest.approx(full, abs=1e-4)
+
+    def test_the_staircase_carries_the_same_dispersion(self, tmp_path):
+        """Strips re-read the core index at each wavelength, as the mesh does."""
+        continuous = build_slab_study(tmp_path / "continuous")
+        staircase = build_slab_study(tmp_path / "staircase")
+        staircase.optical(n_strips=2)
+
+        assert staircase.optical.group_index() == pytest.approx(
+            continuous.optical.group_index(), abs=5e-3
+        )

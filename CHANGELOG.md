@@ -16,6 +16,17 @@
   `transfer_message`, rather than extrapolating. The pure functions are `gsim.common.twmzm.mzm_transfer`,
   `mzm_transfer_figures`, `mzm_chirp` and `mzm_drive_range`.
 
+- The optical group index comes from the optical Stage. `study.optical.group_index()` solves the Mode at the reference
+  Bias point `group_index_step_um` (10 nm) either side of the Stage's wavelength and forms
+  `n_g = n_eff - lambda * d(n_eff)/d(lambda)`, every material resolved again at each wavelength, so material dispersion
+  is in the answer as well as the guide's own; a core that resolves to one index at both wavelengths is warned about.
+  The two extra solves are kept on the sweep (`OpticalSweep.group_index`, a `GroupIndex` record) and dropped with it.
+  The line Stage takes the computed value whenever `n_group` is unset — it stood the phase index in, and warned, about
+  2.5 against 3.9 on a silicon guide — so a Study reports its Velocity mismatch and Walk-off bandwidth with no
+  hand-typed index; a configured `n_group` is used as given and costs no solve. On a silicon slab in oxide the femwell
+  Route lands within 1e-5 of the closed-form 3.7067 with second-order elements, 0.13 of which is material dispersion.
+  `LineStage.group_index()` no longer takes the sweep.
+
 - Carrier mobility follows the doping. `gsim.common.carriers.MobilityModel` is the Masetti low-field fit for silicon
   (`masetti_silicon()`, or `constant(mu_n_cm2=, mu_p_cm2=)` for doping-independent values), and one model now serves
   both places a mobility enters: `ChargeTransportSim.mobility` sets DEVSIM's electron and hole mobilities node by node

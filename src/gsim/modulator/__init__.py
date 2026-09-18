@@ -42,9 +42,10 @@ Configuring the Stages one by one is the same workflow spelled out::
     response = study.carriers.run()
     study.optical(wavelength_um=1.55)
     modes = study.optical.run()
+    n_group = study.optical.group_index()
     study.rf(frequencies_hz=[10e9, 40e9])
     line_params = study.rf.run()
-    study.line(length_um=3000.0, n_group=3.8)
+    study.line(length_um=3000.0)
     report = study.report()
 """
 
@@ -71,7 +72,12 @@ from gsim.modulator.layout import (
     derive_layout,
 )
 from gsim.modulator.line import ExportRoundTrip, LineStage
-from gsim.modulator.optical import OpticalMode, OpticalStage, OpticalSweep
+from gsim.modulator.optical import (
+    GroupIndex,
+    OpticalMode,
+    OpticalStage,
+    OpticalSweep,
+)
 from gsim.modulator.palace_route import PalaceMode, PalaceRoute
 from gsim.modulator.preset import pn_phase_shifter
 from gsim.modulator.rf import RFStage
@@ -92,6 +98,7 @@ __all__ = [
     "EMRoute",
     "ExportRoundTrip",
     "FemwellRoute",
+    "GroupIndex",
     "Interface",
     "LineStage",
     "MaterialResponse",
