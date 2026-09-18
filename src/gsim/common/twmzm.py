@@ -18,7 +18,14 @@ into the standard traveling-wave modulator figures of merit:
   (:func:`mzm_transfer_figures`) — and the small-signal chirp parameter per
   Bias point (:func:`mzm_chirp`);
 - RLGC line parameters from the propagation constant and characteristic
-  impedance (:func:`rlgc_from_line_params`, Marks-Williams relations).
+  impedance (:func:`rlgc_from_line_params`, Marks-Williams relations);
+- a segmented Traveling-wave electrode — loaded sections alternating with
+  unloaded ones, by fill factor and period — as the periodic line it is:
+  the per-period two-port (:func:`segmented_period_abcd`), its Bloch
+  propagation constant and impedance (:func:`segmented_line_params`), how
+  near the period sits to the Bragg condition (:func:`bragg_fraction`), and
+  the EO response in which only the loaded sections modulate the light
+  (:func:`segmented_eo_response`).
 
 The response model follows the classic single-drive analysis (e.g. Ghione,
 *Semiconductor Devices for High-Speed Optoelectronics*, ch. 6): the voltage
@@ -42,6 +49,7 @@ __all__ = [
     "DriveConfiguration",
     "JunctionBranch",
     "MZMTransferFigures",
+    "bragg_fraction",
     "eo_bandwidth",
     "eo_response",
     "loaded_line_params",
@@ -50,6 +58,9 @@ __all__ = [
     "mzm_transfer",
     "mzm_transfer_figures",
     "rlgc_from_line_params",
+    "segmented_eo_response",
+    "segmented_line_params",
+    "segmented_period_abcd",
     "series_rc_from_admittance",
     "vpi_length_vcm",
     "walkoff_bandwidth",
@@ -895,6 +906,361 @@ def loaded_line_params(
         np.asarray(gamma, dtype=np.complex128),
         np.asarray(z0, dtype=np.complex128),
     )
+
+
+def _require_segmentation(fill_factor: float, period_m: float) -> None:
+    """A fill factor is a fraction of a period; a period is a length."""
+    if not 0.0 <= fill_factor <= 1.0:
+        raise ValueError("fill_factor must lie between 0 and 1.")
+    if period_m <= 0:
+        raise ValueError("period_m must be positive.")
+
+
+def _section_abcd(
+    theta: NDArray[np.complex128], z0_ohm: NDArray[np.complex128]
+) -> NDArray[np.complex128]:
+    """Telegrapher ABCD matrix of one uniform section, ``theta = gamma l``."""
+    cosh, sinh = np.cosh(theta), np.sinh(theta)
+    return np.stack(
+        [
+            np.stack([cosh, z0_ohm * sinh], axis=-1),
+            np.stack([sinh / z0_ohm, cosh], axis=-1),
+        ],
+        axis=-2,
+    )
+
+
+def segmented_period_abcd(
+    *,
+    gamma_loaded_per_m: ArrayLike,
+    z0_loaded_ohm: ArrayLike,
+    gamma_unloaded_per_m: ArrayLike,
+    z0_unloaded_ohm: ArrayLike,
+    fill_factor: float,
+    period_m: float,
+) -> NDArray[np.complex128]:
+    """ABCD matrix of one period of a segmented Traveling-wave electrode.
+
+    A segmented electrode is loaded by the Junction only part of the way:
+    a loaded section of length ``fill_factor * period_m`` alternates with
+    an unloaded one along the propagation axis. One period is cut here
+    through the middle of the loaded section — half a loaded section, the
+    unloaded section, the other loaded half — so the two-port is symmetric
+    (``A = D``) and the periodic line has one Bloch impedance rather than
+    one per direction.
+
+    Args:
+        gamma_loaded_per_m: Propagation constant of the loaded line (1/m);
+            scalar or per-frequency.
+        z0_loaded_ohm: Characteristic impedance of the loaded line (ohm).
+        gamma_unloaded_per_m: Propagation constant of the unloaded line
+            (1/m).
+        z0_unloaded_ohm: Characteristic impedance of the unloaded line
+            (ohm).
+        fill_factor: Loaded fraction of the period, 0 to 1.
+        period_m: Length of one period (m, > 0).
+
+    Returns:
+        The matrices, shape ``(..., 2, 2)`` over the broadcast inputs.
+    """
+    _require_segmentation(fill_factor, period_m)
+    gamma_l, z0_l, gamma_u, z0_u = np.broadcast_arrays(
+        np.asarray(gamma_loaded_per_m, dtype=np.complex128),
+        np.asarray(z0_loaded_ohm, dtype=np.complex128),
+        np.asarray(gamma_unloaded_per_m, dtype=np.complex128),
+        np.asarray(z0_unloaded_ohm, dtype=np.complex128),
+    )
+    half_loaded = _section_abcd(gamma_l * (0.5 * fill_factor * period_m), z0_l)
+    unloaded = _section_abcd(gamma_u * ((1.0 - fill_factor) * period_m), z0_u)
+    return np.asarray(half_loaded @ unloaded @ half_loaded, dtype=np.complex128)
+
+
+def segmented_line_params(
+    *,
+    gamma_loaded_per_m: ArrayLike,
+    z0_loaded_ohm: ArrayLike,
+    gamma_unloaded_per_m: ArrayLike,
+    z0_unloaded_ohm: ArrayLike,
+    fill_factor: float,
+    period_m: float,
+) -> tuple[NDArray[np.complex128], NDArray[np.complex128]]:
+    """Bloch propagation constant and impedance of a segmented electrode.
+
+    The periodic line of :func:`segmented_period_abcd` carries Bloch waves
+    ``exp(-Gamma n)`` from one period to the next, with
+    ``cosh(Gamma) = (A + D) / 2``. That is solved here in the form
+
+    ``sinh^2(Gamma/2) = sinh^2((t_l + t_u)/2)
+    + (Z_l - Z_u)^2 / (4 Z_l Z_u) sinh(t_l) sinh(t_u)``
+
+    (``t = gamma l`` of each section), which is the same equation without
+    the cancellation ``cosh(Gamma) - 1`` suffers for a period far below
+    the wavelength — exactly where a segmented electrode operates. The
+    passive branch is taken: ``Re(Gamma) >= 0``, and ``Im(Gamma) >= 0``
+    on a lossless line, so the wave decays the way it travels; the Bloch
+    impedance is that wave's own, ``Z_B = B / sinh(Gamma)``, whose real
+    part is positive on a passive line.
+
+    A fill factor of one returns the loaded line and a fill factor of
+    zero the unloaded one, to rounding. For a period far below the
+    wavelength the result tends to the line whose series impedance and
+    shunt admittance are the length-weighted averages of the two lines';
+    the difference is second order in the phase advance per period — below
+    1e-3 relative while :func:`bragg_fraction` stays under 0.05.
+
+    Args:
+        gamma_loaded_per_m: Propagation constant of the loaded line (1/m);
+            scalar or per-frequency.
+        z0_loaded_ohm: Characteristic impedance of the loaded line (ohm).
+        gamma_unloaded_per_m: Propagation constant of the unloaded line
+            (1/m).
+        z0_unloaded_ohm: Characteristic impedance of the unloaded line
+            (ohm).
+        fill_factor: Loaded fraction of the period, 0 to 1.
+        period_m: Length of one period (m, > 0).
+
+    Returns:
+        ``(gamma_per_m, z0_ohm)`` of the periodic line: the Bloch
+        propagation constant per meter and the Bloch impedance.
+    """
+    abcd = segmented_period_abcd(
+        gamma_loaded_per_m=gamma_loaded_per_m,
+        z0_loaded_ohm=z0_loaded_ohm,
+        gamma_unloaded_per_m=gamma_unloaded_per_m,
+        z0_unloaded_ohm=z0_unloaded_ohm,
+        fill_factor=fill_factor,
+        period_m=period_m,
+    )
+    gamma_l, z0_l, gamma_u, z0_u = np.broadcast_arrays(
+        np.asarray(gamma_loaded_per_m, dtype=np.complex128),
+        np.asarray(z0_loaded_ohm, dtype=np.complex128),
+        np.asarray(gamma_unloaded_per_m, dtype=np.complex128),
+        np.asarray(z0_unloaded_ohm, dtype=np.complex128),
+    )
+    theta_l = gamma_l * (fill_factor * period_m)
+    theta_u = gamma_u * ((1.0 - fill_factor) * period_m)
+    contrast = (z0_l - z0_u) ** 2 / (4.0 * z0_l * z0_u)
+    bloch = 2.0 * np.arcsinh(
+        np.sqrt(
+            np.sinh(0.5 * (theta_l + theta_u)) ** 2
+            + contrast * np.sinh(theta_l) * np.sinh(theta_u)
+        )
+    )
+    # arcsinh is odd, so the other root of the square is -bloch: keep the
+    # wave that decays as it travels, and the forward one when lossless.
+    backward = (bloch.real < 0) | ((bloch.real == 0) & (bloch.imag < 0))
+    bloch = np.where(backward, -bloch, bloch)
+    z_bloch = abcd[..., 0, 1] / np.sinh(bloch)
+    return (
+        np.asarray(bloch / period_m, dtype=np.complex128),
+        np.asarray(z_bloch, dtype=np.complex128),
+    )
+
+
+def bragg_fraction(
+    *,
+    gamma_loaded_per_m: ArrayLike,
+    gamma_unloaded_per_m: ArrayLike,
+    fill_factor: float,
+    period_m: float,
+) -> NDArray[np.float64]:
+    """How near a segmented electrode's period sits to the Bragg condition.
+
+    The RF phase advance across one period — the loaded section's plus
+    the unloaded one's — as a fraction of ``pi``, where the reflections
+    of successive periods add in phase and the periodic line stops
+    propagating. Read off the sections rather than the Bloch constant, so
+    it keeps rising past the Bragg condition instead of folding back into
+    the first Brillouin zone. Far below one, the segmented electrode is
+    the averaged line; approaching one, it is a filter.
+
+    Args:
+        gamma_loaded_per_m: Propagation constant of the loaded line (1/m).
+        gamma_unloaded_per_m: Propagation constant of the unloaded line
+            (1/m).
+        fill_factor: Loaded fraction of the period, 0 to 1.
+        period_m: Length of one period (m, > 0).
+
+    Returns:
+        The fraction, per frequency.
+    """
+    _require_segmentation(fill_factor, period_m)
+    beta_l = np.abs(np.asarray(gamma_loaded_per_m, dtype=np.complex128).imag)
+    beta_u = np.abs(np.asarray(gamma_unloaded_per_m, dtype=np.complex128).imag)
+    phase = (beta_l * fill_factor + beta_u * (1.0 - fill_factor)) * period_m
+    return np.asarray(phase / np.pi, dtype=np.float64)
+
+
+def _segmented_effective_voltage(
+    freq_hz: NDArray[np.float64],
+    *,
+    n_periods: int,
+    period_m: float,
+    fill_factor: float,
+    n_opt: float,
+    n_rf_loaded: NDArray[np.float64],
+    alpha_loaded_np_m: NDArray[np.float64],
+    z0_loaded_ohm: NDArray[np.complex128],
+    n_rf_unloaded: NDArray[np.float64],
+    alpha_unloaded_np_m: NDArray[np.float64],
+    z0_unloaded_ohm: NDArray[np.complex128],
+    z_load_ohm: complex,
+    z_gen_ohm: complex,
+) -> NDArray[np.complex128]:
+    """Line voltage averaged over the loaded sections, per generator volt.
+
+    The integral of ``V(z) exp(j beta_opt z)`` over the loaded sections
+    only, divided by the whole electrode length — so an electrode loaded
+    half of the way modulates half as much.
+    """
+    omega = 2.0 * np.pi * freq_hz
+    gamma_l = alpha_loaded_np_m + 1j * omega * n_rf_loaded / C0
+    gamma_u = alpha_unloaded_np_m + 1j * omega * n_rf_unloaded / C0
+    beta_opt = omega * n_opt / C0
+
+    # A lossless line at DC has no Bloch impedance (0/0), and needs none:
+    # the voltage is uniform whatever stands in for it.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        gamma_b, z_b = segmented_line_params(
+            gamma_loaded_per_m=gamma_l,
+            z0_loaded_ohm=z0_loaded_ohm,
+            gamma_unloaded_per_m=gamma_u,
+            z0_unloaded_ohm=z0_unloaded_ohm,
+            fill_factor=fill_factor,
+            period_m=period_m,
+        )
+    bloch = gamma_b * period_m
+    z_b = np.where(bloch == 0, z0_loaded_ohm, z_b)
+
+    # At the period boundaries the periodic line is a uniform one with the
+    # Bloch constant and impedance: the same terminated-line amplitudes.
+    bloch_l = bloch * n_periods
+    reflect_load = (z_load_ohm - z_b) / (z_load_ohm + z_b)
+    round_trip = reflect_load * np.exp(-2.0 * bloch_l)
+    tanh_bl = np.tanh(bloch_l)
+    z_in = z_b * (z_load_ohm + z_b * tanh_bl) / (z_b + z_load_ohm * tanh_bl)
+    v_forward = z_in / (z_in + z_gen_ohm) / (1.0 + round_trip)
+
+    # Inside a period each loaded half carries its own forward and backward
+    # telegrapher waves, fixed by the Bloch wave's V and I at the boundary
+    # it touches; ``ratio`` is Z_loaded / Z_Bloch, signed by direction.
+    half_m = 0.5 * fill_factor * period_m
+    opt = 1j * beta_opt * half_m
+    rf = gamma_l * half_m
+
+    def per_period(
+        ratio: NDArray[np.complex128], step: NDArray[np.complex128]
+    ) -> NDArray[np.complex128]:
+        first = (1.0 - ratio) * _f_avg(opt + rf) + (1.0 + ratio) * _f_avg(opt - rf)
+        last = (1.0 + ratio) * _f_avg(rf - opt) + (1.0 - ratio) * _f_avg(-rf - opt)
+        return 0.25 * fill_factor * (first + np.exp(step) * last)
+
+    ratio = z0_loaded_ohm / z_b
+    u_forward = 1j * beta_opt * period_m - bloch
+    u_backward = 1j * beta_opt * period_m + bloch
+    forward = per_period(ratio, u_forward) * (
+        _f_avg(u_forward * n_periods) / _f_avg(u_forward)
+    )
+    backward = per_period(-ratio, u_backward) * (
+        _f_avg(u_backward * n_periods) / _f_avg(u_backward)
+    )
+    return v_forward * (forward + round_trip * backward)
+
+
+def segmented_eo_response(
+    freq_hz: ArrayLike,
+    *,
+    n_periods: int,
+    period_m: float,
+    fill_factor: float,
+    n_opt: float,
+    n_rf_loaded: ArrayLike,
+    alpha_loaded_np_m: ArrayLike,
+    z0_loaded_ohm: ArrayLike,
+    n_rf_unloaded: ArrayLike,
+    alpha_unloaded_np_m: ArrayLike,
+    z0_unloaded_ohm: ArrayLike,
+    z_load_ohm: complex,
+    z_gen_ohm: complex,
+    normalize: bool = True,
+) -> NDArray[np.complex128]:
+    """Small-signal EO response of a segmented Traveling-wave electrode.
+
+    :func:`eo_response` for the periodic line of
+    :func:`segmented_period_abcd`: the voltage wave — Bloch waves between
+    the terminations, telegrapher waves inside each section — is averaged
+    over the co-propagating light across the loaded sections only, since
+    an unloaded section holds no Junction to modulate. The electrode is
+    ``n_periods`` whole periods long.
+
+    Args:
+        freq_hz: RF frequencies in Hz (array).
+        n_periods: Number of periods along the electrode (>= 1).
+        period_m: Length of one period (m, > 0).
+        fill_factor: Loaded fraction of the period; above 0 — an electrode
+            loaded nowhere has no response — and at most 1.
+        n_opt: Optical group index.
+        n_rf_loaded: RF index of the loaded line; scalar or per-frequency.
+        alpha_loaded_np_m: RF amplitude loss of the loaded line (Np/m).
+        z0_loaded_ohm: Characteristic impedance of the loaded line (ohm).
+        n_rf_unloaded: RF index of the unloaded line.
+        alpha_unloaded_np_m: RF amplitude loss of the unloaded line (Np/m).
+        z0_unloaded_ohm: Characteristic impedance of the unloaded line
+            (ohm).
+        z_load_ohm: Termination impedance in ohms.
+        z_gen_ohm: Generator impedance in ohms.
+        normalize: Divide by the DC value so the response tends to 1 at
+            low frequency, as :func:`eo_response` does. Unnormalized, the
+            response carries the fill factor: the drive voltage acts over
+            the loaded fraction of the length alone.
+
+    Returns:
+        Complex response, same shape as ``freq_hz``.
+    """
+    freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64))
+    _require_segmentation(fill_factor, period_m)
+    if fill_factor == 0.0:
+        raise ValueError(
+            "fill_factor must be above 0: an electrode loaded nowhere "
+            "does not modulate."
+        )
+    if n_periods < 1:
+        raise ValueError("n_periods must be at least 1.")
+    if np.any(freq <= 0):
+        raise ValueError("Frequencies must be positive (use normalize for DC).")
+
+    def on_axis(values: ArrayLike, dtype: type) -> NDArray:
+        return np.broadcast_to(np.asarray(values, dtype=dtype), freq.shape)
+
+    lines = {
+        "n_rf_loaded": on_axis(n_rf_loaded, np.float64),
+        "alpha_loaded_np_m": on_axis(alpha_loaded_np_m, np.float64),
+        "z0_loaded_ohm": on_axis(z0_loaded_ohm, np.complex128),
+        "n_rf_unloaded": on_axis(n_rf_unloaded, np.float64),
+        "alpha_unloaded_np_m": on_axis(alpha_unloaded_np_m, np.float64),
+        "z0_unloaded_ohm": on_axis(z0_unloaded_ohm, np.complex128),
+    }
+
+    def averaged(
+        at_hz: NDArray[np.float64], sampled: dict[str, NDArray]
+    ) -> NDArray[np.complex128]:
+        return _segmented_effective_voltage(
+            at_hz,
+            n_periods=int(n_periods),
+            period_m=period_m,
+            fill_factor=fill_factor,
+            n_opt=n_opt,
+            z_load_ohm=complex(z_load_ohm),
+            z_gen_ohm=complex(z_gen_ohm),
+            **sampled,
+        )
+
+    response = averaged(freq, lines)
+    if normalize:
+        # DC holds the lowest-frequency line parameters, as eo_response does.
+        first = {name: values[:1] for name, values in lines.items()}
+        response = response / averaged(np.array([0.0]), first)[0]
+    return response
 
 
 def rlgc_from_line_params(

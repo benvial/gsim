@@ -10,7 +10,12 @@ import numpy as np
 import pytest
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
-from gsim.common.twmzm import SINC_3DB_ARGUMENT, walkoff_bandwidth
+from gsim.common.twmzm import (
+    SINC_3DB_ARGUMENT,
+    segmented_eo_response,
+    segmented_line_params,
+    walkoff_bandwidth,
+)
 from gsim.common.twmzm_report import (
     LoadedLineComparison,
     OpticalPhaseSweep,
@@ -233,6 +238,145 @@ class TestMachZehnder:
         assert report.v_pi_v == pytest.approx(expected.v_pi_v)
         # The chirp is per bias point, so it stays in the sweep's own order.
         assert report.chirp == pytest.approx(expected.chirp[shuffle])
+
+
+class TestSegmentedElectrode:
+    """The report of a Traveling-wave electrode loaded by fill factor."""
+
+    @staticmethod
+    def loaded():
+        return line_params_from_neff(FREQ, 4.0 - 0.06j, z0_ohm=28.0 - 1.5j)
+
+    @staticmethod
+    def unloaded():
+        return line_params_from_neff(
+            FREQ, 2.2 - 0.01j, z0_ohm=70.0 - 0.5j, unloaded=True
+        )
+
+    def segmented(self, fill_factor, **kwargs):
+        return twmzm_figures_of_merit(
+            self.loaded(),
+            _optical(),
+            length_m=3e-3,
+            unloaded=self.unloaded(),
+            fill_factor=fill_factor,
+            period_m=50e-6,
+            **kwargs,
+        )
+
+    def test_a_fill_factor_of_one_is_todays_report_exactly(self):
+        today = twmzm_figures_of_merit(self.loaded(), _optical(), length_m=3e-3)
+        report = self.segmented(1.0)
+
+        assert report.fill_factor == 1.0
+        assert np.array_equal(report.response, today.response)
+        assert report.bandwidth_3db_hz == today.bandwidth_3db_hz
+        assert report.walkoff_bandwidth_hz == today.walkoff_bandwidth_hz
+        assert np.array_equal(report.velocity_mismatch, today.velocity_mismatch)
+        assert np.array_equal(report.z0_ohm, today.z0_ohm)
+        assert np.array_equal(report.vpi_l_vcm, today.vpi_l_vcm)
+        for name, values in today.rlgc.items():
+            assert np.array_equal(report.rlgc[name], values)
+
+    def test_the_unsegmented_report_says_it_is_loaded_all_the_way(self):
+        report = twmzm_figures_of_merit(self.loaded(), _optical(), length_m=3e-3)
+        assert report.fill_factor == 1.0
+        assert report.period_m is None
+        assert np.array_equal(report.n_rf, self.loaded().n_rf)
+        assert np.array_equal(report.alpha_rf_np_m, self.loaded().alpha_rf_np_m)
+
+    def test_it_reports_the_bloch_line(self):
+        loaded, unloaded = self.loaded(), self.unloaded()
+        gamma, z_bloch = segmented_line_params(
+            gamma_loaded_per_m=loaded.gamma_per_m,
+            z0_loaded_ohm=loaded.z0_ohm,
+            gamma_unloaded_per_m=unloaded.gamma_per_m,
+            z0_unloaded_ohm=unloaded.z0_ohm,
+            fill_factor=0.5,
+            period_m=50e-6,
+        )
+        report = self.segmented(0.5)
+
+        assert report.fill_factor == 0.5
+        assert report.period_m == 50e-6
+        assert report.z0_ohm == pytest.approx(z_bloch)
+        assert report.n_rf == pytest.approx(gamma.imag * C0 / (2 * np.pi * FREQ))
+        assert report.alpha_rf_np_m == pytest.approx(gamma.real)
+        assert report.velocity_mismatch == pytest.approx(report.n_rf - 3.8)
+        omega = 2 * np.pi * FREQ
+        assert report.rlgc["R"] + 1j * omega * report.rlgc["L"] == pytest.approx(
+            gamma * z_bloch
+        )
+
+    def test_partial_loading_reaches_toward_fifty_ohm(self):
+        full, half = self.segmented(1.0), self.segmented(0.5)
+        assert np.all(np.abs(half.z0_ohm - 50.0) < np.abs(full.z0_ohm - 50.0))
+        assert np.all(half.n_rf < full.n_rf)
+
+    def test_modulation_efficiency_scales_with_the_fill_factor(self):
+        full, half = self.segmented(1.0), self.segmented(0.5)
+        assert half.vpi_l_vcm == pytest.approx(full.vpi_l_vcm / 0.5)
+
+    def test_the_mach_zehnder_swings_over_the_loaded_length_only(self):
+        full, half = self.segmented(1.0), self.segmented(0.5)
+        # Half the electrode modulates, so the same index shift needs twice
+        # the drive; the device V_pi L over the length says the same.
+        assert half.v_pi_v == pytest.approx(2.0 * full.v_pi_v)
+        assert half.v_pi_v == pytest.approx(half.vpi_l_vcm[0] / (3e-3 * 1e2))
+
+    def test_the_response_is_the_loaded_sections_own(self):
+        loaded, unloaded = self.loaded(), self.unloaded()
+        report = self.segmented(0.5, z_load_ohm=45.0)
+        expected = segmented_eo_response(
+            FREQ,
+            n_periods=60,
+            period_m=50e-6,
+            fill_factor=0.5,
+            n_opt=3.8,
+            n_rf_loaded=loaded.n_rf,
+            alpha_loaded_np_m=loaded.alpha_rf_np_m,
+            z0_loaded_ohm=loaded.z0_ohm,
+            n_rf_unloaded=unloaded.n_rf,
+            alpha_unloaded_np_m=unloaded.alpha_rf_np_m,
+            z0_unloaded_ohm=unloaded.z0_ohm,
+            z_load_ohm=45.0,
+            z_gen_ohm=50.0,
+        )
+        assert report.response == pytest.approx(expected)
+
+    def test_a_segmented_electrode_needs_the_unloaded_line_and_a_period(self):
+        with pytest.raises(ValueError, match="unloaded"):
+            twmzm_figures_of_merit(
+                self.loaded(),
+                _optical(),
+                length_m=3e-3,
+                fill_factor=0.5,
+                period_m=50e-6,
+            )
+        with pytest.raises(ValueError, match="period_m"):
+            twmzm_figures_of_merit(
+                self.loaded(),
+                _optical(),
+                length_m=3e-3,
+                unloaded=self.unloaded(),
+                fill_factor=0.5,
+            )
+
+    def test_the_two_lines_share_one_frequency_axis(self):
+        with pytest.raises(ValueError, match="freq_hz"):
+            twmzm_figures_of_merit(
+                self.loaded(),
+                _optical(),
+                length_m=3e-3,
+                unloaded=self.unloaded().resampled(FREQ[::2]),
+                fill_factor=0.5,
+                period_m=50e-6,
+            )
+
+    def test_a_fill_factor_outside_the_period_is_rejected(self):
+        for fill_factor in (0.0, 1.5):
+            with pytest.raises(ValueError, match="fill_factor"):
+                self.segmented(fill_factor)
 
 
 class TestUnloadedFlag:

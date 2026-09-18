@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A segmented Traveling-wave electrode, by fill factor. `study.line(fill_factor=, period_um=)` loads the electrode part
+  of the way — loaded sections alternating with unloaded ones, which is how a modulator reaches 50 ohm — and the report
+  becomes the periodic line's: Bloch impedance, RF index and loss (`TWMZMReport.z0_ohm`, and the new `n_rf` /
+  `alpha_rf_np_m`), an EO response in which only the loaded sections modulate, and a Modulation efficiency divided by
+  the fill factor. The second line is the RF Stage's unloaded solve, run through the RF Stage when it holds no result;
+  the Stage warns when the period approaches the Bragg condition inside the reported band. The pure functions are
+  `segmented_period_abcd`, `segmented_line_params` (passive branch; within 1e-3 of the length-weighted average of the
+  two lines' series impedance and shunt admittance while `bragg_fraction` stays under 0.05), `bragg_fraction` and
+  `segmented_eo_response`, and `twmzm_figures_of_merit` takes `unloaded=`, `fill_factor=`, `period_m=`. A fill factor of
+  one — the default — is the report as it was, bit for bit. An approximation of the 3D structure: both sections share
+  one electrode Cross-section, with no loading fins drawn.
+
 - The report goes past the Phase shifter to the modulator. The line Stage puts the Phase shifter in both arms of a
   Mach-Zehnder and reports the static intensity transfer against the drive voltage (`TWMZMReport.drive_v`, `transfer`)
   and the datasheet numbers read off it — `v_pi_v` at this length, `insertion_loss_db`, `extinction_ratio_db` — plus the

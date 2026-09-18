@@ -48,11 +48,11 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import numpy as np
 from numpy.typing import NDArray
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from gsim.common.twmzm import QUADRATURE_RAD, DriveConfiguration
 from gsim.modulator.stage import Stage
@@ -66,7 +66,14 @@ if TYPE_CHECKING:
     )
     from gsim.modulator.optical import OpticalSweep
 
-__all__ = ["ExportRoundTrip", "LineStage"]
+__all__ = ["BRAGG_WARNING_FRACTION", "ExportRoundTrip", "LineStage"]
+
+#: RF phase advance per segmentation period, as a fraction of the Bragg
+#: condition's pi, from which the line Stage warns. A quarter of the way
+#: there the Bloch impedance has moved a few percent off the averaged
+#: line's; three quarters of the way a 28/70 ohm pair is already in its
+#: stop band.
+BRAGG_WARNING_FRACTION: float = 0.25
 
 
 class ExportRoundTrip(BaseModel):
@@ -268,6 +275,21 @@ class LineStage(Stage):
             point by default, where the modulator rests at half its peak
             transmission; ``-pi/2`` is the other quadrature point, of
             opposite single-drive chirp.
+        fill_factor: Fraction of the Traveling-wave electrode the
+            Junction loads, above 0 and at most 1. One — the default — is
+            an electrode loaded all the way. Below one the electrode is
+            segmented: loaded sections alternate with unloaded ones, the
+            report is the periodic line's (Bloch impedance, index and
+            loss, reaching toward 50 ohm), only the loaded sections
+            modulate, and the RF Stage's unloaded solve is run for the
+            second line. An approximation of the 3D structure: both
+            sections share one electrode Cross-section, with no loading
+            fins drawn.
+        period_um: Period of the segmentation (um), one loaded plus one
+            unloaded section; read only for a fill factor below one. The
+            electrode is taken as the whole number of periods nearest its
+            length, and the Stage warns when the period approaches the
+            Bragg condition inside the reported band.
     """
 
     stage_name: ClassVar[str] = "line"
@@ -281,6 +303,19 @@ class LineStage(Stage):
     arm_bias_v: float | None = None
     arm_imbalance_db: float = 0.0
     phase_offset_rad: float = QUADRATURE_RAD
+    fill_factor: float = Field(default=1.0, gt=0.0, le=1.0)
+    period_um: float = Field(default=50.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def _periods_fit_the_electrode(self) -> Self:
+        """A segmented electrode holds at least one whole period."""
+        if self.fill_factor < 1.0 and self.period_um > self.length_um:
+            raise ValueError(
+                f"The segmentation period ({self.period_um:g} um) is longer "
+                f"than the electrode ({self.length_um:g} um), so it holds no "
+                "whole period. Shorten period_um or lengthen length_um."
+            )
+        return self
 
     @field_validator("z_load_ohm", "z_gen_ohm", mode="after")
     @classmethod
@@ -306,6 +341,11 @@ class LineStage(Stage):
     def length_m(self) -> float:
         """Electrode length in meters, as the analysis functions take it."""
         return float(self.length_um) * 1e-6
+
+    @property
+    def period_m(self) -> float:
+        """Segmentation period in meters, as the analysis functions take it."""
+        return float(self.period_um) * 1e-6
 
     def group_index(self) -> float:
         """Optical group index the Velocity mismatch is measured against.
@@ -403,6 +443,52 @@ class LineStage(Stage):
             )
         return solved.resampled(grid)
 
+    def unloaded_line_params(self, loaded: RFLineParams) -> RFLineParams:
+        """The unloaded line a segmented electrode's bare sections are.
+
+        Asked of the RF Stage, which runs its unloaded solve when it
+        holds no result and answers from it otherwise; the line Stage
+        never reaches past it to the Staircase. Read on the frequencies
+        the loaded line is reported on, and checked against the Bragg
+        condition there.
+
+        Args:
+            loaded: The loaded line, on the report's frequency grid
+                (:meth:`line_params`).
+
+        Returns:
+            The unloaded line parameters on the same frequencies.
+        """
+        from gsim.common.twmzm import bragg_fraction
+
+        solved: RFLineParams = self._require_study().rf.run_unloaded()
+        unloaded = (
+            solved
+            if np.array_equal(solved.freq_hz, loaded.freq_hz)
+            else solved.resampled(loaded.freq_hz)
+        )
+
+        near = bragg_fraction(
+            gamma_loaded_per_m=loaded.gamma_per_m,
+            gamma_unloaded_per_m=unloaded.gamma_per_m,
+            fill_factor=self.fill_factor,
+            period_m=self.period_m,
+        )
+        worst = int(np.argmax(near))
+        if near[worst] >= BRAGG_WARNING_FRACTION:
+            warnings.warn(
+                f"The {self.period_um:g} um segmentation period approaches "
+                "the Bragg condition inside the reported band: at "
+                f"{loaded.freq_hz[worst] / 1e9:g} GHz the RF phase advances "
+                f"{near[worst]:.2f} pi per period (the periodic line stops "
+                "propagating near 1). The Bloch impedance and index already "
+                "depart from the averaged line's there, and the two-section "
+                "cascade is no model of a period that long. Shorten it with "
+                f"study.{self.stage_name}(period_um=...).",
+                stacklevel=2,
+            )
+        return unloaded
+
     # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
@@ -414,10 +500,23 @@ class LineStage(Stage):
         grid: the grid is this Stage's own interpolation, and the
         consumer of an export interpolates for itself.
 
+        A segmented electrode leaves as the periodic line it is: between
+        period boundaries that is exactly a uniform line with the Bloch
+        constant and impedance, so every export stays one two-port.
+
         Returns:
             The RF line parameters on the solved frequencies.
         """
         rf: RFLineParams = self._require_study().rf.run()
+        if self.fill_factor < 1.0:
+            from gsim.common.twmzm_report import segmented_line
+
+            return segmented_line(
+                rf,
+                self.unloaded_line_params(rf),
+                fill_factor=self.fill_factor,
+                period_m=self.period_m,
+            )
         return rf
 
     @staticmethod
@@ -433,6 +532,15 @@ class LineStage(Stage):
         if rf.bias_v is not None:
             lines.append(f"bias_v = {rf.bias_v:g}")
         return lines
+
+    def _segmentation_provenance(self) -> list[str]:
+        """Comment lines saying the exported two-port is a segmented line's."""
+        if self.fill_factor == 1.0:
+            return []
+        return [
+            f"segmented: fill_factor = {self.fill_factor:g}, "
+            f"period_m = {self.period_m:g} (Bloch line)"
+        ]
 
     def export_touchstone(
         self, path: str | Path | None = None, *, z_ref_ohm: float = 50.0
@@ -472,7 +580,8 @@ class LineStage(Stage):
                 z_ref_ohm=z_ref_ohm,
             ),
             z_ref_ohm=z_ref_ohm,
-            comments=self._export_provenance(rf, length_m=self.length_m),
+            comments=self._export_provenance(rf, length_m=self.length_m)
+            + self._segmentation_provenance(),
         )
 
     def sax_model(self, *, z_ref_ohm: complex = 50.0) -> SaxLineModel:
@@ -603,6 +712,7 @@ class LineStage(Stage):
         study = self._require_study()
         optical = self.optical_sweep(study.optical.run())
         rf = self.line_params(study.rf.run())
+        segmented = self.fill_factor < 1.0
         return twmzm_figures_of_merit(
             rf,
             optical,
@@ -613,4 +723,7 @@ class LineStage(Stage):
             arm_bias_v=self.arm_bias_v,
             arm_imbalance_db=self.arm_imbalance_db,
             phase_offset_rad=self.phase_offset_rad,
+            unloaded=self.unloaded_line_params(rf) if segmented else None,
+            fill_factor=self.fill_factor,
+            period_m=self.period_m if segmented else None,
         )

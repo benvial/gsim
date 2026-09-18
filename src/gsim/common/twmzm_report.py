@@ -35,6 +35,8 @@ from gsim.common.twmzm import (
     mzm_transfer,
     mzm_transfer_figures,
     rlgc_from_line_params,
+    segmented_eo_response,
+    segmented_line_params,
     vpi_length_vcm,
     walkoff_bandwidth_dispersive,
 )
@@ -46,6 +48,7 @@ __all__ = [
     "TWMZMReport",
     "line_params_from_gamma",
     "line_params_from_neff",
+    "segmented_line",
     "twmzm_figures_of_merit",
 ]
 
@@ -426,7 +429,8 @@ class TWMZMReport(BaseModel):
         transfer: Static intensity transfer ``T`` per drive voltage, as a
             fraction of the input power.
         v_pi_v: Drive swing from the transfer's peak to its null at this
-            length (V), or None when the Bias sweep does not reach both.
+            length (V) — the loaded fraction of it, for a segmented
+            electrode — or None when the Bias sweep does not reach both.
         insertion_loss_db: Loss at the transfer's peak (dB), or None with
             ``v_pi_v``.
         extinction_ratio_db: Peak over null of the transfer (dB), infinite
@@ -435,6 +439,17 @@ class TWMZMReport(BaseModel):
             ``extinction_ratio_db`` are absent, when they are.
         chirp: Small-signal chirp parameter at each bias point, in the sign
             convention of :func:`gsim.common.twmzm.mzm_chirp`.
+        fill_factor: Fraction of the Traveling-wave electrode the Junction
+            loads. One is an electrode loaded all the way; below one the
+            electrode is segmented, and every line quantity here —
+            ``z0_ohm``, ``n_rf``, ``alpha_rf_np_m``, ``velocity_mismatch``,
+            ``rlgc`` — is the periodic line's Bloch one, the response
+            counts the loaded sections only, and ``vpi_l_vcm`` is the
+            device's, the Phase shifter's divided by the fill factor.
+        period_m: Period of the segmentation (m); ``None`` when the
+            electrode is not segmented.
+        n_rf: RF effective index per frequency.
+        alpha_rf_np_m: RF amplitude loss per frequency (Np/m).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -460,10 +475,63 @@ class TWMZMReport(BaseModel):
     extinction_ratio_db: float | None
     transfer_message: str | None
     chirp: NDArray[np.float64]
+    n_rf: NDArray[np.float64]
+    alpha_rf_np_m: NDArray[np.float64]
+    fill_factor: float = 1.0
+    period_m: float | None = None
 
 
 #: Drive voltages the report's Mach-Zehnder transfer is sampled on.
 _TRANSFER_POINTS = 401
+
+
+def segmented_line(
+    loaded: RFLineParams,
+    unloaded: RFLineParams,
+    *,
+    fill_factor: float,
+    period_m: float,
+) -> RFLineParams:
+    """The periodic line a segmented Traveling-wave electrode behaves as.
+
+    Between period boundaries the segmented electrode is exactly a
+    uniform line with the Bloch propagation constant and impedance
+    (:func:`gsim.common.twmzm.segmented_line_params`), so these parameters
+    stand wherever a uniform line's do: in the report, and in the
+    two-port of a whole number of periods.
+
+    Args:
+        loaded: The loaded line's parameters.
+        unloaded: The unloaded line's, on the same frequencies.
+        fill_factor: Loaded fraction of the period, 0 to 1.
+        period_m: Length of one period (m, > 0).
+
+    Returns:
+        The Bloch propagation constant and impedance as line parameters,
+        on the loaded line's frequencies and with its provenance.
+
+    Raises:
+        ValueError: When the two lines are not on one frequency axis.
+    """
+    if loaded.freq_hz.shape != unloaded.freq_hz.shape or np.any(
+        loaded.freq_hz != unloaded.freq_hz
+    ):
+        raise ValueError("The loaded and unloaded lines must share one freq_hz axis.")
+    gamma, z_bloch = segmented_line_params(
+        gamma_loaded_per_m=loaded.gamma_per_m,
+        z0_loaded_ohm=loaded.z0_ohm,
+        gamma_unloaded_per_m=unloaded.gamma_per_m,
+        z0_unloaded_ohm=unloaded.z0_ohm,
+        fill_factor=fill_factor,
+        period_m=period_m,
+    )
+    return line_params_from_gamma(
+        loaded.freq_hz,
+        gamma,
+        z0_ohm=z_bloch,
+        bias_v=loaded.bias_v,
+        signal_contact=loaded.signal_contact,
+    )
 
 
 def twmzm_figures_of_merit(
@@ -477,8 +545,22 @@ def twmzm_figures_of_merit(
     arm_bias_v: float | None = None,
     arm_imbalance_db: float = 0.0,
     phase_offset_rad: float = QUADRATURE_RAD,
+    unloaded: RFLineParams | None = None,
+    fill_factor: float = 1.0,
+    period_m: float | None = None,
 ) -> TWMZMReport:
     """Combine RF line parameters and the optical sweep into the report.
+
+    A fill factor below one reports a segmented Traveling-wave electrode:
+    loaded sections of ``fill_factor * period_m`` alternating with
+    unloaded ones, which reaches toward 50 ohm and a lower RF index at the
+    price of modulating over the loaded fraction only. Its line behaviour
+    is cascaded from the two Cross-section solves
+    (:func:`gsim.common.twmzm.segmented_line_params`), which is an
+    approximation of the 3D structure: both sections share one electrode
+    Cross-section, with no loading fins drawn, and the fields at each
+    section boundary are not solved. The electrode is taken as the whole
+    number of periods nearest ``length_m``.
 
     Args:
         rf: RF line parameters versus frequency (one bias point).
@@ -494,23 +576,62 @@ def twmzm_figures_of_merit(
             the second (dB); 0 is a balanced interferometer.
         phase_offset_rad: Static phase offset between the arms (rad); the
             quadrature point by default.
+        unloaded: The unloaded line's parameters on the same frequencies;
+            needed — and read — only for a fill factor below one.
+        fill_factor: Fraction of the electrode the Junction loads, above 0
+            and at most 1. One is the electrode loaded all the way.
+        period_m: Period of the segmentation (m, > 0); needed only for a
+            fill factor below one.
 
     Returns:
         The assembled :class:`TWMZMReport`.
     """
     if length_m <= 0:
         raise ValueError("length_m must be positive.")
+    if not 0.0 < fill_factor <= 1.0:
+        raise ValueError("fill_factor must be above 0 and at most 1.")
 
-    response = eo_response(
-        rf.freq_hz,
-        length_m=length_m,
-        n_rf=rf.n_rf,
-        n_opt=optical.n_group,
-        alpha_rf_np_m=rf.alpha_rf_np_m,
-        z0_ohm=rf.z0_ohm,
-        z_load_ohm=z_load_ohm,
-        z_gen_ohm=z_gen_ohm,
-    )
+    if fill_factor < 1.0:
+        if unloaded is None:
+            raise ValueError(
+                "A fill factor below one needs the unloaded line's "
+                "parameters: pass unloaded=."
+            )
+        if period_m is None:
+            raise ValueError("A fill factor below one needs a period: pass period_m=.")
+        # From here on ``rf`` is the periodic line: every line quantity of
+        # the report is the Bloch one.
+        loaded = rf
+        rf = segmented_line(
+            loaded, unloaded, fill_factor=fill_factor, period_m=period_m
+        )
+        response = segmented_eo_response(
+            rf.freq_hz,
+            n_periods=max(1, round(length_m / period_m)),
+            period_m=period_m,
+            fill_factor=fill_factor,
+            n_opt=optical.n_group,
+            n_rf_loaded=loaded.n_rf,
+            alpha_loaded_np_m=loaded.alpha_rf_np_m,
+            z0_loaded_ohm=loaded.z0_ohm,
+            n_rf_unloaded=unloaded.n_rf,
+            alpha_unloaded_np_m=unloaded.alpha_rf_np_m,
+            z0_unloaded_ohm=unloaded.z0_ohm,
+            z_load_ohm=z_load_ohm,
+            z_gen_ohm=z_gen_ohm,
+        )
+    else:
+        period_m = None
+        response = eo_response(
+            rf.freq_hz,
+            length_m=length_m,
+            n_rf=rf.n_rf,
+            n_opt=optical.n_group,
+            alpha_rf_np_m=rf.alpha_rf_np_m,
+            z0_ohm=rf.z0_ohm,
+            z_load_ohm=z_load_ohm,
+            z_gen_ohm=z_gen_ohm,
+        )
     bandwidth = eo_bandwidth(rf.freq_hz, response)
 
     # Not read off the band's mean index: a loaded line's index falls with
@@ -523,6 +644,9 @@ def twmzm_figures_of_merit(
     # The Phase shifter in both arms of a Mach-Zehnder: the transfer over
     # the drive the Bias sweep covers, and the figures read off it. The
     # transfer interpolates along the sweep, so it reads it in bias order.
+    # Only the loaded fraction of a segmented electrode shifts the phase, so
+    # that is the length of Phase shifter each arm holds.
+    loaded_length_m = length_m * fill_factor
     order = np.argsort(optical.voltages_v, kind="stable")
     sweep = (
         optical.voltages_v[order],
@@ -536,7 +660,7 @@ def twmzm_figures_of_merit(
     transfer = mzm_transfer(
         drive_v,
         *sweep,
-        length_m=length_m,
+        length_m=loaded_length_m,
         wavelength_um=optical.wavelength_um,
         drive=drive,
         bias_v=arm_bias_v,
@@ -554,7 +678,7 @@ def twmzm_figures_of_merit(
     )
     figures = mzm_transfer_figures(
         *sweep,
-        length_m=length_m,
+        length_m=loaded_length_m,
         wavelength_um=optical.wavelength_um,
         drive=drive,
         bias_v=arm_bias_v,
@@ -576,7 +700,10 @@ def twmzm_figures_of_merit(
             optical.voltages_v,
             optical.dn_eff,
             wavelength_um=optical.wavelength_um,
-        ),
+        )
+        # The light is modulated along the loaded fraction only, so the
+        # device needs that much more length than its Phase shifter does.
+        / fill_factor,
         voltages_v=optical.voltages_v,
         length_m=length_m,
         drive=drive,
@@ -592,4 +719,8 @@ def twmzm_figures_of_merit(
         extinction_ratio_db=figures.extinction_ratio_db,
         transfer_message=figures.message,
         chirp=chirp,
+        n_rf=rf.n_rf,
+        alpha_rf_np_m=rf.alpha_rf_np_m,
+        fill_factor=fill_factor,
+        period_m=period_m,
     )

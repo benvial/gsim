@@ -19,6 +19,7 @@ from scipy.constants import speed_of_light as C0  # noqa: N812
 
 from gsim.common.twmzm import (
     JunctionBranch,
+    bragg_fraction,
     eo_bandwidth,
     eo_response,
     loaded_line_params,
@@ -27,6 +28,9 @@ from gsim.common.twmzm import (
     mzm_transfer,
     mzm_transfer_figures,
     rlgc_from_line_params,
+    segmented_eo_response,
+    segmented_line_params,
+    segmented_period_abcd,
     series_rc_from_admittance,
     vpi_length_vcm,
     walkoff_bandwidth,
@@ -590,6 +594,335 @@ class TestLoadedLineParams:
         bad = dict(self.UNLOADED, L=np.full(3, 4e-7))
         with pytest.raises(ValueError, match="shape"):
             loaded_line_params(self.FREQ, rlgc=bad, junction=(0.0, 0.0))
+
+
+class TestSegmentedLine:
+    """A Traveling-wave electrode loaded part of the way, as a periodic line."""
+
+    FREQ = np.array([1e9, 10e9, 40e9, 100e9])
+    PERIOD_M = 50e-6
+
+    @classmethod
+    def lines(cls) -> dict:
+        """A lossy ~28 ohm loaded line and a ~70 ohm unloaded one."""
+        omega = 2 * np.pi * cls.FREQ
+        return {
+            "gamma_loaded_per_m": 120.0 * np.sqrt(cls.FREQ / 1e10)
+            + 1j * omega * 4.0 / C0,
+            "z0_loaded_ohm": np.full(cls.FREQ.shape, 28.0 - 1.5j),
+            "gamma_unloaded_per_m": 25.0 * np.sqrt(cls.FREQ / 1e10)
+            + 1j * omega * 2.2 / C0,
+            "z0_unloaded_ohm": np.full(cls.FREQ.shape, 70.0 - 0.5j),
+        }
+
+    def test_one_period_is_a_reciprocal_symmetric_two_port(self):
+        abcd = segmented_period_abcd(
+            **self.lines(), fill_factor=0.6, period_m=self.PERIOD_M
+        )
+        a, b, c, d = abcd[:, 0, 0], abcd[:, 0, 1], abcd[:, 1, 0], abcd[:, 1, 1]
+        assert abcd.shape == (self.FREQ.size, 2, 2)
+        assert a * d - b * c == pytest.approx(np.ones(self.FREQ.size), rel=1e-12)
+        assert a == pytest.approx(d, rel=1e-12)
+
+    def test_the_bloch_wave_solves_the_period(self):
+        lines = self.lines()
+        abcd = segmented_period_abcd(**lines, fill_factor=0.6, period_m=self.PERIOD_M)
+        gamma, z_bloch = segmented_line_params(
+            **lines, fill_factor=0.6, period_m=self.PERIOD_M
+        )
+        # (V, I) = (Z_B, 1) exp(-Gamma n) is an eigenvector of the period.
+        step = np.exp(gamma * self.PERIOD_M)
+        assert abcd[:, 0, 0] * z_bloch + abcd[:, 0, 1] == pytest.approx(
+            step * z_bloch, rel=1e-9
+        )
+        assert abcd[:, 1, 0] * z_bloch + abcd[:, 1, 1] == pytest.approx(step, rel=1e-9)
+
+    def test_the_passive_branch_is_taken(self):
+        gamma, z_bloch = segmented_line_params(
+            **self.lines(), fill_factor=0.6, period_m=self.PERIOD_M
+        )
+        assert np.all(gamma.real >= 0)
+        assert np.all(gamma.imag > 0)
+        assert np.all(z_bloch.real > 0)
+
+    def test_a_lossless_line_takes_the_forward_wave(self):
+        omega = 2 * np.pi * self.FREQ
+        gamma, z_bloch = segmented_line_params(
+            gamma_loaded_per_m=1j * omega * 4.0 / C0,
+            z0_loaded_ohm=28.0,
+            gamma_unloaded_per_m=1j * omega * 2.2 / C0,
+            z0_unloaded_ohm=70.0,
+            fill_factor=0.5,
+            period_m=self.PERIOD_M,
+        )
+        assert gamma.real == pytest.approx(np.zeros(self.FREQ.size), abs=1e-6)
+        assert np.all(gamma.imag > 0)
+        assert np.all(z_bloch.real > 0)
+
+    def test_a_fill_factor_of_one_is_the_loaded_line(self):
+        lines = self.lines()
+        gamma, z_bloch = segmented_line_params(
+            **lines, fill_factor=1.0, period_m=self.PERIOD_M
+        )
+        assert gamma == pytest.approx(lines["gamma_loaded_per_m"], rel=1e-12)
+        assert z_bloch == pytest.approx(lines["z0_loaded_ohm"], rel=1e-12)
+
+    def test_a_fill_factor_of_zero_is_the_unloaded_line(self):
+        lines = self.lines()
+        gamma, z_bloch = segmented_line_params(
+            **lines, fill_factor=0.0, period_m=self.PERIOD_M
+        )
+        assert gamma == pytest.approx(lines["gamma_unloaded_per_m"], rel=1e-12)
+        assert z_bloch == pytest.approx(lines["z0_unloaded_ohm"], rel=1e-12)
+
+    def test_a_short_period_is_the_length_weighted_average(self):
+        lines = self.lines()
+        fill = 0.6
+        gamma, z_bloch = segmented_line_params(
+            **lines, fill_factor=fill, period_m=self.PERIOD_M
+        )
+        # Series impedance gamma*Z0 and shunt admittance gamma/Z0 per meter,
+        # each averaged by length along the period.
+        g_l, z_l = lines["gamma_loaded_per_m"], lines["z0_loaded_ohm"]
+        g_u, z_u = lines["gamma_unloaded_per_m"], lines["z0_unloaded_ohm"]
+        series = fill * g_l * z_l + (1 - fill) * g_u * z_u
+        shunt = fill * g_l / z_l + (1 - fill) * g_u / z_u
+
+        short = (
+            bragg_fraction(
+                gamma_loaded_per_m=g_l,
+                gamma_unloaded_per_m=g_u,
+                fill_factor=fill,
+                period_m=self.PERIOD_M,
+            )
+            < 0.05
+        )
+        assert short.sum() >= 3
+        assert gamma[short] == pytest.approx(np.sqrt(series * shunt)[short], rel=1e-3)
+        assert z_bloch[short] == pytest.approx(np.sqrt(series / shunt)[short], rel=1e-3)
+
+    def test_partial_loading_raises_the_impedance_and_lowers_the_index(self):
+        lines = self.lines()
+        gamma_half, z_half = segmented_line_params(
+            **lines, fill_factor=0.5, period_m=self.PERIOD_M
+        )
+        assert np.all(np.abs(z_half) > np.abs(lines["z0_loaded_ohm"]))
+        assert np.all(gamma_half.imag < lines["gamma_loaded_per_m"].imag)
+
+    def test_rejects_a_fill_factor_outside_the_period(self):
+        with pytest.raises(ValueError, match="fill_factor"):
+            segmented_line_params(**self.lines(), fill_factor=1.2, period_m=50e-6)
+        with pytest.raises(ValueError, match="period_m"):
+            segmented_line_params(**self.lines(), fill_factor=0.5, period_m=0.0)
+
+
+class TestBraggFraction:
+    def test_it_is_the_phase_advance_per_period_over_pi(self):
+        beta_l = 2 * np.pi * 30e9 * 4.0 / C0
+        beta_u = 2 * np.pi * 30e9 * 2.0 / C0
+        fraction = bragg_fraction(
+            gamma_loaded_per_m=10.0 + 1j * beta_l,
+            gamma_unloaded_per_m=1j * beta_u,
+            fill_factor=0.25,
+            period_m=100e-6,
+        )
+        assert fraction == pytest.approx(
+            (0.25 * beta_l + 0.75 * beta_u) * 100e-6 / np.pi
+        )
+
+    def test_the_lossless_stop_band_is_open_where_it_reaches_one(self):
+        # Two quarter-wave sections: the centre of the first stop band,
+        # where the Bloch wave decays with no loss in either line.
+        period, n_l, n_u = 1e-3, 4.0, 2.0
+        fill = n_u / (n_l + n_u)
+        freq = C0 / (4 * n_l * fill * period)
+        gamma_l = 1j * 2 * np.pi * freq * n_l / C0
+        gamma_u = 1j * 2 * np.pi * freq * n_u / C0
+        fraction = bragg_fraction(
+            gamma_loaded_per_m=gamma_l,
+            gamma_unloaded_per_m=gamma_u,
+            fill_factor=fill,
+            period_m=period,
+        )
+        gamma, _ = segmented_line_params(
+            gamma_loaded_per_m=gamma_l,
+            z0_loaded_ohm=28.0,
+            gamma_unloaded_per_m=gamma_u,
+            z0_unloaded_ohm=70.0,
+            fill_factor=fill,
+            period_m=period,
+        )
+        assert fraction == pytest.approx(1.0)
+        assert gamma.real > 0
+
+
+class TestSegmentedEOResponse:
+    """Only the loaded sections of a segmented electrode modulate the light."""
+
+    FREQ = np.array([1e9, 10e9, 40e9, 100e9])
+    N_OPT = 3.8
+    LOADED: ClassVar = {
+        "n_rf_loaded": 4.0,
+        "alpha_loaded_np_m": 150.0,
+        "z0_loaded_ohm": 28.0 - 1.5j,
+    }
+    UNLOADED: ClassVar = {
+        "n_rf_unloaded": 2.2,
+        "alpha_unloaded_np_m": 30.0,
+        "z0_unloaded_ohm": 70.0 - 0.5j,
+    }
+    LOSSLESS: ClassVar = {
+        "n_rf_loaded": 4.0,
+        "alpha_loaded_np_m": 0.0,
+        "z0_loaded_ohm": 28.0,
+        "n_rf_unloaded": 2.2,
+        "alpha_unloaded_np_m": 0.0,
+        "z0_unloaded_ohm": 70.0,
+    }
+
+    def section_by_section(
+        self, freq_hz, *, n_periods, period_m, fill_factor, z_load, z_gen
+    ):
+        """Cascade every section and integrate V(z) over the loaded ones."""
+        omega = 2 * np.pi * freq_hz
+        gamma_l = self.LOADED["alpha_loaded_np_m"] + 1j * omega * 4.0 / C0
+        gamma_u = self.UNLOADED["alpha_unloaded_np_m"] + 1j * omega * 2.2 / C0
+        z_l, z_u = self.LOADED["z0_loaded_ohm"], self.UNLOADED["z0_unloaded_ohm"]
+        beta_opt = omega * self.N_OPT / C0
+        half, bare = 0.5 * fill_factor * period_m, (1 - fill_factor) * period_m
+        sections = [
+            (gamma_l, z_l, half, True),
+            (gamma_u, z_u, bare, False),
+            (gamma_l, z_l, half, True),
+        ] * n_periods
+
+        def abcd(gamma, z0, length):
+            theta = gamma * length
+            return np.array(
+                [
+                    [np.cosh(theta), z0 * np.sinh(theta)],
+                    [np.sinh(theta) / z0, np.cosh(theta)],
+                ]
+            )
+
+        total = np.eye(2, dtype=complex)
+        for gamma, z0, length, _ in sections:
+            total = total @ abcd(gamma, z0, length)
+        z_in = (total[0, 0] * z_load + total[0, 1]) / (
+            total[1, 0] * z_load + total[1, 1]
+        )
+        state = np.array([z_in / (z_in + z_gen), 1.0 / (z_in + z_gen)])
+
+        integral, start = 0.0j, 0.0
+        for gamma, z0, length, loaded in sections:
+            if loaded:
+                z = np.linspace(0.0, length, 201)
+                volts = state[0] * np.cosh(gamma * z) - state[1] * z0 * np.sinh(
+                    gamma * z
+                )
+                integral += np.trapezoid(volts * np.exp(1j * beta_opt * (start + z)), z)
+            state = np.linalg.solve(abcd(gamma, z0, length), state)
+            start += length
+        return integral / start
+
+    def test_it_matches_a_section_by_section_integration(self):
+        setup = {"n_periods": 12, "period_m": 250e-6, "fill_factor": 0.6}
+        response = segmented_eo_response(
+            self.FREQ,
+            **setup,
+            n_opt=self.N_OPT,
+            **self.LOADED,
+            **self.UNLOADED,
+            z_load_ohm=45.0,
+            z_gen_ohm=50.0,
+            normalize=False,
+        )
+        expected = [
+            self.section_by_section(f, **setup, z_load=45.0, z_gen=50.0)
+            for f in self.FREQ
+        ]
+        assert response == pytest.approx(np.array(expected), rel=1e-5)
+
+    def test_a_fill_factor_of_one_is_the_uniform_response(self):
+        response = segmented_eo_response(
+            self.FREQ,
+            n_periods=60,
+            period_m=50e-6,
+            fill_factor=1.0,
+            n_opt=self.N_OPT,
+            **self.LOADED,
+            **self.UNLOADED,
+            z_load_ohm=45.0,
+            z_gen_ohm=50.0,
+        )
+        uniform = eo_response(
+            self.FREQ,
+            length_m=3e-3,
+            n_rf=4.0,
+            n_opt=self.N_OPT,
+            alpha_rf_np_m=150.0,
+            z0_ohm=28.0 - 1.5j,
+            z_load_ohm=45.0,
+            z_gen_ohm=50.0,
+        )
+        assert response == pytest.approx(uniform, rel=1e-9)
+
+    def test_the_drive_acts_over_the_loaded_fraction_only(self):
+        # Lossless at low frequency the line voltage is uniform, so the
+        # averaged drive is the fill factor times the terminated voltage.
+        response = segmented_eo_response(
+            [1e6],
+            n_periods=60,
+            period_m=50e-6,
+            fill_factor=0.4,
+            n_opt=self.N_OPT,
+            **self.LOSSLESS,
+            z_load_ohm=50.0,
+            z_gen_ohm=50.0,
+            normalize=False,
+        )
+        assert response[0] == pytest.approx(0.4 * 0.5, rel=1e-6)
+
+    def test_normalized_to_unity_at_dc(self):
+        response = segmented_eo_response(
+            [1e5],
+            n_periods=60,
+            period_m=50e-6,
+            fill_factor=0.4,
+            n_opt=self.N_OPT,
+            **self.LOADED,
+            **self.UNLOADED,
+            z_load_ohm=50.0,
+            z_gen_ohm=50.0,
+        )
+        assert abs(response[0]) == pytest.approx(1.0, abs=1e-6)
+
+    def test_a_lossless_line_normalizes_without_a_dc_impedance(self):
+        response = segmented_eo_response(
+            [1e6],
+            n_periods=60,
+            period_m=50e-6,
+            fill_factor=0.4,
+            n_opt=self.N_OPT,
+            **self.LOSSLESS,
+            z_load_ohm=50.0,
+            z_gen_ohm=50.0,
+        )
+        assert abs(response[0]) == pytest.approx(1.0, abs=1e-6)
+
+    def test_an_electrode_loaded_nowhere_is_rejected(self):
+        with pytest.raises(ValueError, match="fill_factor"):
+            segmented_eo_response(
+                self.FREQ,
+                n_periods=60,
+                period_m=50e-6,
+                fill_factor=0.0,
+                n_opt=self.N_OPT,
+                **self.LOADED,
+                **self.UNLOADED,
+                z_load_ohm=50.0,
+                z_gen_ohm=50.0,
+            )
 
 
 class TestDispersiveWalkoff:

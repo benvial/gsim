@@ -15,7 +15,11 @@ import warnings
 import numpy as np
 import pytest
 
-from gsim.common.twmzm import mzm_transfer, mzm_transfer_figures
+from gsim.common.twmzm import (
+    mzm_transfer,
+    mzm_transfer_figures,
+    segmented_period_abcd,
+)
 from gsim.common.twmzm_report import (
     OpticalPhaseSweep,
     line_params_from_neff,
@@ -488,6 +492,195 @@ class TestResponseGrid:
         assert report.velocity_mismatch[-1] + N_GROUP == pytest.approx(
             RF_N_EFF[-1].real
         )
+
+
+#: The bare electrode: faster, less lossy, and well above 50 ohm.
+UNLOADED_N_EFF = [2.30 - 0.001j, 2.28 - 0.002j, 2.26 - 0.004j]
+UNLOADED_Z0 = [72.0 + 0.4j, 71.0 + 0.2j, 70.0 + 0.1j]
+
+
+def unloaded_params():
+    """Canned unloaded line parameters, as ``rf.run_unloaded`` returns them."""
+    return line_params_from_neff(
+        np.asarray(RF_FREQS, dtype=np.float64),
+        UNLOADED_N_EFF,
+        z0_ohm=UNLOADED_Z0,
+        unloaded=True,
+        bias_v=RF_BIAS_V,
+        signal_contact=RF_SIGNAL_CONTACT,
+    )
+
+
+@pytest.fixture
+def segmented(solved, monkeypatch):
+    """The canned Study, its RF Stage answering the unloaded solve too."""
+    solved.solves["unloaded"] = 0
+
+    def run_unloaded(stage, *, force=False):
+        if stage._unloaded_result is None or force:
+            solved.solves["unloaded"] += 1
+            stage._unloaded_result = unloaded_params()
+        return stage._unloaded_result
+
+    monkeypatch.setattr(RFStage, "run_unloaded", run_unloaded)
+    return solved
+
+
+class TestSegmentedElectrode:
+    """A Traveling-wave electrode the Junction loads part of the way."""
+
+    def hand_assembled(self, *, fill_factor, period_m, rf=None, unloaded=None):
+        sweep = optical_sweep()
+        return twmzm_figures_of_merit(
+            rf_params() if rf is None else rf,
+            OpticalPhaseSweep(
+                voltages_v=sweep.voltages,
+                dn_eff=sweep.index_shift,
+                alpha_opt_db_cm=sweep.loss_db_cm,
+                wavelength_um=WAVELENGTH_UM,
+                n_group=N_GROUP,
+            ),
+            length_m=3e-3,
+            unloaded=unloaded_params() if unloaded is None else unloaded,
+            fill_factor=fill_factor,
+            period_m=period_m,
+        )
+
+    def test_the_electrode_is_loaded_all_the_way_by_default(self, study):
+        assert study.line.fill_factor == 1.0
+        assert study.line.period_um == 50.0
+
+    def test_a_fill_factor_outside_the_period_is_rejected(self, study):
+        for fill_factor in (0.0, -0.2, 1.1):
+            with pytest.raises(ValueError):
+                study.line(fill_factor=fill_factor)
+
+    def test_a_nonpositive_period_is_rejected(self, study):
+        with pytest.raises(ValueError):
+            study.line(period_um=0.0)
+
+    def test_a_period_longer_than_the_electrode_is_rejected(self, study):
+        with pytest.raises(ValueError, match="period"):
+            study.line(length_um=1000.0, fill_factor=0.5, period_um=2000.0)
+
+    def test_a_fill_factor_of_one_is_todays_report_exactly(self, segmented):
+        segmented.line(length_um=3000.0, n_group=N_GROUP, fill_factor=1.0)
+
+        report = segmented.line.run()
+        today = hand_assembled(length_m=3e-3)
+
+        assert np.array_equal(report.response, today.response)
+        assert report.bandwidth_3db_hz == today.bandwidth_3db_hz
+        assert report.walkoff_bandwidth_hz == today.walkoff_bandwidth_hz
+        assert np.array_equal(report.velocity_mismatch, today.velocity_mismatch)
+        assert np.array_equal(report.z0_ohm, today.z0_ohm)
+        assert np.array_equal(report.vpi_l_vcm, today.vpi_l_vcm)
+        for name, values in today.rlgc.items():
+            assert np.array_equal(report.rlgc[name], values)
+
+    def test_an_electrode_loaded_all_the_way_solves_no_unloaded_line(self, segmented):
+        segmented.line(n_group=N_GROUP)
+        segmented.line.run()
+        assert segmented.solves["unloaded"] == 0
+
+    def test_a_fill_factor_below_one_runs_the_unloaded_solve(self, segmented):
+        segmented.line(n_group=N_GROUP, fill_factor=0.5)
+        segmented.line.run()
+        assert segmented.solves == {"optical": 1, "rf": 1, "unloaded": 1}
+
+    def test_the_unloaded_solve_the_rf_stage_holds_is_reused(self, segmented):
+        segmented.line(n_group=N_GROUP, fill_factor=0.5)
+        segmented.line.run()
+        segmented.line(fill_factor=0.7, period_um=100.0)
+        segmented.line.run()
+        assert segmented.solves == {"optical": 1, "rf": 1, "unloaded": 1}
+
+    def test_the_report_is_the_periodic_lines(self, segmented):
+        segmented.line(
+            length_um=3000.0, n_group=N_GROUP, fill_factor=0.5, period_um=100.0
+        )
+
+        report = segmented.line.run()
+        expected = self.hand_assembled(fill_factor=0.5, period_m=100e-6)
+
+        assert report.fill_factor == 0.5
+        assert report.period_m == pytest.approx(100e-6)
+        assert report.z0_ohm == pytest.approx(expected.z0_ohm)
+        assert report.n_rf == pytest.approx(expected.n_rf)
+        assert report.alpha_rf_np_m == pytest.approx(expected.alpha_rf_np_m)
+        assert report.response == pytest.approx(expected.response)
+
+    def test_partial_loading_reaches_toward_fifty_ohm(self, segmented):
+        segmented.line(n_group=N_GROUP)
+        full = segmented.line.run()
+        segmented.line(fill_factor=0.5)
+        half = segmented.line.run()
+
+        assert np.all(half.z0_ohm.real > full.z0_ohm.real)
+        assert np.all(half.n_rf < full.n_rf)
+
+    def test_modulation_efficiency_scales_with_the_fill_factor(self, segmented):
+        segmented.line(n_group=N_GROUP)
+        full = segmented.line.run()
+        segmented.line(fill_factor=0.4)
+        partial = segmented.line.run()
+
+        assert partial.vpi_l_vcm == pytest.approx(full.vpi_l_vcm / 0.4)
+
+    def test_both_lines_are_read_on_the_response_grid(self, segmented):
+        grid = np.linspace(10e9, 100e9, 19)
+        segmented.line(
+            n_group=N_GROUP, fill_factor=0.5, response_frequencies_hz=grid.tolist()
+        )
+
+        report = segmented.line.run()
+        expected = self.hand_assembled(
+            fill_factor=0.5,
+            period_m=50e-6,
+            rf=rf_params().resampled(grid),
+            unloaded=unloaded_params().resampled(grid),
+        )
+
+        assert report.freq_hz == pytest.approx(grid)
+        assert report.z0_ohm == pytest.approx(expected.z0_ohm)
+        assert report.response == pytest.approx(expected.response)
+
+    def test_a_period_approaching_the_bragg_condition_warns(self, segmented):
+        # 300 um at 100 GHz and an index near 2.7: over half way to Bragg.
+        segmented.line(n_group=N_GROUP, fill_factor=0.5, period_um=300.0)
+        with pytest.warns(UserWarning, match="Bragg"):
+            segmented.line.run()
+
+    def test_the_exported_two_port_is_the_cascade_of_its_periods(self, segmented):
+        segmented.line(length_um=3000.0, fill_factor=0.5, period_um=100.0)
+        loaded, unloaded = rf_params(), unloaded_params()
+        period = segmented_period_abcd(
+            gamma_loaded_per_m=loaded.gamma_per_m,
+            z0_loaded_ohm=loaded.z0_ohm,
+            gamma_unloaded_per_m=unloaded.gamma_per_m,
+            z0_unloaded_ohm=unloaded.z0_ohm,
+            fill_factor=0.5,
+            period_m=100e-6,
+        )
+        cascade = np.linalg.matrix_power(period, 30)
+        a, b = cascade[:, 0, 0], cascade[:, 0, 1]
+        c, d = cascade[:, 1, 0], cascade[:, 1, 1]
+        z_gen, z_load = segmented.line.z_gen_ohm, segmented.line.z_load_ohm
+
+        assert segmented.line.driven_response() == pytest.approx(
+            z_load / (a * z_load + b + z_gen * (c * z_load + d)), rel=1e-9
+        )
+
+    def test_the_export_says_the_line_is_segmented(self, segmented, tmp_path):
+        segmented.line(fill_factor=0.5, period_um=100.0)
+        text = segmented.line.export_touchstone(tmp_path / "line.s2p").read_text()
+        assert "fill_factor = 0.5" in text
+
+    def test_a_period_far_below_the_wavelength_warns_about_nothing(self, segmented):
+        segmented.line(n_group=N_GROUP, fill_factor=0.5, period_um=50.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            segmented.line.run()
 
 
 class TestLifecycle:
