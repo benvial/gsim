@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A graded Junction on the demo Phase shifter. `rib_phase_shifter(lateral_straggle_um=...)` smears every doping step of
+  the drawn device into an error function of that standard deviation, as implant straggle and diffusion do, and hands
+  the Study the result through `Device.doping` as `TableDoping` profiles — one per dopant present in each Region, so
+  donors and acceptors overlap across the Junction and compensate there. Zero, the default, keeps today's `StepDoping`
+  exactly. The net doping changes sign at the drawn Junction when the two cores are doped alike, and a fraction of a
+  straggle into the lighter one when they are not. The mobility reads the total doping in the compensated zone, not the
+  net. The TCAD TW-MZM notebook solves the graded device next to the abrupt one: a lower Junction capacitance and a
+  higher Modulation efficiency figure, with the analytic depletion check left to the abrupt device it describes.
+
 - A segmented Traveling-wave electrode, by fill factor. `study.line(fill_factor=, period_um=)` loads the electrode part
   of the way — loaded sections alternating with unloaded ones, which is how a modulator reaches 50 ohm — and the report
   becomes the periodic line's: Bloch impedance, RF index and loss (`TWMZMReport.z0_ohm`, and the new `n_rf` /

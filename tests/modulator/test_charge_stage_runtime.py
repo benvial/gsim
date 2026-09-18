@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from gsim.modulator import Device, Study
+from gsim.modulator import Device, Study, pn_phase_shifter, rib_phase_shifter
 from gsim.tcad.results import BiasSweepResult
 
 from .conftest import build_demo
@@ -149,6 +149,34 @@ class TestJunctionBranch:
         assert c_j == pytest.approx(sweep.capacitance_f_per_m, rel=0.05)
         # Reverse bias (positive on the cathode) depletes the junction.
         assert np.all(np.diff(c_j) < 0.0)
+
+
+@pytest.mark.tcad_local
+class TestAGradedJunction:
+    def test_grading_lowers_the_capacitance_at_every_bias_point(self, tmp_path):
+        """Ticket: compensation thins the doping either side of the Junction,
+        so the depletion region is wider and its capacitance lower, and
+        reverse bias still widens it."""
+        pytest.importorskip("devsim")
+        biases = [0.0, 1.0, 2.0]
+        sweeps = {}
+        for label, straggle_um in (("abrupt", 0.0), ("graded", 0.03)):
+            shifter = rib_phase_shifter(lateral_straggle_um=straggle_um)
+            study = pn_phase_shifter(
+                component=shifter.component,
+                stack=shifter.stack,
+                device=shifter.device,
+                electrodes=shifter.electrodes,
+                biases=biases,
+                output_dir=tmp_path / label,
+            )
+            sweeps[label] = study.charge.run()
+
+        abrupt = sweeps["abrupt"].capacitance_f_per_m
+        graded = sweeps["graded"].capacitance_f_per_m
+        assert np.all(graded > 0.0)
+        assert np.all(graded < abrupt)
+        assert np.all(np.diff(graded) < 0.0)
 
 
 @pytest.mark.tcad_local

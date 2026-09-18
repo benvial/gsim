@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from gsim.common.stack.extractor import LayerStack
     from gsim.common.stack.staircase import ElectrodeSpec
+    from gsim.tcad.doping import StepDoping, TableDoping
 
 __all__ = [
     "DemoPhaseShifter",
@@ -261,6 +262,101 @@ RIB_REGIONS: tuple[tuple[str, Literal["donor", "acceptor"], str], ...] = (
 )
 
 
+#: Half-extent of the samples taken around each smeared step, in
+#: straggles: past it the error function is flat to double precision.
+GRADED_REACH_STRAGGLES: float = 6.0
+
+#: Samples per straggle around each smeared step. Interpolated linearly
+#: between them, the profile is within a few parts in 1e4 of its level.
+GRADED_SAMPLES_PER_STRAGGLE: int = 10
+
+#: Concentration below which a smeared dopant is left out of a Region
+#: (cm^-3): ten orders under the intrinsic density, so nothing reads it.
+GRADED_FLOOR_CM3: float = 1.0
+
+
+def _graded_doping(
+    spans: dict[str, tuple[float, float]],
+    steps: list[StepDoping],
+    straggle_um: float,
+) -> list[TableDoping]:
+    """The step doping of a row of Regions, smeared along the junction axis.
+
+    Each dopant's piecewise-constant level is convolved with a Gaussian of
+    standard deviation ``straggle_um``, which turns every step into an
+    error function and carries each dopant into the Regions beside its
+    own: donors and acceptors overlap across the Junction, and partly
+    compensate there. The outer ends of the row are left unsmeared, as an
+    implant window reaching past the drawn device would leave them.
+
+    A profile reaches the solve on the nodes of the Region it names, so
+    each Region takes one sampled profile per dopant present in it, dense
+    around the steps and flat between them.
+
+    Args:
+        spans: Extent of each Region along the junction axis (um).
+        steps: The step profile of each Region, low side first.
+        straggle_um: Lateral straggle (um), positive.
+
+    Returns:
+        The graded profiles, Region by Region in the order given.
+    """
+    import numpy as np
+    from scipy.special import erf
+
+    from gsim.tcad.doping import TableDoping
+
+    first, last = steps[0].region, steps[-1].region
+    edges = sorted({edge for span in spans.values() for edge in span})[1:-1]
+    reach = GRADED_REACH_STRAGGLES * straggle_um
+    around_a_step = np.linspace(
+        -reach,
+        reach,
+        2 * round(GRADED_REACH_STRAGGLES * GRADED_SAMPLES_PER_STRAGGLE) + 1,
+    )
+
+    def smeared(dopant: str, x: np.ndarray) -> np.ndarray:
+        """One dopant's smeared concentration (cm^-3) at positions in um."""
+        total = np.zeros_like(x)
+        for step in steps:
+            if step.dopant_type != dopant:
+                continue
+            low, high = spans[step.region]
+            rise = (
+                1.0
+                if step.region == first
+                else 0.5 * (1.0 + erf((x - low) / (np.sqrt(2.0) * straggle_um)))
+            )
+            fall = (
+                0.0
+                if step.region == last
+                else 0.5 * (1.0 + erf((x - high) / (np.sqrt(2.0) * straggle_um)))
+            )
+            total = total + step.concentration_cm3 * (rise - fall)
+        return total
+
+    graded: list[TableDoping] = []
+    for step in steps:
+        low, high = spans[step.region]
+        near = [
+            edge + around_a_step for edge in edges if low - reach < edge < high + reach
+        ]
+        x = np.unique(np.clip(np.concatenate([[low, high], *near]), low, high))
+        for dopant in ("donor", "acceptor"):
+            values = smeared(dopant, x)
+            if values.max() < GRADED_FLOOR_CM3:
+                continue
+            graded.append(
+                TableDoping(
+                    region=step.region,
+                    dopant_type=dopant,
+                    x_um=x.tolist(),
+                    values_cm3=values.tolist(),
+                )
+            )
+    return graded
+
+
 @dataclass(frozen=True)
 class RibPhaseShifter:
     """A drawn rib-waveguide Phase shifter, its description and its line.
@@ -277,8 +373,11 @@ class RibPhaseShifter:
         rib_width_um: Width of the rib (um).
         rib_height_um: Height of the rib (um).
         slab_height_um: Height of the slab either side of it (um).
-        doping_cm3: Doping concentration per Region (cm^-3).
+        doping_cm3: Drawn doping concentration per Region (cm^-3): the
+            level each Region reaches away from its edges, graded or not.
         length_um: Drawn length of the device (um).
+        lateral_straggle_um: Lateral straggle the doping steps are smeared
+            by (um); zero for the abrupt device.
     """
 
     component: gf.Component
@@ -291,6 +390,7 @@ class RibPhaseShifter:
     slab_height_um: float
     doping_cm3: dict[str, float]
     length_um: float
+    lateral_straggle_um: float = 0.0
 
 
 def rib_phase_shifter(
@@ -306,6 +406,7 @@ def rib_phase_shifter(
     n_core_cm3: float = 3e17,
     plus_cm3: float = 1e19,
     contact_cm3: float = 1e20,
+    lateral_straggle_um: float = 0.0,
     electrode_width_um: float = 10.0,
     electrode_thickness_um: float = 1.0,
     length_um: float = DEFAULT_LENGTH_UM,
@@ -324,6 +425,15 @@ def rib_phase_shifter(
     for a 220 nm silicon-on-insulator depletion modulator, not any
     foundry's.
 
+    Left at zero, ``lateral_straggle_um`` dopes every Region at one level
+    and leaves the Junction perfectly abrupt. A positive value smears
+    every doping step into an error function of that standard deviation,
+    as implant straggle and diffusion do: the same drawn device, with
+    donors and acceptors overlapping across the Junction. The net doping
+    changes sign at the drawn Junction when the two cores are doped
+    alike, and a fraction of a straggle into the lighter one when they
+    are not.
+
     The metal is drawn over each contact Region; the Traveling-wave
     electrodes the RF Staircase flanks its Strips with are returned
     alongside, as wide and thick as a real line's, since the drawn
@@ -341,6 +451,8 @@ def rib_phase_shifter(
         n_core_cm3: Donor concentration of the n core (cm^-3).
         plus_cm3: Concentration of the moderately doped Regions (cm^-3).
         contact_cm3: Concentration of the contact Regions (cm^-3).
+        lateral_straggle_um: Standard deviation every doping step is
+            smeared by along the junction axis (um); zero keeps the steps.
         electrode_width_um: Width of each Traveling-wave electrode (um).
         electrode_thickness_um: Thickness of the electrode metal (um).
         length_um: Drawn length of the device (um).
@@ -358,6 +470,11 @@ def rib_phase_shifter(
     from gsim.common.stack.materials import make_doped_materials
     from gsim.common.stack.staircase import ElectrodeSpec
     from gsim.tcad.doping import StepDoping
+
+    if lateral_straggle_um < 0.0:
+        raise ValueError(
+            f"lateral_straggle_um must be zero or positive, got {lateral_straggle_um}."
+        )
 
     widths = {
         "rib": rib_width_um / 2.0,
@@ -447,7 +564,11 @@ def rib_phase_shifter(
         # estimate of the capacitance reads.
         p_doping_cm3=p_core_cm3,
         n_doping_cm3=n_core_cm3,
-        doping=doping,
+        doping=(
+            _graded_doping(spans, doping, lateral_straggle_um)
+            if lateral_straggle_um > 0.0
+            else doping
+        ),
     )
     return RibPhaseShifter(
         component=component,
@@ -462,4 +583,5 @@ def rib_phase_shifter(
         slab_height_um=slab_height_um,
         doping_cm3=doping_cm3,
         length_um=length_um,
+        lateral_straggle_um=lateral_straggle_um,
     )

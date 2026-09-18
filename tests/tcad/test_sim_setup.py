@@ -164,6 +164,43 @@ class TestDeviceSetup:
         assert ("p_rib", "HoleMobility", "HoleMobilityEdge") in averaged
         assert ("n_rib", "ElectronMobility", "ElectronMobilityEdge") in averaged
 
+    def test_the_mobility_reads_both_dopants_where_they_compensate(
+        self, meshed_sim, fake_devsim
+    ):
+        """A graded Junction carries donors into the p Region. They cancel
+        acceptors in the net doping, and add to them as scatterers."""
+        from gsim.common.carriers import MobilityModel
+
+        devsim, _sp = fake_devsim
+        # The fake's nodes sit at x = 0, 1, 2 um.
+        donor_tail = TableDoping(
+            region="p_rib",
+            dopant_type="donor",
+            x_um=[0.0, 1.0, 2.0],
+            values_cm3=[1e18, 4e17, 0.0],
+        )
+        meshed_sim.doping.append(donor_tail)
+        try:
+            meshed_sim.setup_device("pn")
+        finally:
+            meshed_sim.doping.remove(donor_tail)
+
+        model = MobilityModel.masetti_silicon()
+        total = np.array([2e18, 1.4e18, 1e18])
+        np.testing.assert_allclose(
+            devsim.node_values[("p_rib", "HoleMobility")], model.holes_cm2(total)
+        )
+        np.testing.assert_allclose(
+            devsim.node_values[("p_rib", "ElectronMobility")],
+            model.electrons_cm2(total),
+        )
+        # Fully compensated at x = 0, and the mobility is still the doped one.
+        np.testing.assert_allclose(
+            np.array(devsim.node_values[("p_rib", "Donors")])
+            - np.array(devsim.node_values[("p_rib", "Acceptors")]),
+            [0.0, -6e17, -1e18],
+        )
+
     def test_doping_node_models(self, meshed_sim, fake_devsim):
         devsim, _sp = fake_devsim
         meshed_sim.setup_device("pn")

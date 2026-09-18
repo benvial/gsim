@@ -14,12 +14,19 @@ import warnings
 import numpy as np
 import pytest
 
+from gsim.common.carriers import MobilityModel
 from gsim.modulator import pn_phase_shifter, rib_phase_shifter
+from gsim.tcad.doping import (
+    StepDoping,
+    acceptor_donor_concentrations,
+    net_doping_cm3,
+)
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
 
 RIB_HEIGHT = 0.22
 SLAB_HEIGHT = 0.09
 RIB_REGIONS = {"n_rib", "p_rib"}
+STRAGGLE = 0.05
 
 
 @pytest.fixture(scope="module")
@@ -98,6 +105,172 @@ class TestTheDrawnDevice:
 
     def test_the_rf_line_takes_the_devices_electrodes(self, study, device):
         assert study.rf.electrodes == device.electrodes
+
+
+def region_spans(shifter) -> dict[str, tuple[float, float]]:
+    """Extent of each doped Region on the Cross-section the Study derives."""
+    layout = pn_phase_shifter(
+        component=shifter.component,
+        stack=shifter.stack,
+        device=shifter.device,
+        electrodes=shifter.electrodes,
+    ).layout
+    return {name: layout.region_spans[name].h for name in layout.doped_regions}
+
+
+def profiles_of(shifter, region: str) -> list:
+    """The doping profiles the device description gives one Region."""
+    return [p for p in shifter.device.doping or [] if p.region == region]
+
+
+def doping_along_the_junction_axis(shifter, x_um):
+    """Acceptors and donors (cm^-3) along the junction axis, Region by Region.
+
+    A profile reaches the solve on the nodes of the Region it names, so
+    each position is read off the profiles of the Region drawn there.
+    """
+    x = np.asarray(x_um, dtype=np.float64)
+    acceptors = np.zeros_like(x)
+    donors = np.zeros_like(x)
+    for name, (low, high) in region_spans(shifter).items():
+        inside = (x >= low) & (x <= high)
+        a, d = acceptor_donor_concentrations(profiles_of(shifter, name), x[inside], 0.0)
+        acceptors[inside], donors[inside] = a, d
+    return acceptors, donors
+
+
+class TestAGradedJunction:
+    def test_zero_straggle_is_the_step_doping_exactly(self, device):
+        abrupt = rib_phase_shifter(lateral_straggle_um=0.0)
+
+        assert abrupt.device == device.device
+        assert abrupt.device.doping == [
+            StepDoping(
+                region=name,
+                dopant_type="donor" if name.startswith("n_") else "acceptor",
+                concentration_cm3=level,
+            )
+            for name, level in device.doping_cm3.items()
+        ]
+
+    def test_a_straggle_hands_the_study_graded_profiles(self, tmp_path):
+        graded = rib_phase_shifter(lateral_straggle_um=STRAGGLE)
+        study = pn_phase_shifter(
+            component=graded.component,
+            stack=graded.stack,
+            device=graded.device,
+            electrodes=graded.electrodes,
+            output_dir=tmp_path,
+        )
+
+        assert graded.lateral_straggle_um == STRAGGLE
+        assert study.charge.simulation().doping == graded.device.doping
+        assert graded.device.doping
+        assert not any(isinstance(p, StepDoping) for p in graded.device.doping)
+        # The drawn levels are still what the device says of itself.
+        assert graded.doping_cm3 == rib_phase_shifter().doping_cm3
+
+    def test_a_negative_straggle_is_refused(self):
+        with pytest.raises(ValueError, match="lateral_straggle_um"):
+            rib_phase_shifter(lateral_straggle_um=-0.01)
+
+    def test_donors_and_acceptors_overlap_across_the_junction(self):
+        graded = rib_phase_shifter(lateral_straggle_um=STRAGGLE)
+        x = graded.center_um + np.linspace(-STRAGGLE, STRAGGLE, 41)
+
+        acceptors, donors = doping_along_the_junction_axis(graded, x)
+
+        assert np.all(acceptors > 1e16)
+        assert np.all(donors > 1e16)
+        # Each falls monotonically into the other side.
+        assert np.all(np.diff(donors) < 0.0)
+        assert np.all(np.diff(acceptors) > 0.0)
+
+    def test_the_levels_are_the_drawn_ones_away_from_every_step(self):
+        graded = rib_phase_shifter(lateral_straggle_um=STRAGGLE)
+        for name, (low, high) in region_spans(graded).items():
+            if high - low < 12 * STRAGGLE:
+                continue
+            net = net_doping_cm3(profiles_of(graded, name), 0.5 * (low + high), 0.0)
+            sign = 1.0 if name.startswith("n_") else -1.0
+            assert net == pytest.approx(sign * graded.doping_cm3[name], rel=1e-6), name
+
+    def test_the_net_doping_changes_sign_at_the_drawn_junction(self):
+        """Equal straggle either side of equally doped cores."""
+        graded = rib_phase_shifter(
+            lateral_straggle_um=STRAGGLE, p_core_cm3=4e17, n_core_cm3=4e17
+        )
+        offsets = np.array([-0.2, -1e-3, 1e-3, 0.2]) * STRAGGLE
+
+        acceptors, donors = doping_along_the_junction_axis(
+            graded, graded.center_um + offsets
+        )
+
+        np.testing.assert_array_equal(np.sign(donors - acceptors), [1, 1, -1, -1])
+
+    def test_unequal_cores_move_the_junction_into_the_lighter_side(self):
+        """The heavier side's tail wins out to where the two tails cross."""
+        graded = rib_phase_shifter(lateral_straggle_um=STRAGGLE)
+        x = graded.center_um + np.linspace(-2.0, 2.0, 4001) * STRAGGLE
+
+        acceptors, donors = doping_along_the_junction_axis(graded, x)
+        crossing = x[np.argmin(np.abs(donors - acceptors))]
+
+        # p core 5e17 against n core 3e17: the sign change is on the n side,
+        # within a straggle of the drawn Junction.
+        assert graded.center_um - STRAGGLE < crossing < graded.center_um
+
+    def test_the_mobility_reads_the_total_doping_where_it_compensates(self):
+        """Where the dopants cancel, the impurities the carriers scatter off
+        do not: the mobility reads their sum, not their difference."""
+        graded = rib_phase_shifter(
+            lateral_straggle_um=STRAGGLE, p_core_cm3=4e17, n_core_cm3=4e17
+        )
+        model = MobilityModel.masetti_silicon()
+        x = graded.center_um + np.linspace(-3.0, 3.0, 121) * STRAGGLE
+
+        acceptors, donors = doping_along_the_junction_axis(graded, x)
+        total = acceptors + donors
+
+        # Half of each core at the Junction: 4e17 in total across the zone,
+        # where the net doping passes through zero.
+        np.testing.assert_allclose(total, 4e17, rtol=1e-3)
+        np.testing.assert_allclose(
+            model.electrons_cm2(total), model.electrons_cm2(4e17), rtol=1e-3
+        )
+        at_the_junction = 60
+        net = abs(donors[at_the_junction] - acceptors[at_the_junction])
+        assert net < 1e-3 * total[at_the_junction]
+        assert model.electrons_cm2(total[at_the_junction]) < 0.5 * model.electrons_cm2(
+            net
+        )
+
+    def test_the_rf_conductivity_stays_finite_and_positive_there(self, tmp_path):
+        graded = rib_phase_shifter(lateral_straggle_um=STRAGGLE)
+        study = pn_phase_shifter(
+            component=graded.component,
+            stack=graded.stack,
+            device=graded.device,
+            electrodes=graded.electrodes,
+            output_dir=tmp_path,
+        )
+        x = graded.center_um + np.linspace(-3.0, 3.0, 601) * STRAGGLE
+        acceptors, donors = doping_along_the_junction_axis(graded, x)
+        # Neutral silicon at equilibrium: the majority carriers number the
+        # net doping, down to the intrinsic density where it vanishes.
+        net = donors - acceptors
+        intrinsic = 1e10
+        majority = 0.5 * (np.abs(net) + np.sqrt(net**2 + 4.0 * intrinsic**2))
+        minority = intrinsic**2 / majority
+        electrons = np.where(net > 0.0, majority, minority)
+        holes = np.where(net > 0.0, minority, majority)
+
+        sigma = study.carriers.response(electrons, holes).conductivity_s_per_m
+
+        assert np.all(np.isfinite(sigma))
+        assert np.all(sigma > 0.0)
+        # It dips where the dopants compensate, and only there.
+        assert sigma.argmin() not in (0, sigma.size - 1)
 
 
 class TestTheRFStaircaseFollowsIt:
