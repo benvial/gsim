@@ -28,7 +28,7 @@ from gsim.common.twmzm import (
     eo_response,
     rlgc_from_line_params,
     vpi_length_vcm,
-    walkoff_bandwidth,
+    walkoff_bandwidth_dispersive,
 )
 
 __all__ = [
@@ -248,10 +248,14 @@ class LoadedLineComparison(BaseModel):
     electrode plates toward the junction and every field path (oxide,
     substrate, air) sees the narrowed gap, while the assembly keeps the
     bare electrode's shunt parameters and adds only the junction's own
-    R_s/C_j — the assembled route therefore reads consistently light. On
-    the demo device it sits ~20% low on n_RF, 20-45% low on the loss and
-    20-35% high on |Z0| (the finer the charge mesh resolves the slab,
-    the lossier the direct solve), flat across 10-30 GHz. The default
+    R_s/C_j — the assembled route therefore reads consistently light. The
+    two agree on the series R and L; the whole gap is shunt capacitance
+    the assembly does not have, and the loss feels it twice, since the
+    shunt conductance of a capacitance charging through the slab goes as
+    its square. On the demo devices the assembly sits 15-20% low on n_RF,
+    20-55% low on the loss and 20-35% high on |Z0| (the more resistive
+    the slab and the finer the charge mesh resolves it, the lossier the
+    direct solve), flat across 10-30 GHz. The default
     tolerances of :meth:`check` are set just outside that gap; a route
     bug (a dropped conductivity, a wrong-branch mode, a unit slip)
     overshoots them by multiples.
@@ -309,7 +313,7 @@ class LoadedLineComparison(BaseModel):
         self,
         *,
         rtol_n_rf: float = 0.3,
-        rtol_alpha: float = 0.55,
+        rtol_alpha: float = 0.7,
         rtol_z0: float = 0.45,
     ) -> None:
         """Fail loudly where the two routes disagree.
@@ -394,8 +398,10 @@ class TWMZMReport(BaseModel):
         response: Normalized complex EO response per frequency.
         bandwidth_3db_hz: 3 dB EO bandwidth, or None when the response
             stays above the threshold over the swept range.
-        walkoff_bandwidth_hz: Analytic walk-off-limited bandwidth of a
-            lossless matched line, or None when velocity matched.
+        walkoff_bandwidth_hz: Walk-off-limited bandwidth of a lossless
+            matched line, with the Velocity mismatch the line has at that
+            frequency (the last solved index held past the solved range),
+            or None when velocity matched.
         velocity_mismatch: ``n_rf - n_group`` per frequency.
         z0_ohm: Characteristic impedance per frequency.
         z_load_ohm: Termination impedance used.
@@ -457,13 +463,12 @@ def twmzm_figures_of_merit(
     )
     bandwidth = eo_bandwidth(rf.freq_hz, response)
 
-    n_rf_repr = float(np.mean(rf.n_rf))
-    if n_rf_repr == optical.n_group:
-        walkoff: float | None = None
-    else:
-        walkoff = walkoff_bandwidth(
-            length_m=length_m, n_rf=n_rf_repr, n_opt=optical.n_group
-        )
+    # Not read off the band's mean index: a loaded line's index falls with
+    # frequency and can cross the group index, where the mean mismatch
+    # vanishes and the limit it implies runs away.
+    walkoff = walkoff_bandwidth_dispersive(
+        rf.freq_hz, rf.n_rf, length_m=length_m, n_opt=optical.n_group
+    )
 
     return TWMZMReport(
         freq_hz=rf.freq_hz,

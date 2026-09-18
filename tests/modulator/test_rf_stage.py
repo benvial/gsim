@@ -16,6 +16,7 @@ import warnings
 import numpy as np
 import pytest
 
+from gsim.common.carriers import MobilityModel
 from gsim.common.stack.staircase import ElectrodeSpec
 
 from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, SLAB
@@ -138,12 +139,14 @@ class TestStaircase:
         assert sigma[0] > sigma[-1]
 
     def test_the_mobilities_come_from_the_carriers_stage(self, biased):
-        biased.carriers(mu_n_cm2=1.0, mu_p_cm2=1.0)
+        biased.carriers(mobility=MobilityModel.constant(mu_n_cm2=1.0, mu_p_cm2=1.0))
         slow = np.asarray(
             biased.rf.staircase().strips.conductivity_s_per_m, dtype=float
         )
 
-        biased.carriers(mu_n_cm2=1000.0, mu_p_cm2=1000.0)
+        biased.carriers(
+            mobility=MobilityModel.constant(mu_n_cm2=1000.0, mu_p_cm2=1000.0)
+        )
         fast = np.asarray(
             biased.rf.staircase().strips.conductivity_s_per_m, dtype=float
         )

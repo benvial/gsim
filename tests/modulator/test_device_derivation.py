@@ -166,7 +166,7 @@ class TestDerivationCache:
         )
         monkeypatch.setattr(
             "gsim.tcad.sim.ChargeTransportSim.sweep",
-            lambda self, biases, contact=None: BiasSweepResult(
+            lambda self, biases, contact=None, verbose=False: BiasSweepResult(
                 contact="cathode", points=[]
             ),
         )

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Carrier mobility follows the doping. `gsim.common.carriers.MobilityModel` is the Masetti low-field fit for silicon
+  (`masetti_silicon()`, or `constant(mu_n_cm2=, mu_p_cm2=)` for doping-independent values), and one model now serves
+  both places a mobility enters: `ChargeTransportSim.mobility` sets DEVSIM's electron and hole mobilities node by node
+  from the total doping (they were `simple_physics`' constants, 400 / 200 cm^2/Vs), and the carriers Stage evaluates the
+  RF conductivity with the charge Stage's model (it used the lattice values, 1417 / 470.5, whatever the doping — some
+  twenty times too conductive in a 1e20 contact Region). Configure it with `study.charge(mobility=...)`;
+  `study.carriers(mobility=...)` overrides the RF conductivity alone. `CarriersStage.mu_n_cm2` / `mu_p_cm2` are gone,
+  and `carrier_conductivity` takes `mobility=`.
+
+- The report's Walk-off bandwidth is no longer read off the band's mean RF index, which vanishes — and sends the limit
+  to hundreds of GHz — when a loaded line's index crosses the optical group index. `walkoff_bandwidth_dispersive` solves
+  the walk-off condition with the Velocity mismatch the line has at that frequency, holding the last solved index past
+  the solved range; a flat index recovers `walkoff_bandwidth`.
+
 - `rib_phase_shifter` draws a depletion Phase shifter as foundries build one — a 500 x 220 nm rib on a 90 nm slab, a
   lightly doped core, 1e19 plus and 1e20 contact Regions under 10 x 1 um electrodes — and the TCAD TW-MZM notebook now
   runs on it. The RF Staircase follows the drawn device: no Strip straddles two Regions and each stands at its own

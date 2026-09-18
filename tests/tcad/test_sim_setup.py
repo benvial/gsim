@@ -141,6 +141,29 @@ class TestDeviceSetup:
         assert len(potential_continuity) == 1
         assert potential_continuity[0]["type"] == "continuous"
 
+    def test_the_mobility_follows_the_doping(self, meshed_sim, fake_devsim):
+        from gsim.common.carriers import MobilityModel
+
+        devsim, _sp = fake_devsim
+        meshed_sim.setup_device("pn")
+
+        model = MobilityModel.masetti_silicon()
+        n_nodes = len(devsim.node_coords["x"])
+        np.testing.assert_allclose(
+            devsim.node_values[("p_rib", "HoleMobility")],
+            [float(model.holes_cm2(1e18))] * n_nodes,
+        )
+        np.testing.assert_allclose(
+            devsim.node_values[("n_rib", "ElectronMobility")],
+            [float(model.electrons_cm2(1e18))] * n_nodes,
+        )
+        averaged = {
+            (c["region"], c["node_model"], c["edge_model"])
+            for c in devsim.called("edge_average_model")
+        }
+        assert ("p_rib", "HoleMobility", "HoleMobilityEdge") in averaged
+        assert ("n_rib", "ElectronMobility", "ElectronMobilityEdge") in averaged
+
     def test_doping_node_models(self, meshed_sim, fake_devsim):
         devsim, _sp = fake_devsim
         meshed_sim.setup_device("pn")
@@ -303,6 +326,11 @@ class TestSolveWiring:
         assert {args[1] for args in sp.called("CreateSiliconDriftDiffusion")} == {
             "p_rib",
             "n_rib",
+        }
+        # The currents run on the doping-dependent mobilities, not on
+        # simple_physics' two constants.
+        assert {args[2:] for args in sp.called("CreateSiliconDriftDiffusion")} == {
+            ("ElectronMobilityEdge", "HoleMobilityEdge")
         }
 
     def test_carrier_continuity_across_interface(self, meshed_sim, fake_devsim):

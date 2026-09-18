@@ -8,8 +8,7 @@ import numpy as np
 import pytest
 
 from gsim.common.carriers import (
-    DEFAULT_MU_N_CM2,
-    DEFAULT_MU_P_CM2,
+    MobilityModel,
     PlasmaDispersionModel,
     carrier_absorption_cm,
     carrier_conductivity,
@@ -60,13 +59,14 @@ def solved_charge(study, monkeypatch):
 class TestConfiguration:
     def test_the_published_defaults_are_readable(self, study):
         assert study.carriers.dispersion.wavelength_um == 1.55
-        assert study.carriers.mu_n_cm2 == DEFAULT_MU_N_CM2
-        assert study.carriers.mu_p_cm2 == DEFAULT_MU_P_CM2
+        assert study.carriers.mobility is None
+        assert study.carriers.effective_mobility() == MobilityModel.masetti_silicon()
         assert study.carriers.has_run is False
 
     def test_the_section_is_callable(self, study):
-        assert study.carriers(mu_n_cm2=1000.0) is study.carriers
-        assert study.carriers.mu_n_cm2 == 1000.0
+        constant = MobilityModel.constant(mu_n_cm2=1000.0)
+        assert study.carriers(mobility=constant) is study.carriers
+        assert study.carriers.mobility == constant
 
     def test_unknown_setting_is_rejected(self, study):
         with pytest.raises(ValueError, match="nope"):
@@ -74,7 +74,7 @@ class TestConfiguration:
 
     def test_negative_mobility_is_rejected(self, study):
         with pytest.raises(ValueError):
-            study.carriers(mu_p_cm2=-1.0)
+            study.carriers(mobility={"mu_max_n": 1417.0, "mu_max_p": -1.0})
 
 
 class TestSubstitutedCoefficients:
@@ -111,11 +111,21 @@ class TestResponseSeam:
             carrier_absorption_cm(N_CM3, P_CM3, model=study.carriers.dispersion)
         )
         assert response.conductivity_s_per_m == pytest.approx(
-            carrier_conductivity(N_CM3, P_CM3)
+            carrier_conductivity(N_CM3, P_CM3, mobility=MobilityModel.masetti_silicon())
+        )
+
+    def test_the_charge_stage_mobility_reaches_the_conductivity(self, study):
+        # One model for the transport solve and the RF conductivity.
+        study.charge(mobility=MobilityModel.constant(mu_n_cm2=100.0, mu_p_cm2=50.0))
+
+        response = study.carriers.response(N_CM3, P_CM3)
+
+        assert response.conductivity_s_per_m == pytest.approx(
+            carrier_conductivity(N_CM3, P_CM3, mu_n_cm2=100.0, mu_p_cm2=50.0)
         )
 
     def test_the_configured_mobilities_reach_the_conductivity(self, study):
-        study.carriers(mu_n_cm2=100.0, mu_p_cm2=50.0)
+        study.carriers(mobility=MobilityModel.constant(mu_n_cm2=100.0, mu_p_cm2=50.0))
 
         response = study.carriers.response(N_CM3, P_CM3)
 
@@ -163,7 +173,7 @@ class TestRun:
             carrier_absorption_cm(N_CM3, P_CM3, model=study.carriers.dispersion)
         )
         assert first.conductivity_s_per_m == pytest.approx(
-            carrier_conductivity(N_CM3, P_CM3)
+            carrier_conductivity(N_CM3, P_CM3, mobility=MobilityModel.masetti_silicon())
         )
 
     def test_the_response_spans_the_cross_section_nodes(self, solved_charge):
@@ -239,7 +249,7 @@ class TestInvalidation:
         study, solves = solved_charge
         study.carriers.run()
 
-        study.carriers(mu_n_cm2=900.0)
+        study.carriers(mobility=MobilityModel.constant(mu_n_cm2=900.0))
 
         assert study.carriers.has_run is False
         assert study.charge.has_run is True

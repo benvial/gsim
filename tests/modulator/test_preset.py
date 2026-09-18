@@ -12,7 +12,7 @@ import warnings
 
 import pytest
 
-from gsim.common.carriers import PlasmaDispersionModel
+from gsim.common.carriers import MobilityModel, PlasmaDispersionModel
 from gsim.modulator import (
     Device,
     Study,
@@ -174,13 +174,13 @@ class TestPresetSetsDefaultsWithoutLocking:
         study = _study_over(demo)
 
         study.charge(biases=[0.0, 3.0])
-        study.carriers(mu_n_cm2=1000.0)
+        study.carriers(mobility=MobilityModel.constant(mu_n_cm2=1000.0))
         study.optical(wavelength_um=1.31, num_modes=2)
         study.rf(frequencies_hz=[5e9], n_strips=2)
         study.line(length_um=1000.0)
 
         assert study.charge.biases == [0.0, 3.0]
-        assert study.carriers.mu_n_cm2 == pytest.approx(1000.0)
+        assert study.carriers.mobility == MobilityModel.constant(mu_n_cm2=1000.0)
         assert study.optical.wavelength_um == pytest.approx(1.31)
         assert study.optical.num_modes == 2
         assert study.rf.frequencies_hz == [5e9]

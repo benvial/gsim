@@ -8,7 +8,8 @@ into the standard traveling-wave modulator figures of merit:
   RF loss, and impedance mismatch with source/load reflections
   (:func:`eo_response`, :func:`eo_bandwidth`);
 - the analytic walk-off-limited bandwidth of a lossless matched line
-  (:func:`walkoff_bandwidth`);
+  (:func:`walkoff_bandwidth`), and the same limit for a line whose RF index
+  moves with frequency (:func:`walkoff_bandwidth_dispersive`);
 - modulation efficiency ``V_pi L`` from a bias sweep of the effective-index
   shift (:func:`vpi_length_vcm`);
 - RLGC line parameters from the propagation constant and characteristic
@@ -27,6 +28,7 @@ from typing import NamedTuple
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.constants import speed_of_light as C0  # noqa: N812
+from scipy.optimize import brentq
 
 __all__ = [
     "SINC_3DB_ARGUMENT",
@@ -38,6 +40,7 @@ __all__ = [
     "series_rc_from_admittance",
     "vpi_length_vcm",
     "walkoff_bandwidth",
+    "walkoff_bandwidth_dispersive",
 ]
 
 #: Argument where ``|sin(u)/u|`` falls to 1/sqrt(2) (walk-off 3 dB point).
@@ -222,6 +225,61 @@ def walkoff_bandwidth(*, length_m: float, n_rf: float, n_opt: float) -> float:
     if mismatch == 0:
         raise ValueError("n_rf equals n_opt: walk-off bandwidth is unbounded.")
     return SINC_3DB_ARGUMENT * C0 / (np.pi * length_m * mismatch)
+
+
+def walkoff_bandwidth_dispersive(
+    freq_hz: ArrayLike,
+    n_rf: ArrayLike,
+    *,
+    length_m: float,
+    n_opt: float,
+) -> float | None:
+    """Walk-off-limited 3 dB bandwidth of a line with a dispersive RF index.
+
+    A loaded line's RF index falls with frequency, so there is no single
+    mismatch to put in :func:`walkoff_bandwidth` — and the mean over the band
+    is the wrong one, vanishing when the index crosses the optical group
+    index. The limit is instead the lowest frequency satisfying the walk-off
+    condition with the mismatch the line has *at that frequency*:
+    ``pi f L |n_rf(f) - n_opt| / c = 1.39``.
+
+    The index is interpolated linearly between the solved frequencies and
+    held at its end values outside them, so a flat index recovers
+    :func:`walkoff_bandwidth` exactly.
+
+    Args:
+        freq_hz: Solved frequencies in Hz, ascending.
+        n_rf: RF effective index per frequency.
+        length_m: Electrode length in meters (> 0).
+        n_opt: Optical group index.
+
+    Returns:
+        3 dB frequency in Hz, or ``None`` when no frequency satisfies the
+        condition — the line is velocity matched wherever it would.
+    """
+    if length_m <= 0:
+        raise ValueError("length_m must be positive.")
+    freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64))
+    index = np.broadcast_to(np.asarray(n_rf, dtype=np.float64), freq.shape)
+    mismatch = np.abs(index - n_opt)
+    # The walk-off condition, as f * |mismatch(f)| = target.
+    target = SINC_3DB_ARGUMENT * C0 / (np.pi * length_m)
+
+    # Below the solved range the first index is held.
+    if mismatch[0] > 0 and target / mismatch[0] <= freq[0]:
+        return float(target / mismatch[0])
+    # Inside it, the first solved interval the condition is met across.
+
+    def excess(f: float) -> float:
+        return float(f * abs(np.interp(f, freq, index) - n_opt) - target)
+
+    met = freq * mismatch >= target
+    for i in np.nonzero(~met[:-1] & met[1:])[0]:
+        return float(brentq(excess, freq[i], freq[i + 1], xtol=1.0))
+    # Past it the last index is held.
+    if mismatch[-1] > 0:
+        return float(max(target / mismatch[-1], freq[-1]))
+    return None
 
 
 def vpi_length_vcm(

@@ -27,6 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from gsim.common.carriers import MobilityModel
 from gsim.tcad.doping import (
     DopingProfile,
     acceptor_donor_concentrations,
@@ -96,6 +97,11 @@ class ChargeTransportSim(BaseModel):
     material: str = "Silicon"
     #: Analytic doping profiles (each names the mesh region it applies to).
     doping: list[DopingProfile] = Field(default_factory=list)
+    #: Low-field mobility against the total doping, evaluated node by node.
+    #: DEVSIM's own silicon defaults are two constants (400 / 200 cm^2/Vs)
+    #: whatever the doping, which misstates the series resistance of a slab
+    #: doped from 1e17 to 1e20 cm^-3.
+    mobility: MobilityModel = Field(default_factory=MobilityModel.masetti_silicon)
     #: Voltage step used when ramping the swept contact between biases (V).
     bias_step_v: float = Field(default=0.1, gt=0.0)
     #: Frequency (Hz) of the small-signal AC solve extracting C(V); low
@@ -443,6 +449,26 @@ class ChargeTransportSim(BaseModel):
             name="NetDoping",
             equation="Donors - Acceptors",
         )
+        # The mobilities are node values rather than a DEVSIM expression so
+        # that the transport solve and the RF conductivity evaluate one
+        # model, not two transcriptions of it. They depend on the doping
+        # alone, so the current's derivatives are unchanged.
+        impurity = acceptors + donors
+        for name, values in (
+            ("ElectronMobility", self.mobility.electrons_cm2(impurity)),
+            ("HoleMobility", self.mobility.holes_cm2(impurity)),
+        ):
+            devsim.node_solution(device=device, region=region, name=name)
+            devsim.set_node_values(
+                device=device, region=region, name=name, values=list(values)
+            )
+            devsim.edge_average_model(
+                device=device,
+                region=region,
+                node_model=name,
+                edge_model=f"{name}Edge",
+                average_type="arithmetic",
+            )
 
     def setup_device(self, device: str | None = None, *, verbose: bool = False) -> str:
         """Create the DEVSIM device from the shared mesh.
@@ -631,7 +657,9 @@ class ChargeTransportSim(BaseModel):
                     name=carrier,
                     init_from=intrinsic,
                 )
-            sp.CreateSiliconDriftDiffusion(device, region)
+            sp.CreateSiliconDriftDiffusion(
+                device, region, "ElectronMobilityEdge", "HoleMobilityEdge"
+            )
         for spec in self.contact_specs:
             sp.CreateSiliconDriftDiffusionAtContact(
                 device, self._contact_regions[spec.name], spec.name, True

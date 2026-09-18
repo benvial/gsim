@@ -26,6 +26,7 @@ from gsim.common.twmzm import (
     series_rc_from_admittance,
     vpi_length_vcm,
     walkoff_bandwidth,
+    walkoff_bandwidth_dispersive,
 )
 from tests._helpers import series_rc_admittance
 
@@ -305,3 +306,61 @@ class TestLoadedLineParams:
         bad = dict(self.UNLOADED, L=np.full(3, 4e-7))
         with pytest.raises(ValueError, match="shape"):
             loaded_line_params(self.FREQ, rlgc=bad, junction=(0.0, 0.0))
+
+
+class TestDispersiveWalkoff:
+    """The walk-off limit of a line whose RF index moves with frequency."""
+
+    FREQ = np.linspace(10e9, 100e9, 10)
+    LENGTH = 10e-3
+    N_OPT = 3.8
+
+    def test_flat_index_recovers_the_closed_form(self):
+        expected = walkoff_bandwidth(length_m=self.LENGTH, n_rf=6.0, n_opt=self.N_OPT)
+        assert walkoff_bandwidth_dispersive(
+            self.FREQ, np.full(10, 6.0), length_m=self.LENGTH, n_opt=self.N_OPT
+        ) == pytest.approx(expected)
+
+    def test_velocity_matched_everywhere_is_unbounded(self):
+        assert (
+            walkoff_bandwidth_dispersive(
+                self.FREQ, np.full(10, self.N_OPT), length_m=1e-3, n_opt=self.N_OPT
+            )
+            is None
+        )
+
+    def test_limit_is_self_consistent_inside_the_solved_range(self):
+        n_rf = np.linspace(4.6, 4.0, 10)
+        limit = walkoff_bandwidth_dispersive(
+            self.FREQ, n_rf, length_m=self.LENGTH, n_opt=self.N_OPT
+        )
+        assert limit is not None
+        assert self.FREQ[0] < limit < self.FREQ[-1]
+        mismatch = abs(np.interp(limit, self.FREQ, n_rf) - self.N_OPT)
+        assert limit == pytest.approx(
+            walkoff_bandwidth(
+                length_m=self.LENGTH, n_rf=self.N_OPT + mismatch, n_opt=self.N_OPT
+            ),
+            rel=1e-6,
+        )
+
+    def test_index_crossing_the_group_index_does_not_average_away(self):
+        # n_RF crosses n_g mid-band, so its mean mismatch is ~0 and a limit
+        # read off the mean runs away. Past the solved range the last
+        # solved index is held, and the limit follows from that one.
+        n_rf = np.linspace(4.2, 3.4, 10)
+        limit = walkoff_bandwidth_dispersive(
+            self.FREQ, n_rf, length_m=3e-3, n_opt=self.N_OPT
+        )
+        assert limit == pytest.approx(
+            walkoff_bandwidth(length_m=3e-3, n_rf=3.4, n_opt=self.N_OPT)
+        )
+
+    def test_limit_below_the_solved_range_holds_the_first_index(self):
+        limit = walkoff_bandwidth_dispersive(
+            self.FREQ, np.linspace(9.0, 8.0, 10), length_m=50e-3, n_opt=self.N_OPT
+        )
+        assert limit < self.FREQ[0]
+        assert limit == pytest.approx(
+            walkoff_bandwidth(length_m=50e-3, n_rf=9.0, n_opt=self.N_OPT)
+        )

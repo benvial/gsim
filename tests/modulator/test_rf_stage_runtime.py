@@ -336,7 +336,10 @@ class TestPerfectConductorElectrodes:
         _, volume, _ = solved
 
         assert np.all(pec.alpha_rf_np_m > 0.0)
-        assert np.all(pec.alpha_rf_np_m < 0.01 * volume.alpha_rf_np_m)
+        # What is left is the slab's own loss — the junction charging through
+        # its series resistance, which grows as f^2 — so it is a few percent
+        # of the metal's at 40 GHz rather than a fixed fraction of it.
+        assert np.all(pec.alpha_rf_np_m < 0.05 * volume.alpha_rf_np_m)
 
     def test_a_first_order_solve_says_the_impedance_is_biased(self, tmp_path):
         study = build_study(tmp_path, biases=ONE_BIAS)

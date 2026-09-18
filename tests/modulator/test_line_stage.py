@@ -191,10 +191,16 @@ class TestReport:
         solved.line(length_um=6000.0)
         long = solved.line.run()
 
-        # Walk-off scales as 1/L, so six times the electrode is a sixth
-        # of the walk-off-limited bandwidth.
+        # Walk-off scales as 1/L at a fixed Velocity mismatch. This line is
+        # dispersive, so the two limits read the mismatch at different
+        # frequencies and the factor is not exactly six; each is what the
+        # hand assembly gives at its own length.
+        assert short.walkoff_bandwidth_hz > long.walkoff_bandwidth_hz
         assert short.walkoff_bandwidth_hz == pytest.approx(
-            6.0 * long.walkoff_bandwidth_hz
+            hand_assembled(length_m=1e-3).walkoff_bandwidth_hz
+        )
+        assert long.walkoff_bandwidth_hz == pytest.approx(
+            hand_assembled(length_m=6e-3).walkoff_bandwidth_hz
         )
 
     def test_the_study_exposes_the_report(self, solved):

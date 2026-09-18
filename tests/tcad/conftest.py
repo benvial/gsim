@@ -94,6 +94,9 @@ class FakeDevsim(types.ModuleType):
     def node_model(self, **kwargs):
         self._record("node_model", **kwargs)
 
+    def edge_average_model(self, **kwargs):
+        self._record("edge_average_model", **kwargs)
+
     def set_parameter(self, **kwargs):
         self._record("set_parameter", **kwargs)
         self.parameters[kwargs["name"]] = kwargs["value"]
@@ -184,6 +187,9 @@ def fake_devsim(monkeypatch):
     monkeypatch.setitem(sys.modules, "devsim", devsim)
     monkeypatch.setitem(sys.modules, "devsim.python_packages", packages)
     monkeypatch.setitem(sys.modules, "devsim.python_packages.simple_physics", sp)
+    # The devices gsim holds are process-wide: one an earlier test left
+    # behind would be released into this test's recorder.
+    monkeypatch.setattr("gsim.tcad.sim._LIVE_DEVICES", set())
     return devsim, sp
 
 

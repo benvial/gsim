@@ -29,8 +29,7 @@ from numpy.typing import ArrayLike, NDArray
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gsim.common.carriers import (
-    DEFAULT_MU_N_CM2,
-    DEFAULT_MU_P_CM2,
+    MobilityModel,
     PlasmaDispersionModel,
     carrier_absorption_cm,
     carrier_conductivity,
@@ -155,8 +154,11 @@ class CarriersStage(Stage):
         dispersion: Plasma-dispersion coefficients; defaults to the
             published Nedeljkovic fit at 1.55 um. Substitute a
             foundry-calibrated model by configuring this Stage.
-        mu_n_cm2: Electron mobility for the Drude conductivity (cm^2/Vs).
-        mu_p_cm2: Hole mobility for the Drude conductivity (cm^2/Vs).
+        mobility: Mobility model for the Drude conductivity. Left unset,
+            it is the charge Stage's, so the conductivity the RF Stage
+            meshes and the series resistance the charge solve reports
+            come from one model; set it here to move the RF conductivity
+            alone, without paying for a charge solve.
     """
 
     stage_name: ClassVar[str] = "carriers"
@@ -164,8 +166,21 @@ class CarriersStage(Stage):
     dispersion: PlasmaDispersionModel = Field(
         default_factory=PlasmaDispersionModel.nedeljkovic_1550
     )
-    mu_n_cm2: float = Field(default=DEFAULT_MU_N_CM2, ge=0.0)
-    mu_p_cm2: float = Field(default=DEFAULT_MU_P_CM2, ge=0.0)
+    mobility: MobilityModel | None = None
+
+    def effective_mobility(self) -> MobilityModel:
+        """The mobility model the conductivity is evaluated with.
+
+        Returns:
+            This Stage's own model, else the charge Stage's, else — built
+            outside a Study — the published silicon fit.
+        """
+        if self.mobility is not None:
+            return self.mobility
+        if self._study is not None:
+            shared: MobilityModel = self._study.charge.mobility
+            return shared
+        return MobilityModel.masetti_silicon()
 
     def response(self, n_cm3: ArrayLike, p_cm3: ArrayLike) -> MaterialResponse:
         """Couple carrier concentrations to material response.
@@ -190,9 +205,7 @@ class CarriersStage(Stage):
                 carrier_absorption_cm(n, p, model=self.dispersion), dtype=np.float64
             ),
             conductivity_s_per_m=np.asarray(
-                carrier_conductivity(
-                    n, p, mu_n_cm2=self.mu_n_cm2, mu_p_cm2=self.mu_p_cm2
-                ),
+                carrier_conductivity(n, p, mobility=self.effective_mobility()),
                 dtype=np.float64,
             ),
         )

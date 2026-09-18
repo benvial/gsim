@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import numpy as np
 from pydantic import Field, PrivateAttr
 
+from gsim.common.carriers import MobilityModel
 from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
 from gsim.modulator.stage import Stage
 from gsim.tcad.runtime import require_devsim
@@ -42,6 +43,9 @@ class ChargeStage(Stage):
         mesh: Keyword arguments forwarded to the mesh pipeline.
         airbox: Background region around the Window.
         temperature: Lattice temperature (K).
+        mobility: Low-field mobility model the transport solve runs on,
+            and — unless the carriers Stage is given its own — the one
+            the RF conductivity is evaluated with.
         settings: Extra settings applied to the charge-transport sim.
     """
 
@@ -62,6 +66,7 @@ class ChargeStage(Stage):
     )
     airbox: dict[str, Any] = Field(default_factory=STAGE_AIRBOX.copy)
     temperature: float = Field(default=300.0, gt=0.0)
+    mobility: MobilityModel = Field(default_factory=MobilityModel.masetti_silicon)
     settings: dict[str, Any] = Field(default_factory=dict)
 
     def simulation(self) -> ChargeTransportSim:
@@ -80,7 +85,9 @@ class ChargeStage(Stage):
         layout = study.layout
         device = study.device
 
-        sim = ChargeTransportSim(temperature=self.temperature, **self.settings)
+        sim = ChargeTransportSim(
+            temperature=self.temperature, mobility=self.mobility, **self.settings
+        )
         sim.set_output_dir(study.stage_dir(self.stage_name))
         sim.set_stack(study.stack)
         sim.set_geometry(study.component)

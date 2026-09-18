@@ -120,6 +120,17 @@ class TestFiguresOfMerit:
         assert set(report.rlgc) == {"R", "L", "G", "C"}
         assert report.z_load_ohm == 50.0 + 0j
 
+    def test_walkoff_limit_is_not_read_off_the_mean_index(self):
+        # n_RF crossing n_g inside the band has a mean mismatch near zero;
+        # the limit must follow the index the line actually has.
+        freq = np.linspace(10e9, 100e9, 50)
+        n_rf = np.linspace(4.2, 3.4, 50)
+        rf = line_params_from_neff(freq, n_rf + 0j, z0_ohm=50.0)
+        report = twmzm_figures_of_merit(rf, _optical(n_group=3.8), length_m=3e-3)
+        assert report.walkoff_bandwidth_hz == pytest.approx(
+            walkoff_bandwidth(length_m=3e-3, n_rf=3.4, n_opt=3.8)
+        )
+
 
 class TestUnloadedFlag:
     def test_line_params_are_loaded_unless_said_otherwise(self):

@@ -19,6 +19,7 @@ import pytest
 from scipy.constants import elementary_charge as Q  # noqa: N812
 
 from gsim.common.carriers import (
+    MobilityModel,
     PlasmaDispersionModel,
     carrier_absorption_cm,
     carrier_conductivity,
@@ -154,3 +155,49 @@ class TestPermittivityPerturbation:
         assert eps.real == pytest.approx(expected.real, rel=1e-12)
         assert eps.imag == pytest.approx(expected.imag, rel=1e-12)
         assert eps.imag < 0.0
+
+
+class TestMobilityModel:
+    def test_undoped_silicon_keeps_the_lattice_mobility(self):
+        model = MobilityModel.masetti_silicon()
+        assert model.electrons_cm2(0.0) == pytest.approx(1417.0)
+        assert model.holes_cm2(0.0) == pytest.approx(470.5)
+
+    def test_published_values_are_reproduced(self):
+        # Masetti et al. (1983): hand evaluation of the fit at 1e20 cm^-3.
+        model = MobilityModel.masetti_silicon()
+        assert model.electrons_cm2(1e20) == pytest.approx(60.9, abs=0.1)
+        assert model.holes_cm2(1e20) == pytest.approx(49.9, abs=0.1)
+
+    def test_mobility_falls_with_doping(self):
+        model = MobilityModel.masetti_silicon()
+        doping = np.logspace(14, 20.5, 40)
+        assert np.all(np.diff(model.electrons_cm2(doping)) < 0)
+        assert np.all(np.diff(model.holes_cm2(doping)) < 0)
+
+    def test_constant_ignores_the_doping(self):
+        model = MobilityModel.constant(mu_n_cm2=100.0, mu_p_cm2=50.0)
+        doping = np.array([0.0, 1e15, 1e20])
+        np.testing.assert_allclose(model.electrons_cm2(doping), 100.0)
+        np.testing.assert_allclose(model.holes_cm2(doping), 50.0)
+
+    def test_negative_impurity_rejected(self):
+        with pytest.raises(ValueError):
+            MobilityModel.masetti_silicon().electrons_cm2(-1.0)
+
+    def test_the_model_reaches_the_conductivity(self):
+        # A neutral n Region: its electrons number its donors.
+        model = MobilityModel.masetti_silicon()
+        sigma = carrier_conductivity(1e20, 0.0, mobility=model)
+        expected = Q * float(model.electrons_cm2(1e20)) * 1e20 * 100.0
+        assert sigma == pytest.approx(expected, rel=1e-12)
+        # A contact Region conducts far less than the lattice mobility says.
+        assert sigma < 0.1 * carrier_conductivity(1e20, 0.0)
+
+    def test_a_constant_model_is_the_two_constants(self):
+        model = MobilityModel.constant(mu_n_cm2=1000.0, mu_p_cm2=400.0)
+        n, p = np.array([1e16, 1e18]), np.array([1e17, 0.0])
+        np.testing.assert_allclose(
+            carrier_conductivity(n, p, mobility=model),
+            carrier_conductivity(n, p, mu_n_cm2=1000.0, mu_p_cm2=400.0),
+        )
