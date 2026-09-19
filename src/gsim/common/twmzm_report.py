@@ -256,32 +256,30 @@ class LoadedLineComparison(BaseModel):
     their n_RF, loss and Z0 should agree — up to what the lumped branch
     cannot capture of the distributed junction.
 
-    What is measured. The two routes agree on the series R and L to 1 %.
-    On the shunt capacitance they agree once the charge solve counts the
-    field fringing through the oxide around the Junction (the charge
-    Stage's ``oxide=True``, the default): on the rib Phase shifter the
-    assembled route then sits within 2 % on n_RF and 8 % on |Z0|, its
-    shunt C within 20 pF/m of the direct solve's 380-420 pF/m. With a
-    silicon-only Poisson domain the assembly lacked some 140 pF/m and
-    read 15-18 % low on n_RF and 23-25 % high on |Z0|. On the abrupt demo
-    device, whose electrodes stand 0.3 um from the Junction, the oxide
-    closes a third of the capacitance gap and no more: 14 % low on n_RF,
-    19 % high on |Z0|. What is left there is not accounted for.
+    What is measured. The two routes agree on the series R and L to 1 %;
+    the gap is in the shunt branch. With the charge solve's default,
+    silicon-only Poisson domain the assembled route reads 15-22 % low on
+    n_RF, 32-55 % low on the loss and 23-31 % high on |Z0| on the two
+    demo devices, flat across 20-30 GHz: the direct solve finds 105-270
+    pF/m more shunt capacitance and four to eight times the shunt
+    conductance.
 
-    The loss does not follow the capacitance. With the shunt C matched
-    to 5 % on the rib device the assembled route still reads 33-36 % low
-    on the loss (25-31 % on the demo device), and the direct solve's
-    shunt conductance is twice the assembly's. The earlier reading, that
-    the whole loss gap was missing capacitance felt squared, did not
-    survive the capacitance being supplied; why the lumped series
-    R_s/C_j branch dissipates half of what the distributed slab does is
-    an open question, not a known property of the assembly. The gaps
-    are flat across 20-30 GHz and move by about 3 points of loss between
-    a 5 nm and a 20 nm charge mesh.
+    What is provisional. Solving Poisson in the oxide around the Junction
+    as well (the charge Stage's ``oxide=True``) adds the fringing field
+    to C_j, and on the rib Phase shifter the shunt-C, n_RF and |Z0| gaps
+    then close (to 20 pF/m, 2 % and 8 %) — with the Staircase's Strips
+    averaged as they are today, by node count. Averaged by area instead
+    they do not close, because the direct solve itself moves: a Strip's
+    value at the depletion edge depends on how a charge mesh that does
+    not resolve that edge is averaged. Until that is settled
+    (modulator-realism ticket 06) the oxide is opt-in and neither
+    reading is a result. The loss gap is an open question either way: it
+    stays above 30 % with the capacitance matched, so an earlier reading,
+    that it was the missing capacitance felt squared, is not supported.
 
-    The default tolerances of :meth:`check` are set just outside those
-    gaps; a route bug (a dropped conductivity, a wrong-branch mode, a
-    unit slip) overshoots them by multiples.
+    The default tolerances of :meth:`check` are set just outside the
+    silicon-only gap; a route bug (a dropped conductivity, a wrong-branch
+    mode, a unit slip) overshoots them by multiples.
 
     Attributes:
         direct: The direct loaded solve's line parameters.
@@ -335,18 +333,17 @@ class LoadedLineComparison(BaseModel):
     def check(
         self,
         *,
-        rtol_n_rf: float = 0.2,
-        rtol_alpha: float = 0.5,
-        rtol_z0: float = 0.25,
+        rtol_n_rf: float = 0.3,
+        rtol_alpha: float = 0.7,
+        rtol_z0: float = 0.45,
     ) -> None:
         """Fail loudly where the two routes disagree.
 
         The defaults sit just outside the systematic gap the class
-        docstring describes, measured with the oxide in the charge solve
-        (at worst 14 % on n_RF, 36 % on the loss and 19 % on |Z0| across
-        the two demo devices), so they pass an honest assembly and fail
-        a broken route, which misses by multiples. A charge sweep solved
-        with ``oxide=False`` lands outside them on |Z0|.
+        docstring describes (at worst 22 % on n_RF, 55 % on the loss and
+        31 % on |Z0| across the two demo devices, silicon-only charge
+        solve), so they pass an honest assembly and fail a broken route,
+        which misses by multiples.
 
         Args:
             rtol_n_rf: Relative tolerance on n_RF.

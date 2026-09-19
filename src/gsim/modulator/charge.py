@@ -46,9 +46,18 @@ class ChargeStage(Stage):
         oxide: Solve Poisson in the oxide around the doped slab as well as
             in the silicon — the potential alone, no carriers — so the
             capacitance and the series-RC Junction branch count the field
-            fringing around the Junction. Off, the silicon's surface is a
-            zero-normal-field wall. The Carrier map is the same either
-            way: doped Regions only.
+            fringing around the Junction. The Carrier map holds the doped
+            Regions only either way. Off by default, for now: with the
+            oxide in the solve the fringing field depletes the silicon's
+            surfaces first, so the Carrier map varies in depth, and a
+            Staircase's Strip average weights nodes, not area. A third of
+            a charge mesh's nodes lie on the top and bottom surfaces, so
+            both the optical and the RF Staircase over-read the surface
+            depletion (carriers removed across a 4 V sweep, node average
+            over area average: 1.005 silicon-only, 1.354 with the oxide).
+            A continuous optical solve is not affected. Turn it on for
+            the Junction branch; read a Staircase built off it with that
+            in mind.
         mobility: Low-field mobility model the transport solve runs on,
             and — unless the carriers Stage is given its own — the one
             the RF conductivity is evaluated with.
@@ -72,7 +81,7 @@ class ChargeStage(Stage):
     )
     airbox: dict[str, Any] = Field(default_factory=STAGE_AIRBOX.copy)
     temperature: float = Field(default=300.0, gt=0.0)
-    oxide: bool = True
+    oxide: bool = False
     mobility: MobilityModel = Field(default_factory=MobilityModel.masetti_silicon)
     settings: dict[str, Any] = Field(default_factory=dict)
 

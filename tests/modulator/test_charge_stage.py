@@ -54,9 +54,15 @@ class TestSimulationAssembly:
 
 
 class TestTheOxideAroundTheJunction:
-    """Ticket 05: the electrostatic solve reaches into the surrounding oxide."""
+    """Ticket 05: the electrostatic solve can reach into the surrounding oxide."""
 
-    def test_the_stacks_oxide_joins_the_solve_as_an_insulator(self, study):
+    def test_the_solve_is_silicon_only_unless_asked(self, study):
+        """Opt-in until Strips average by area (modulator-realism ticket 06)."""
+        assert study.charge.oxide is False
+        assert study.charge.simulation().insulators == []
+
+    def test_asked_for_the_stacks_oxide_joins_the_solve_as_an_insulator(self, study):
+        study.charge(oxide=True)
         sim = study.charge.simulation()
         [oxide] = sim.insulators
         assert oxide.region == "sio2"
@@ -65,13 +71,11 @@ class TestTheOxideAroundTheJunction:
         )
 
     def test_no_doped_region_is_declared_insulating(self, study):
+        study.charge(oxide=True)
         sim = study.charge.simulation()
         doped = {profile.region for profile in sim.doping}
+        assert sim.insulators
         assert doped.isdisjoint(oxide.region for oxide in sim.insulators)
-
-    def test_it_can_be_turned_off(self, study):
-        study.charge(oxide=False)
-        assert study.charge.simulation().insulators == []
 
 
 class TestMissingExtra:

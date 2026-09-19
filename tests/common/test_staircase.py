@@ -173,6 +173,40 @@ class TestStripAveragesFromNodes:
         ]
         np.testing.assert_allclose(means, expected, rtol=0.05)
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "modulator-realism ticket 06: Strip averages weight nodes, not "
+            "area (this cloud reads 0.044 for an area mean of 0.5)"
+        ),
+    )
+    def test_a_strip_is_averaged_over_its_area_not_over_its_nodes(self):
+        # A charge-solve mesh refines the silicon's surfaces: a third of
+        # its nodes sit on the top and bottom lines, which have no area.
+        # Once the carriers vary with depth — the surfaces deplete first
+        # when the oxide takes part in the electrostatics — an average
+        # that counts nodes reads the surfaces' value for the Strip.
+        height = 0.22
+        surface_h = np.linspace(0.0, 1.0, 201)
+        interior_h = np.linspace(0.0, 1.0, 21)
+        interior_z = np.linspace(0.0, height, 9)[1:-1]
+        h = np.concatenate([surface_h, surface_h, np.tile(interior_h, interior_z.size)])
+        v = np.concatenate(
+            [
+                np.zeros(surface_h.size),
+                np.full(surface_h.size, height),
+                np.repeat(interior_z, interior_h.size),
+            ]
+        )
+        # Depleted at both surfaces, full at mid-height: the area mean is 0.5.
+        values = 1.0 - np.abs(2.0 * v / height - 1.0)
+
+        _edges, means = strip_averages_from_nodes(
+            h, values, n_strips=4, v_um=v, v_range=(0.0, height)
+        )
+
+        np.testing.assert_allclose(means, 0.5, rtol=0.02)
+
     def test_band_without_nodes_raises(self):
         h = np.linspace(0.0, 1.0, 11)
         with pytest.raises(ValueError, match="v_range"):
