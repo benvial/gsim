@@ -474,6 +474,20 @@ class TestLoadedLineComparison:
         with pytest.raises(ValueError, match=r"Z0"):
             cmp.check()
 
+    def test_the_default_gate_sits_just_outside_the_measured_gap(self):
+        """With the oxide in the charge solve: 14 % on n_RF, 19 % on |Z0|."""
+        inside = LoadedLineComparison(
+            direct=_line(n_rf=2.0, z0=40.0), assembled=_line(n_rf=1.7, z0=48.0)
+        )
+        inside.check()
+
+        slow = LoadedLineComparison(direct=_line(n_rf=2.0), assembled=_line(n_rf=1.5))
+        with pytest.raises(ValueError, match="n_RF"):
+            slow.check()
+        high = LoadedLineComparison(direct=_line(z0=40.0), assembled=_line(z0=52.0))
+        with pytest.raises(ValueError, match="Z0"):
+            high.check()
+
     def test_the_tolerances_are_adjustable(self):
         cmp = LoadedLineComparison(direct=_line(n_rf=2.0), assembled=_line(n_rf=2.2))
 

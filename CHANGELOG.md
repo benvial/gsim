@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The charge Window includes the oxide around the Junction.
+  `ChargeTransportSim.add_insulator(region=, relative_permittivity=)` solves Poisson in an insulating Region as well —
+  the potential alone, continuous across the Interfaces it shares with the doped Regions, no carriers — and the charge
+  Stage turns it on for the stack's oxide (`study.charge(oxide=False)` restores the silicon-only solve). The
+  small-signal capacitance and the series-RC Junction branch now count the field fringing around the Junction: +79 to
+  +96 pF/m on the abrupt demo device, 169.5 to 283.7 pF/m at 2 V on the rib device. The Carrier map is unchanged, doped
+  Regions only. This was a test of why the loaded-line cross-check disagreed, and the answer is mixed: on the rib device
+  the missing shunt capacitance is found (gap 144 to 11 pF/m at 20 GHz, n_RF 18 % to 2 %, |Z0| 25 % to 7 %), but the
+  loss gap only falls from 52 % to 33 %, so it was never the capacitance squared; on the demo device the gaps narrow by
+  a third. `LoadedLineComparison.check()` tightens to 20 % / 50 % / 25 % (n_RF, loss, |Z0|; were 30 / 70 / 45), and its
+  docstring states what is measured and what is not explained.
+
 - A graded Junction on the demo Phase shifter. `rib_phase_shifter(lateral_straggle_um=...)` smears every doping step of
   the drawn device into an error function of that standard deviation, as implant straggle and diffusion do, and hands
   the Study the result through `Device.doping` as `TableDoping` profiles — one per dopant present in each Region, so

@@ -53,6 +53,27 @@ class TestSimulationAssembly:
         assert sim.cross_section.window == pytest.approx((-21.0, -19.0))
 
 
+class TestTheOxideAroundTheJunction:
+    """Ticket 05: the electrostatic solve reaches into the surrounding oxide."""
+
+    def test_the_stacks_oxide_joins_the_solve_as_an_insulator(self, study):
+        sim = study.charge.simulation()
+        [oxide] = sim.insulators
+        assert oxide.region == "sio2"
+        assert oxide.relative_permittivity == pytest.approx(
+            study.stack.materials["sio2"]["permittivity"]
+        )
+
+    def test_no_doped_region_is_declared_insulating(self, study):
+        sim = study.charge.simulation()
+        doped = {profile.region for profile in sim.doping}
+        assert doped.isdisjoint(oxide.region for oxide in sim.insulators)
+
+    def test_it_can_be_turned_off(self, study):
+        study.charge(oxide=False)
+        assert study.charge.simulation().insulators == []
+
+
 class TestMissingExtra:
     def test_running_without_devsim_names_the_extra(self, study, monkeypatch):
         monkeypatch.setitem(sys.modules, "devsim", None)

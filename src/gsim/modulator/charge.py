@@ -43,6 +43,12 @@ class ChargeStage(Stage):
         mesh: Keyword arguments forwarded to the mesh pipeline.
         airbox: Background region around the Window.
         temperature: Lattice temperature (K).
+        oxide: Solve Poisson in the oxide around the doped slab as well as
+            in the silicon — the potential alone, no carriers — so the
+            capacitance and the series-RC Junction branch count the field
+            fringing around the Junction. Off, the silicon's surface is a
+            zero-normal-field wall. The Carrier map is the same either
+            way: doped Regions only.
         mobility: Low-field mobility model the transport solve runs on,
             and — unless the carriers Stage is given its own — the one
             the RF conductivity is evaluated with.
@@ -66,6 +72,7 @@ class ChargeStage(Stage):
     )
     airbox: dict[str, Any] = Field(default_factory=STAGE_AIRBOX.copy)
     temperature: float = Field(default=300.0, gt=0.0)
+    oxide: bool = True
     mobility: MobilityModel = Field(default_factory=MobilityModel.masetti_silicon)
     settings: dict[str, Any] = Field(default_factory=dict)
 
@@ -122,7 +129,27 @@ class ChargeStage(Stage):
                         concentration_cm3=device.concentration_cm3(region),
                     )
                 )
+        if self.oxide:
+            for region, permittivity in self._oxide_regions().items():
+                sim.add_insulator(region=region, relative_permittivity=permittivity)
         return sim
+
+    def _oxide_regions(self) -> dict[str, float]:
+        """The stack's background dielectrics: mesh Region to permittivity.
+
+        The mesh names a background dielectric's Region after its
+        material, so two dielectric slabs of one material are one Region.
+        """
+        stack = self._require_study().stack
+        doped = set(self._require_study().device.doped_regions)
+        regions: dict[str, float] = {}
+        for dielectric in stack.dielectrics:
+            material = str(dielectric["material"])
+            permittivity = stack.materials.get(material, {}).get("permittivity")
+            if material in doped or permittivity is None:
+                continue
+            regions[material] = float(permittivity)
+        return regions
 
     def swept_contact(self) -> str:
         """Name of the Contact the sweep drives.

@@ -210,3 +210,83 @@ class TestJunctionModelExport:
         assert model.bias_v.tolist() == sweep.voltages.tolist()
         assert model.r_s_ohm_m.tolist() == list(r_s)
         assert model.c_j_f_per_m.tolist() == list(c_j)
+
+
+@pytest.fixture(scope="module")
+def sweeps(tmp_path_factory):
+    """The demo device's Bias sweep, silicon alone and with its oxide."""
+    pytest.importorskip("devsim")
+    solved = {}
+    for oxide in (False, True):
+        demo = build_demo()
+        study = Study(
+            component=demo.component,
+            stack=demo.stack,
+            device=demo.device,
+            output_dir=tmp_path_factory.mktemp(f"modulator-oxide-{oxide}"),
+        )
+        study.charge(biases=[0.0, 0.5, 1.0, 2.0], oxide=oxide)
+        solved[oxide] = study.charge.run()
+    return solved
+
+
+@pytest.mark.tcad_local
+class TestTheOxideAroundTheJunction:
+    """Ticket 05: Poisson is solved in the oxide too, carriers stay in silicon."""
+
+    def test_the_fringing_field_adds_capacitance_at_every_bias(self, sweeps):
+        gain_pf_per_m = (
+            sweeps[True].capacitance_f_per_cm - sweeps[False].capacitance_f_per_cm
+        ) * 1e14
+        # A path in parallel with the depleted silicon, and nearly blind
+        # to the depletion width: much the same gain across the sweep.
+        assert np.all(gain_pf_per_m > 60.0)
+        assert np.all(gain_pf_per_m < 130.0)
+
+    def test_the_junction_branch_carries_it(self, sweeps):
+        with_oxide = np.asarray(sweeps[True].junction_branch().c_j_f_per_m)
+        silicon_only = np.asarray(sweeps[False].junction_branch().c_j_f_per_m)
+        assert np.all(with_oxide > silicon_only)
+
+    def test_the_device_is_still_at_equilibrium_at_zero_bias(self, sweeps):
+        """A node tied into two Interfaces drives a current at 0 V; none is."""
+        carriers = sweeps[True].points[0].carriers
+        product = carriers.electrons_cm3 * carriers.holes_cm3
+        assert product.max() == pytest.approx(product.min(), rel=1e-6)
+        assert abs(sweeps[True].points[0].currents_a_per_cm["cathode"]) < 1e-20
+
+    def test_the_carrier_map_holds_the_doped_regions_only(self, sweeps):
+        for with_oxide, silicon_only in zip(
+            sweeps[True].points, sweeps[False].points, strict=True
+        ):
+            assert set(with_oxide.carriers.region) == {
+                "n_pad",
+                "n_rib",
+                "p_rib",
+                "p_pad",
+            }
+            assert with_oxide.carriers.x_um.size == silicon_only.carriers.x_um.size
+
+    def test_the_depletion_formula_is_the_silicon_path_alone(self, sweeps):
+        """The analytic comparison, its tolerance revisited for the oxide.
+
+        The depletion approximation is a parallel plate through the
+        depleted silicon. The silicon-only solve is that plate, and sits
+        within 20 % of it (worst at 0 V, where the depletion edge is
+        softest). With the oxide the solve counts a second, fringing path
+        the formula does not have — about 90 pF/m beside a plate of
+        260 to 470 pF/m — so it stands 30 to 40 % above the formula, by
+        design rather than by error: the bound is 45 %, and the silicon
+        path inside it is what the formula still checks.
+        """
+        from gsim.common.stack.pn_junction import PNJunctionConfig
+        from gsim.tcad.validation import compare_capacitance
+
+        junction = PNJunctionConfig(na_cm3=1e18, nd_cm3=1e18)
+        silicon_only = compare_capacitance(junction, sweeps[False], height_um=0.22)
+        with_oxide = compare_capacitance(junction, sweeps[True], height_um=0.22)
+
+        assert silicon_only.within(0.20)
+        assert with_oxide.within(0.45)
+        assert not with_oxide.within(0.25)
+        assert np.all(with_oxide.c_tcad_f_per_cm > with_oxide.c_analytic_f_per_cm)

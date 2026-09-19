@@ -32,7 +32,7 @@ from gsim.tcad.doping import (
     DopingProfile,
     acceptor_donor_concentrations,
 )
-from gsim.tcad.mesh import UM_TO_CM, write_scaled_msh
+from gsim.tcad.mesh import UM_TO_CM, line_group_points, write_scaled_msh
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
 from gsim.tcad.runtime import devsim_output, import_simple_physics, require_devsim
 
@@ -43,6 +43,17 @@ logger = logging.getLogger(__name__)
 # re-run after a configuration change, would otherwise collide on the
 # second setup with "a mesh already exists with name ...".
 _DEVSIM_NAME_IDS = itertools.count()
+
+
+#: Vacuum permittivity in DEVSIM's units (F/cm).
+VACUUM_PERMITTIVITY_F_PER_CM: float = 8.8541878128e-14
+
+#: Rounding of node coordinates (cm) when matching a mesh node to a DEVSIM
+#: region node: 1e-10 cm is a picometre, far below any element.
+_NODE_KEY_CM: float = 1e-10
+
+#: DEVSIM material name given to the insulating regions.
+INSULATOR_MATERIAL: str = "Oxide"
 
 
 def _unique_devsim_name(kind: str) -> str:
@@ -62,6 +73,20 @@ def _release_gsim_devices(devsim: Any) -> None:
         with suppress(Exception):
             devsim.delete_device(device=name)
         _LIVE_DEVICES.discard(name)
+
+
+class Insulator(BaseModel):
+    """An insulating Region taking part in the electrostatic solve only.
+
+    Attributes:
+        region: Mesh region (volume group) name, e.g. ``"sio2"``.
+        relative_permittivity: Static relative permittivity of the Region.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    region: str
+    relative_permittivity: float = Field(gt=0.0)
 
 
 class ChargeTransportSim(BaseModel):
@@ -97,6 +122,10 @@ class ChargeTransportSim(BaseModel):
     material: str = "Silicon"
     #: Analytic doping profiles (each names the mesh region it applies to).
     doping: list[DopingProfile] = Field(default_factory=list)
+    #: Insulating Regions solved for the potential alone (see
+    #: :meth:`add_insulator`); none by default, which keeps the
+    #: electrostatics inside the doped semiconductor.
+    insulators: list[Insulator] = Field(default_factory=list)
     #: Low-field mobility against the total doping, evaluated node by node.
     #: DEVSIM's own silicon defaults are two constants (400 / 200 cm^2/Vs)
     #: whatever the doping, which misstates the series resistance of a slab
@@ -140,6 +169,9 @@ class ChargeTransportSim(BaseModel):
     _device: str | None = PrivateAttr(default=None)
     _contact_regions: dict[str, str] = PrivateAttr(default_factory=dict)
     _interface_regions: dict[str, tuple[str, str]] = PrivateAttr(default_factory=dict)
+    _insulator_interfaces: dict[str, tuple[str, str]] = PrivateAttr(
+        default_factory=dict
+    )
     _dd_initialized: bool = PrivateAttr(default=False)
     _current_bias: dict[str, float] = PrivateAttr(default_factory=dict)
 
@@ -215,6 +247,36 @@ class ChargeTransportSim(BaseModel):
     def add_doping(self, profile: DopingProfile) -> None:
         """Add an analytic doping profile (see :mod:`gsim.tcad.doping`)."""
         self.doping = [*self.doping, profile]
+
+    def add_insulator(self, *, region: str, relative_permittivity: float) -> None:
+        """Include an insulating Region in the electrostatic solve.
+
+        By default Poisson is solved in the doped semiconductor alone, its
+        boundary with the surrounding insulator a zero-normal-field wall:
+        every field line between the two sides of the Junction is forced
+        through the depleted silicon. An insulator declared here joins the
+        solve as a Region of its own carrying the potential and nothing
+        else — no carriers, no doping, no mobility — with the potential
+        continuous across every Interface it shares with a doped Region
+        or another insulator, so the field may fringe around the Junction
+        through it and the small-signal capacitance and admittance count
+        that path. Those Interfaces are the shared curves the mesh
+        pipeline already tags; nothing further is declared. The Carrier
+        map is unchanged: it holds the doped Regions only.
+
+        The insulator's outer boundary, the electrode faces it touches
+        included, stays a zero-normal-field wall: a Contact is where
+        metal meets a semiconductor, and the capacitance between the
+        electrodes themselves belongs to the RF solve, not to this one.
+
+        Args:
+            region: Mesh region (volume group) name, e.g. ``"sio2"``.
+            relative_permittivity: Static relative permittivity.
+        """
+        self.insulators = [
+            *self.insulators,
+            Insulator(region=region, relative_permittivity=relative_permittivity),
+        ]
 
     @property
     def geometry(self) -> Any:
@@ -353,6 +415,7 @@ class ChargeTransportSim(BaseModel):
         self._dd_initialized = False
         self._contact_regions = {}
         self._interface_regions = {}
+        self._insulator_interfaces = {}
         self._current_bias = {}
 
     def _device_regions(self) -> list[str]:
@@ -386,6 +449,20 @@ class ChargeTransportSim(BaseModel):
                 f"mesh. Available regions: {sorted(volumes)}"
             )
 
+        insulating = [insulator.region for insulator in self.insulators]
+        missing = [r for r in insulating if r not in volumes]
+        if missing:
+            raise ValueError(
+                f"Insulating regions {missing} are not volume groups on the "
+                f"mesh. Available regions: {sorted(volumes)}"
+            )
+        doped = [r for r in insulating if r in regions]
+        if doped:
+            raise ValueError(
+                f"Regions {doped} are declared insulating and carry a doping "
+                "profile; a Region is one or the other."
+            )
+
         self._contact_regions = {}
         for spec in self.contact_specs:
             if spec.name not in contact_lines:
@@ -400,6 +477,16 @@ class ChargeTransportSim(BaseModel):
                     f"device regions {regions}: it connects "
                     f"'{spec.layer_a}' and '{spec.layer_b}'. Add a doping "
                     "profile for the semiconductor side of the contact."
+                )
+            walled = [s for s in (spec.layer_a, spec.layer_b) if s in insulating]
+            if walled:
+                raise ValueError(
+                    f"Contact '{spec.name}' lies on the boundary between "
+                    f"'{spec.layer_a}' and '{spec.layer_b}', and "
+                    f"'{walled[0]}' is declared insulating: one curve cannot "
+                    "be both a Contact and a semiconductor-insulator "
+                    "Interface. Declare the Contact against its electrode, "
+                    "or leave the insulator out."
                 )
             self._contact_regions[spec.name] = sides[0]
         if not self._contact_regions:
@@ -422,6 +509,20 @@ class ChargeTransportSim(BaseModel):
                     f"with device regions {regions}."
                 )
             self._interface_regions[spec.name] = (spec.layer_a, spec.layer_b)
+
+        # The Interfaces an insulator shares with a doped Region or with
+        # another insulator are the pairwise shared-curve groups the mesh
+        # pipeline tags on its own ("interface_<a>_<b>").
+        shared_curves = set(groups.get("interface_surfaces", {}))
+        self._insulator_interfaces = {}
+        for index, insulator in enumerate(insulating):
+            for other in [*regions, *insulating[:index]]:
+                for name in (
+                    f"interface_{other}_{insulator}",
+                    f"interface_{insulator}_{other}",
+                ):
+                    if name in shared_curves:
+                        self._insulator_interfaces[name] = (other, insulator)
         return regions
 
     def _apply_doping(self, devsim: Any, device: str, region: str) -> None:
@@ -469,6 +570,82 @@ class ChargeTransportSim(BaseModel):
                 edge_model=f"{name}Edge",
                 average_type="arithmetic",
             )
+
+    def _bind_insulator_interfaces(self, devsim: Any, device: str) -> list[str]:
+        """Create the insulator Interfaces node by node; return their names.
+
+        The mesh already tags the curves an insulator shares with each
+        neighbour, but DEVSIM cannot take them whole: a node that carries
+        two Interfaces — the end of every Interface between doped Regions,
+        where the insulator meets both — assembles neither correctly, and
+        the device then drives a current through itself at zero bias. So
+        each Interface is built from its node pairs
+        (``create_interface_from_nodes``), leaving out the nodes that
+        already carry a Contact, a declared Interface or an earlier
+        insulator Interface. The insulator's own node at such a point
+        stays an ordinary interior node of the insulator, tied to the
+        silicon through its neighbours one element away.
+        """
+        if not self._insulator_interfaces:
+            return []
+        mesh_path = self.devsim_mesh_path
+
+        def keys(points_cm: NDArray[np.float64]) -> list[tuple[int, int]]:
+            """Coordinates as hashable keys, rounded far below any element."""
+            return [
+                (round(float(x) / _NODE_KEY_CM), round(float(y) / _NODE_KEY_CM))
+                for x, y in points_cm
+            ]
+
+        def region_nodes(region: str) -> dict[tuple[int, int], int]:
+            """DEVSIM's node index of *region* at each coordinate key."""
+            coords = np.column_stack(
+                [
+                    np.asarray(
+                        devsim.get_node_model_values(
+                            device=device, region=region, name=axis
+                        ),
+                        dtype=np.float64,
+                    )
+                    for axis in ("x", "y")
+                ]
+            )
+            return {key: i for i, key in enumerate(keys(coords))}
+
+        nodes = {
+            region: region_nodes(region)
+            for pair in self._insulator_interfaces.values()
+            for region in pair
+        }
+        taken = {
+            key
+            for name in (
+                *(spec.name for spec in self.contact_specs),
+                *self._interface_regions,
+            )
+            for key in keys(line_group_points(mesh_path, name))
+        }
+
+        bound: list[str] = []
+        for name, (other, insulator) in self._insulator_interfaces.items():
+            shared = [
+                key
+                for key in keys(line_group_points(mesh_path, name))
+                if key not in taken and key in nodes[other] and key in nodes[insulator]
+            ]
+            if not shared:
+                continue
+            taken.update(shared)
+            devsim.create_interface_from_nodes(
+                device=device,
+                name=name,
+                region0=other,
+                region1=insulator,
+                nodes0=[nodes[other][key] for key in shared],
+                nodes1=[nodes[insulator][key] for key in shared],
+            )
+            bound.append(name)
+        return bound
 
     def setup_device(self, device: str | None = None, *, verbose: bool = False) -> str:
         """Create the DEVSIM device from the shared mesh.
@@ -529,6 +706,13 @@ class ChargeTransportSim(BaseModel):
                 region=region,
                 material=self.material,
             )
+        for insulator in self.insulators:
+            devsim.add_gmsh_region(
+                mesh=mesh_name,
+                gmsh_name=insulator.region,
+                region=insulator.region,
+                material=INSULATOR_MATERIAL,
+            )
         for spec in self.contact_specs:
             devsim.add_gmsh_contact(
                 mesh=mesh_name,
@@ -548,10 +732,21 @@ class ChargeTransportSim(BaseModel):
         devsim.finalize_mesh(mesh=mesh_name)
         devsim.create_device(mesh=mesh_name, device=device)
 
+        bound = self._bind_insulator_interfaces(devsim, device)
         for region in regions:
             self._apply_doping(devsim, device, region)
             sp.SetSiliconParameters(device, region, self.temperature)
             sp.CreateSiliconPotentialOnly(device, region)
+        for insulator in self.insulators:
+            # Potential only, for good: the drift-diffusion stage never
+            # reaches these Regions, so they hold no carriers.
+            devsim.set_parameter(
+                device=device,
+                region=insulator.region,
+                name="Permittivity",
+                value=insulator.relative_permittivity * VACUUM_PERMITTIVITY_F_PER_CM,
+            )
+            sp.CreateOxidePotentialOnly(device, insulator.region)
         for spec in self.contact_specs:
             # Each contact is driven through a circuit voltage source so the
             # small-signal AC solve can read the terminal admittance (the
@@ -568,7 +763,7 @@ class ChargeTransportSim(BaseModel):
                 device, self._contact_regions[spec.name], spec.name, True
             )
             self._current_bias[spec.name] = 0.0
-        for name in self._interface_regions:
+        for name in (*self._interface_regions, *bound):
             self._interface_continuity(devsim, sp, device, name, "Potential")
 
         self._device = device
@@ -853,4 +1048,4 @@ class ChargeTransportSim(BaseModel):
         return BiasSweepResult(contact=contact, points=points)
 
 
-__all__ = ["ChargeTransportSim"]
+__all__ = ["ChargeTransportSim", "Insulator"]

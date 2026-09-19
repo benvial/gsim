@@ -59,6 +59,9 @@ class FakeDevsim(types.ModuleType):
     def add_gmsh_interface(self, **kwargs):
         self._record("add_gmsh_interface", **kwargs)
 
+    def create_interface_from_nodes(self, **kwargs):
+        self._record("create_interface_from_nodes", **kwargs)
+
     def interface_model(self, **kwargs):
         self._record("interface_model", **kwargs)
 

@@ -254,22 +254,34 @@ class LoadedLineComparison(BaseModel):
     electrode) RLGC with the charge solve's series-RC junction branch per
     unit length. Both are the same compact model assembled two ways, so
     their n_RF, loss and Z0 should agree — up to what the lumped branch
-    cannot capture of the distributed junction. The known systematic gap:
-    the undepleted slab conducts, so in the direct solve it extends the
-    electrode plates toward the junction and every field path (oxide,
-    substrate, air) sees the narrowed gap, while the assembly keeps the
-    bare electrode's shunt parameters and adds only the junction's own
-    R_s/C_j — the assembled route therefore reads consistently light. The
-    two agree on the series R and L; the whole gap is shunt capacitance
-    the assembly does not have, and the loss feels it twice, since the
-    shunt conductance of a capacitance charging through the slab goes as
-    its square. On the demo devices the assembly sits 15-20% low on n_RF,
-    20-55% low on the loss and 20-35% high on |Z0| (the more resistive
-    the slab and the finer the charge mesh resolves it, the lossier the
-    direct solve), flat across 10-30 GHz. The default
-    tolerances of :meth:`check` are set just outside that gap; a route
-    bug (a dropped conductivity, a wrong-branch mode, a unit slip)
-    overshoots them by multiples.
+    cannot capture of the distributed junction.
+
+    What is measured. The two routes agree on the series R and L to 1 %.
+    On the shunt capacitance they agree once the charge solve counts the
+    field fringing through the oxide around the Junction (the charge
+    Stage's ``oxide=True``, the default): on the rib Phase shifter the
+    assembled route then sits within 2 % on n_RF and 8 % on |Z0|, its
+    shunt C within 20 pF/m of the direct solve's 380-420 pF/m. With a
+    silicon-only Poisson domain the assembly lacked some 140 pF/m and
+    read 15-18 % low on n_RF and 23-25 % high on |Z0|. On the abrupt demo
+    device, whose electrodes stand 0.3 um from the Junction, the oxide
+    closes a third of the capacitance gap and no more: 14 % low on n_RF,
+    19 % high on |Z0|. What is left there is not accounted for.
+
+    The loss does not follow the capacitance. With the shunt C matched
+    to 5 % on the rib device the assembled route still reads 33-36 % low
+    on the loss (25-31 % on the demo device), and the direct solve's
+    shunt conductance is twice the assembly's. The earlier reading, that
+    the whole loss gap was missing capacitance felt squared, did not
+    survive the capacitance being supplied; why the lumped series
+    R_s/C_j branch dissipates half of what the distributed slab does is
+    an open question, not a known property of the assembly. The gaps
+    are flat across 20-30 GHz and move by about 3 points of loss between
+    a 5 nm and a 20 nm charge mesh.
+
+    The default tolerances of :meth:`check` are set just outside those
+    gaps; a route bug (a dropped conductivity, a wrong-branch mode, a
+    unit slip) overshoots them by multiples.
 
     Attributes:
         direct: The direct loaded solve's line parameters.
@@ -323,16 +335,18 @@ class LoadedLineComparison(BaseModel):
     def check(
         self,
         *,
-        rtol_n_rf: float = 0.3,
-        rtol_alpha: float = 0.7,
-        rtol_z0: float = 0.45,
+        rtol_n_rf: float = 0.2,
+        rtol_alpha: float = 0.5,
+        rtol_z0: float = 0.25,
     ) -> None:
         """Fail loudly where the two routes disagree.
 
         The defaults sit just outside the systematic gap the class
-        docstring describes (the assembled route reading ~20% light on
-        the demo device), so they pass an honest assembly and fail a
-        broken route, which misses by multiples.
+        docstring describes, measured with the oxide in the charge solve
+        (at worst 14 % on n_RF, 36 % on the loss and 19 % on |Z0| across
+        the two demo devices), so they pass an honest assembly and fail
+        a broken route, which misses by multiples. A charge sweep solved
+        with ``oxide=False`` lands outside them on |Z0|.
 
         Args:
             rtol_n_rf: Relative tolerance on n_RF.

@@ -37,7 +37,7 @@ from gsim.tcad.doping import (
     net_doping_cm3,
 )
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
-from gsim.tcad.sim import ChargeTransportSim
+from gsim.tcad.sim import ChargeTransportSim, Insulator
 from gsim.tcad.validation import (
     CapacitanceComparison,
     analytic_capacitance_f_per_cm,
@@ -55,6 +55,7 @@ __all__ = [
     "DopingProfile",
     "GaussianDoping",
     "ImplantDoping",
+    "Insulator",
     "StepDoping",
     "TableDoping",
     "acceptor_donor_concentrations",
