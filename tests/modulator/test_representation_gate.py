@@ -23,6 +23,11 @@ geometry, and that raising the strip count closes it. The failure ticket
 The index shift carries the tighter bound of the two: a constant index
 offset between representations cancels out of ``VpiL``, and an error that
 moves with bias does not.
+
+On a real charge solve a second error joins the Strip count's: with the
+oxide in the charge solve the Carrier map varies in depth, and a Strip
+does not. ``TestOnARealChargeSolve`` measures each where it stands alone,
+so the two cannot cancel into a pass.
 """
 
 from __future__ import annotations
@@ -130,7 +135,11 @@ def study_at(output_dir) -> Study:
 
 def solve(output_dir, *, n_strips: int | None) -> tuple[float, float]:
     """``(Re n_eff at the first bias, index shift across the pair)``."""
-    study = study_at(output_dir)
+    return read_optical(study_at(output_dir), n_strips=n_strips)
+
+
+def read_optical(study: Study, *, n_strips: int | None) -> tuple[float, float]:
+    """:func:`solve`'s pair, off a Study whose charge result is already set."""
     study.optical(route="femwell", n_strips=n_strips, num_modes=1)
     sweep = study.optical.run()
     return float(sweep.n_eff[0].real), float(sweep.index_shift[-1])
@@ -188,22 +197,79 @@ class TestTheGapRespondsToStripCount:
         assert fine < 0.5 * coarse
 
 
+#: The Strip count the gate runs on a real charge solve. The Strip-count
+#: error has to be small here, or it can cancel the depth error the oxide
+#: brings: at 16 Strips, oxide on, a -7 % binning error against a +7 %
+#: depth error read -0.04 % and passed the bound on nothing.
+SOLVED_STRIPS = 32
+
+#: Silicon only, the Carrier map is uniform in depth and a Strip loses
+#: nothing to it: the Staircase converges on the continuous Route. 32 to
+#: 256 Strips measured -2.8 to -1.6 %, -2.8 % at 32. Each count is meshed
+#: afresh, which moves a count by a couple of per cent on its own (64
+#: Strips read -5.3 %), so the bound is held at ``SOLVED_STRIPS`` only and
+#: leaves about two points of headroom there.
+SOLVED_SHIFT_BAND_SILICON = (-0.05, 0.05)
+
+#: With the oxide the Carrier map varies in depth: the fringing field
+#: depletes the silicon's top and bottom surfaces first, and a Strip,
+#: uniform in depth, spreads that surface depletion over its whole height
+#: where the optical Mode is strongest. The Staircase then reads the index
+#: shift high by a plateau no Strip count moves: +6.4 % at 32 Strips, +6.4
+#: to +6.9 % at 128 and 256 (+4.1 % at 64, remeshing noise). The band is
+#: two-sided around that plateau. Above it, the depth error has grown;
+#: below it, something closed the gap — its lower edge is the silicon-only
+#: band's upper one, so a Staircase that converges cannot pass it. The
+#: plateau is not a tolerance but a known defect: when Strips follow the
+#: depth (modulator-realism ticket 10) this band is replaced by the
+#: silicon-only one.
+SOLVED_SHIFT_PLATEAU_OXIDE = (0.05, 0.09)
+
+
+@pytest.fixture(
+    scope="module",
+    params=[(False, SOLVED_SHIFT_BAND_SILICON), (True, SOLVED_SHIFT_PLATEAU_OXIDE)],
+    ids=["silicon", "oxide"],
+)
+def solved(request, tmp_path_factory):
+    """``(band, drawn, staircase)`` off one DEVSIM charge solve.
+
+    ``band`` is what the index shift's relative error has to fall in. The
+    continuous Route and the Staircase read the same Carrier maps, so the
+    gap between them is the representation and nothing else.
+    """
+    pytest.importorskip("devsim")
+    oxide, band = request.param
+    study = study_at(tmp_path_factory.mktemp(f"solved-oxide-{oxide}"))
+    study.charge(biases=list(BIASES), oxide=oxide)
+    drawn = read_optical(study, n_strips=None)
+    return band, drawn, read_optical(study, n_strips=SOLVED_STRIPS)
+
+
 @pytest.mark.tcad_local
 class TestOnARealChargeSolve:
-    def test_the_gate_holds_off_devsim_carrier_maps(self, tmp_path):
-        """The same bound, with the charge solve in front of it."""
-        pytest.importorskip("devsim")
+    """The gate with the charge solve in front of it, oxide off and on.
 
-        def solved(output_dir, *, n_strips):
-            study = study_at(output_dir)
-            study.charge.invalidate()
-            study.charge(biases=list(BIASES))
-            study.optical(route="femwell", n_strips=n_strips, num_modes=1)
-            sweep = study.optical.run()
-            return float(sweep.n_eff[0].real), float(sweep.index_shift[-1])
+    The canned maps above are uniform in depth, so they only test the
+    Strip count. A real charge solve with the oxide is not, and the depth
+    error it brings is the same size as the Strip-count error at 16 Strips
+    with the opposite sign. Each effect is measured where it stands alone:
+    silicon only for the Strip count, oxide on at a Strip count where the
+    binning error is small for the depth.
+    """
 
-        n_drawn, shift_drawn = solved(tmp_path / "continuous", n_strips=None)
-        n_eff, shift = solved(tmp_path / "strips", n_strips=max(STRIP_COUNTS))
-
+    def test_the_staircase_is_the_same_waveguide(self, solved):
+        """The coarse model's bound; the index shift is the one that matters."""
+        _, (n_drawn, _), (n_eff, _) = solved
         assert abs(n_eff - n_drawn) < N_EFF_RTOL * n_drawn
-        assert abs(shift - shift_drawn) < INDEX_SHIFT_RTOL_FINE * abs(shift_drawn)
+
+    def test_the_index_shift_falls_in_its_band(self, solved):
+        """Silicon only: convergence on the continuous Route.
+
+        Oxide on: the depth plateau, and only it. A shift that converges
+        fails here as surely as one above the plateau.
+        """
+        (low, high), (_, shift_drawn), (_, shift) = solved
+        assert shift_drawn > 0.0
+        error = shift / shift_drawn - 1.0
+        assert low < error < high, f"{error:+.2%}"
