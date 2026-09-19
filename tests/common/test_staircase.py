@@ -7,6 +7,7 @@ reduced onto it, and the Strips a Staircase draws from the result.
 
 from __future__ import annotations
 
+import warnings
 from itertools import pairwise
 from types import SimpleNamespace
 
@@ -126,7 +127,9 @@ class TestStripAveragesFromNodes:
         _edges, means = strip_averages_from_nodes(
             h, values, n_strips=1, v_um=v, v_range=(-0.1, 0.1)
         )
-        assert means[0] == pytest.approx(0.5)
+        # The field is bilinear, the interpolant linear on triangles: which
+        # diagonal splits a cell is the triangulation's choice.
+        assert means[0] == pytest.approx(0.5, rel=1e-3)
 
     def test_strips_track_the_band_averaged_profile(self):
         # A field varying across the band as well as along it: each strip
@@ -173,13 +176,6 @@ class TestStripAveragesFromNodes:
         ]
         np.testing.assert_allclose(means, expected, rtol=0.05)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "modulator-realism ticket 06: Strip averages weight nodes, not "
-            "area (this cloud reads 0.044 for an area mean of 0.5)"
-        ),
-    )
     def test_a_strip_is_averaged_over_its_area_not_over_its_nodes(self):
         # A charge-solve mesh refines the silicon's surfaces: a third of
         # its nodes sit on the top and bottom lines, which have no area.
@@ -206,6 +202,37 @@ class TestStripAveragesFromNodes:
         )
 
         np.testing.assert_allclose(means, 0.5, rtol=0.02)
+
+    def test_a_surface_row_a_rounding_above_the_band_is_part_of_it(self):
+        # A charge mesh hands the silicon's top surface over at
+        # 0.22000000000000003: the row where the depletion peaks once the
+        # oxide is in the solve, and not one to lose to a comparison.
+        height = 0.22
+        rows = np.array([0.0, 0.11, height + 3e-17 + np.spacing(height)])
+        columns = np.linspace(0.0, 1.0, 11)
+        h = np.tile(columns, rows.size)
+        v = np.repeat(rows, columns.size)
+        values = np.where(v > 0.2, 0.0, 1.0)  # depleted at the top surface
+
+        _edges, means = strip_averages_from_nodes(
+            h, values, n_strips=2, v_um=v, v_range=(0.0, height)
+        )
+
+        # Full to mid-height, falling to zero at the top: 3/4.
+        np.testing.assert_allclose(means, 0.75, rtol=1e-6)
+
+    def test_a_zero_column_tolerance_groups_exact_coordinates(self):
+        columns = np.linspace(0.0, 1.0, 11)
+        h = np.tile(columns, 3)
+        v = np.repeat([0.0, 0.11, 0.22], columns.size)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # a division by the tolerance
+            _edges, means = strip_averages_from_nodes(
+                h, 2.0 * h, n_strips=1, v_um=v, v_range=(0.0, 0.22), column_tol_um=0.0
+            )
+
+        assert means[0] == pytest.approx(1.0)
 
     def test_band_without_nodes_raises(self):
         h = np.linspace(0.0, 1.0, 11)

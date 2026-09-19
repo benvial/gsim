@@ -2,18 +2,56 @@
 
 ## Unreleased
 
+- Strip averages weight area, the charge mesh resolves the depletion region, and the oxide is in the charge solve by
+  default. Three changes that only hold together, and what followed from them:
+
+  - `strip_averages_from_nodes` averages a band of the Carrier map over its area (the mean over the band's height of the
+    cloud's linear interpolant, the field the continuous Route's transfer reads off the same nodes) instead of counting
+    nodes. A charge mesh puts a third of its nodes on the silicon's top and bottom lines, which have no area: once the
+    carriers vary in depth the node count over-read the carriers a Strip loses under bias by 33 to 80 %, and by more on
+    a finer mesh. `staircase_profile` sums its trapezoids Strip by Strip, so a depleted Strip decades below its
+    neighbours is no longer lost to cancellation. A band's `v_range` now takes the nodes within 1e-9 um of it
+    (`BAND_TOL_UM`): a charge mesh hands the silicon's top surface over at 0.22000000000000003, and that row, where the
+    depletion peaks, was dropped. A band is a rectangle of silicon: give a rib and the slab beside it a call each, as a
+    Staircase's segments do.
+  - The charge Stage holds its mesh to the refinement lines' size across the two Regions the Junction separates
+    (`ChargeStage.junction_boxes()`, through the new native-2D mesh option
+    `refinement_boxes=[(h_min, h_max, z_min, z_max, size)]` of `mesh()` / `MeshConfig`). The mesh pipeline sizes
+    elements on its lines and lets them grow at once with the distance, so the depletion edge, 50 nm from the Junction
+    under bias, sat in elements several times the refined size however fine the Junction line: the rib device's C_j at 0
+    V read 328 pF/m at the default size and 315 at 5 nm, against a converged 289 (10 and 5 nm boxes agree to 0.5 %, and
+    the silicon-only C(V) is now within 3 % of the depletion formula, from 7 %). No interpolation makes up for an
+    unresolved edge: a linear one smears it (a depleted width of 25 nm for 90), a log-space one over-reads the carriers
+    removed by 9 to 14 %. The charge solve costs about 1.5 times what it did. `refinement_boxes` in
+    `study.charge(mesh=...)` replaces the box. The option is a `MeshConfig` setting like the others: validated there,
+    kept across `mesh()` calls, meshed by `preview()` too, and refused on a 3D mesh.
+  - The continuous optical solve meshes the same boxes: a Carrier map with a resolved edge, transferred onto elements
+    several times coarser, read the index shift 15 % low (so V_pi L 15 % high) at the optical Stage's own 0.05 um.
+  - `ChargeStage.oxide` defaults to `True` (it was opt-in until Strips averaged by area). C_j and the series-RC Junction
+    branch count the field fringing around the Junction: 269 against 159 pF/m at 2 V on the rib device, a nearly
+    bias-independent 100 to 120 pF/m. **Every capacitance, Junction branch and loaded-line figure of a Study moves with
+    it**; `study.charge(oxide=False)` is the silicon-only solve. One limit comes with it: the Carrier map now varies in
+    depth, a Strip is uniform in depth, and an optical Staircase spreads the surface depletion over the whole height,
+    where the Mode is strongest. Against the continuous Route it reads the index shift 6 to 7 % high from 32 Strips up,
+    and no Strip count removes that (silicon only it converges: -2.8 % at 32 Strips, -1.6 % at 256). The continuous
+    Route, the optical Stage's default, is not affected.
+  - The loaded-line cross-check is settled on it. With the oxide the two routes agree on the rib device to 2-5 % on n_RF
+    and 10 % on |Z0| (shunt-C gap 10-40 pF/m, from 115-150 silicon only), and to 15 % and 23 % on the abrupt demo
+    device; the loss gap stays at 33-41 % and is not explained. `LoadedLineComparison.check()` tightens its defaults to
+    just outside that gap (`rtol_n_rf` 0.3 to 0.2, `rtol_alpha` 0.7 to 0.5, `rtol_z0` 0.45 to 0.3); a silicon-only
+    charge solve needs the new `SILICON_ONLY_RTOL`.
+  - An insulator Interface node of the mesh that matches no node of its two Regions is reported with a warning instead
+    of being dropped; C_j with the oxide on moves by 0.4 % between 10 and 5 nm, which bounds the error of the nodes the
+    binding leaves out on purpose.
+
 - The charge Window can include the oxide around the Junction.
   `ChargeTransportSim.add_insulator(region=, relative_permittivity=)` solves Poisson in an insulating Region as well —
-  the potential alone, continuous across the Interfaces it shares with the doped Regions, no carriers — and
-  `study.charge(oxide=True)` turns it on for the stack's oxide. The small-signal capacitance and the series-RC Junction
+  the potential alone, continuous across the Interfaces it shares with the doped Regions, no carriers — and the charge
+  Stage's `oxide` setting turns it on for the stack's oxide. The small-signal capacitance and the series-RC Junction
   branch then count the field fringing around the Junction: +79 to +96 pF/m on the abrupt demo device, 169.5 to 283.7
-  pF/m at 2 V on the rib device. The Carrier map still holds the doped Regions only. It is opt-in because the Carrier
-  map then varies in depth, and a Staircase's Strip average weights nodes rather than area, so both Staircases over-read
-  the surface depletion (a strict `xfail` test documents the averaging). This was a test of why the loaded-line
-  cross-check disagrees, and the finding is provisional: with the oxide the shunt-C, n_RF and |Z0| gaps close on the rib
-  device under today's Strips and do not under an area-weighted average; the loss gap stays above 30 % either way.
-  `LoadedLineComparison.check()` keeps its tolerances; its docstring drops the explanation the numbers do not support
-  and says what is measured.
+  pF/m at 2 V on the rib device (on the charge mesh of the time; the entry above has the converged figures). The Carrier
+  map still holds the doped Regions only. It shipped opt-in and is on by default since Strips average by area (the entry
+  above, which also settles the loaded-line cross-check this was a test of).
 
 - A graded Junction on the demo Phase shifter. `rib_phase_shifter(lateral_straggle_um=...)` smears every doping step of
   the drawn device into an error function of that standard deviation, as implant straggle and diffusion do, and hands

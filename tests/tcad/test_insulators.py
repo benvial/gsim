@@ -9,6 +9,8 @@ binding needs to find its pairs.
 
 from __future__ import annotations
 
+import warnings
+
 import meshio
 import numpy as np
 import pytest
@@ -168,6 +170,26 @@ class TestInterfaces:
             tied = _node_coordinates(devsim, call, 1)
             distance = np.linalg.norm(tied[:, None, :] - taken[None, :, :], axis=-1)
             assert distance.min() > 1e-9
+
+    def test_a_mesh_node_the_regions_do_not_hold_is_reported(
+        self, oxide_sim, fake_devsim
+    ):
+        # The pairs are found by coordinate. Should DEVSIM's nodes not sit
+        # where the mesh file puts them, continuity would be lost with
+        # nothing said.
+        devsim, _sp = fake_devsim
+        devsim.node_coords = {
+            axis: [value + 3e-9 for value in values]
+            for axis, values in devsim.node_coords.items()
+        }
+        with pytest.warns(UserWarning, match="match no node"):
+            oxide_sim.setup_device()
+        assert devsim.called("create_interface_from_nodes") == []
+
+    def test_a_matched_mesh_raises_no_such_warning(self, oxide_sim):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            oxide_sim.setup_device()
 
     def test_no_insulator_means_no_node_built_interface(self, meshed_sim, fake_devsim):
         devsim, _sp = fake_devsim

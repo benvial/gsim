@@ -700,6 +700,9 @@ class PalaceSimMixin:
         high_order_elements: bool | None = None,
         high_order_order: int | None = None,
         high_order_optimize: bool | None = None,
+        refinement_boxes: (
+            list[tuple[float, float, float, float, float]] | None
+        ) = None,
     ) -> MeshConfig:
         """Build mesh config from preset with optional overrides.
 
@@ -785,6 +788,7 @@ class PalaceSimMixin:
             mesh_config.high_order_elements = existing_config.high_order_elements
             mesh_config.high_order_order = existing_config.high_order_order
             mesh_config.high_order_optimize = existing_config.high_order_optimize
+            mesh_config.refinement_boxes = list(existing_config.refinement_boxes)
 
         # Preserve planar_conductors from sim.mesh_config if not
         # explicitly provided via sim.mesh(planar_conductors=...)
@@ -829,6 +833,8 @@ class PalaceSimMixin:
             mesh_config.high_order_order = high_order_order
         if high_order_optimize is not None:
             mesh_config.high_order_optimize = high_order_optimize
+        if refinement_boxes is not None:
+            mesh_config.refinement_boxes = refinement_boxes
         mesh_config.show_gui = show_gui
 
         return mesh_config
@@ -1272,6 +1278,7 @@ class PalaceSimMixin:
             high_order_elements=mesh_config.high_order_elements,
             high_order_order=mesh_config.high_order_order,
             high_order_optimize=mesh_config.high_order_optimize,
+            refinement_boxes=mesh_config.refinement_boxes,
             verbosity=gmsh_verbosity,
             decimate_tolerance=decimate_tolerance,
         )
@@ -1497,6 +1504,7 @@ class PalaceSimMixin:
                 high_order_elements=mesh_config.high_order_elements,
                 high_order_order=mesh_config.high_order_order,
                 high_order_optimize=mesh_config.high_order_optimize,
+                refinement_boxes=mesh_config.refinement_boxes,
                 decimate_tolerance=decimate_tolerance,
             )
 
@@ -1535,6 +1543,9 @@ class PalaceSimMixin:
         high_order_elements: bool | None = None,
         high_order_order: int | None = None,
         high_order_optimize: bool | None = None,
+        refinement_boxes: (
+            list[tuple[float, float, float, float, float]] | None
+        ) = None,
     ) -> SimulationResult:
         """Generate the mesh for Palace simulation.
 
@@ -1582,6 +1593,10 @@ class PalaceSimMixin:
             high_order_elements: Enable high-order geometric mesh elements.
             high_order_order: Polynomial order for high-order elements.
             high_order_optimize: Run gmsh high-order optimization after meshing.
+            refinement_boxes: Native-2D cross-section meshes only: boxes held
+                to an element size, each ``(h_min, h_max, z_min, z_max, size)``
+                in um. Refinement lines size the elements on them only; a box
+                holds the size over an area.
 
         Returns:
             SimulationResult with mesh path
@@ -1630,6 +1645,7 @@ class PalaceSimMixin:
             high_order_elements=high_order_elements,
             high_order_order=high_order_order,
             high_order_optimize=high_order_optimize,
+            refinement_boxes=refinement_boxes,
         )
 
         if merge_via_distance is not None:

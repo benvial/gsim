@@ -42,6 +42,7 @@ from gsim.common.twmzm import (
 )
 
 __all__ = [
+    "SILICON_ONLY_RTOL",
     "LoadedLineComparison",
     "OpticalPhaseSweep",
     "RFLineParams",
@@ -246,6 +247,17 @@ def line_params_from_gamma(
     )
 
 
+#: The :meth:`LoadedLineComparison.check` tolerances a silicon-only charge
+#: solve (``study.charge(oxide=False)``) needs: just outside the gap
+#: measured without the fringing field in C_j, at worst 25 % on n_RF, 59 %
+#: on the loss and 42 % on |Z0| across the two demo devices.
+SILICON_ONLY_RTOL: dict[str, float] = {
+    "rtol_n_rf": 0.3,
+    "rtol_alpha": 0.7,
+    "rtol_z0": 0.5,
+}
+
+
 class LoadedLineComparison(BaseModel):
     """The two loaded-line routes side by side, at one Bias point.
 
@@ -256,30 +268,31 @@ class LoadedLineComparison(BaseModel):
     their n_RF, loss and Z0 should agree — up to what the lumped branch
     cannot capture of the distributed junction.
 
-    What is measured. The two routes agree on the series R and L to 1 %;
-    the gap is in the shunt branch. With the charge solve's default,
-    Poisson solved in the doped silicon alone, the assembled route reads 15-22 % low on
-    n_RF, 32-55 % low on the loss and 23-31 % high on |Z0| on the two
-    demo devices, flat across 20-30 GHz: the direct solve finds 105-270
-    pF/m more shunt capacitance and, on the rib Phase shifter, about
-    four times the shunt conductance.
+    What is measured, at 20 and 30 GHz on the two demo devices. The two
+    routes agree on the series R and L to 1 %; the gap is in the shunt
+    branch. With Poisson solved in the doped silicon alone
+    (``study.charge(oxide=False)``) the assembled route reads 16-25 % low
+    on n_RF, 46-59 % low on the loss and 25-42 % high on |Z0|: the direct
+    solve finds 115-150 pF/m more shunt capacitance on the rib Phase
+    shifter. Most of that is the field fringing through the oxide around
+    the Junction, between the two conducting halves of the silicon, which
+    a silicon-only charge solve cannot see. With the oxide in the charge
+    solve, the default, C_j carries it: on the rib Phase shifter the
+    shunt-C gap falls to 10-40 pF/m and the routes agree to 2-5 % on n_RF
+    and 10 % on |Z0|; on the abrupt demo device, whose electrodes stand
+    0.3 um from the Junction, they narrow to 15 % and 23 %.
 
-    What is provisional. Solving Poisson in the oxide around the Junction
-    as well (the charge Stage's ``oxide=True``) adds the fringing field
-    to C_j, and on the rib Phase shifter the shunt-C, n_RF and |Z0| gaps
-    then close (to 20 pF/m, 2 % and 8 %) — with the Staircase's Strips
-    averaged as they are today, by node count. Averaged by area instead
-    they do not close, because the direct solve itself moves: a Strip's
-    value at the depletion edge depends on how a charge mesh that does
-    not resolve that edge is averaged. Until that is settled the oxide
-    is opt-in and neither reading is a result. The loss gap is an open
-    question either way: it stays above 30 % with the capacitance
-    matched, so an earlier reading, that it was the missing capacitance
-    felt squared, is not supported.
+    What is not explained. The loss gap stays at 33-41 % with the
+    capacitance matched, and the direct solve's shunt conductance is two
+    to three times the assembly's on the rib Phase shifter (ten times on
+    the abrupt demo device), so the gap is not the missing capacitance
+    felt squared. The direct solve is the reference.
 
-    The default tolerances of :meth:`check` are set just outside the
-    silicon-only gap; a route bug (a dropped conductivity, a wrong-branch
-    mode, a unit slip) overshoots them by multiples.
+    The default tolerances of :meth:`check` are set just outside the gap
+    measured with the oxide in the charge solve; a route bug (a dropped
+    conductivity, a wrong-branch mode, a unit slip) overshoots them by
+    multiples. A silicon-only charge solve needs
+    :data:`SILICON_ONLY_RTOL`.
 
     Attributes:
         direct: The direct loaded solve's line parameters.
@@ -333,17 +346,18 @@ class LoadedLineComparison(BaseModel):
     def check(
         self,
         *,
-        rtol_n_rf: float = 0.3,
-        rtol_alpha: float = 0.7,
-        rtol_z0: float = 0.45,
+        rtol_n_rf: float = 0.2,
+        rtol_alpha: float = 0.5,
+        rtol_z0: float = 0.3,
     ) -> None:
         """Fail loudly where the two routes disagree.
 
         The defaults sit just outside the systematic gap the class
-        docstring describes (at worst 22 % on n_RF, 55 % on the loss and
-        31 % on |Z0| across the two demo devices, silicon-only charge
+        docstring describes (at worst 15 % on n_RF, 41 % on the loss and
+        23 % on |Z0| across the two demo devices, the oxide in the charge
         solve), so they pass an honest assembly and fail a broken route,
-        which misses by multiples.
+        which misses by multiples. Pass ``**SILICON_ONLY_RTOL`` for a
+        charge solve run with ``oxide=False``.
 
         Args:
             rtol_n_rf: Relative tolerance on n_RF.

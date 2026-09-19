@@ -19,6 +19,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import warnings
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -628,12 +629,18 @@ class ChargeTransportSim(BaseModel):
         }
 
         bound: list[str] = []
+        unmatched: dict[str, int] = {}
         for name, (other, insulator) in self._insulator_interfaces.items():
-            shared = [
+            free = [
                 key
                 for key in keys(line_group_points(mesh_path, name))
-                if key not in taken and key in nodes[other] and key in nodes[insulator]
+                if key not in taken
             ]
+            shared = [
+                key for key in free if key in nodes[other] and key in nodes[insulator]
+            ]
+            if len(shared) < len(free):
+                unmatched[name] = len(free) - len(shared)
             if not shared:
                 continue
             taken.update(shared)
@@ -646,6 +653,17 @@ class ChargeTransportSim(BaseModel):
                 nodes1=[nodes[insulator][key] for key in shared],
             )
             bound.append(name)
+        if unmatched:
+            # The pairs are found by coordinate; a node found on one side
+            # only is a point where the potential is not continuous.
+            warnings.warn(
+                "Insulator Interface nodes of the mesh match no node of their "
+                "two Regions and are left untied, so the potential is not "
+                "continuous there: "
+                + ", ".join(f"{count} on {name!r}" for name, count in unmatched.items())
+                + ".",
+                stacklevel=2,
+            )
         return bound
 
     def setup_device(self, device: str | None = None, *, verbose: bool = False) -> str:

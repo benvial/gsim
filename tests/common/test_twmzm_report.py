@@ -17,6 +17,7 @@ from gsim.common.twmzm import (
     walkoff_bandwidth,
 )
 from gsim.common.twmzm_report import (
+    SILICON_ONLY_RTOL,
     LoadedLineComparison,
     OpticalPhaseSweep,
     line_params_from_gamma,
@@ -474,19 +475,36 @@ class TestLoadedLineComparison:
         with pytest.raises(ValueError, match=r"Z0"):
             cmp.check()
 
-    def test_the_default_gate_sits_just_outside_the_silicon_only_gap(self):
-        """Measured on the demo devices: 22 % on n_RF, 31 % on |Z0|."""
+    def test_the_default_gate_sits_just_outside_the_measured_gap(self):
+        """Measured on the two demo devices, the oxide in the charge solve:
+        at worst 15 % on n_RF, 41 % on the loss and 23 % on |Z0|."""
         inside = LoadedLineComparison(
-            direct=_line(n_rf=2.0, z0=40.0), assembled=_line(n_rf=1.56, z0=52.4)
+            direct=_line(n_rf=2.0, alpha=40.0, z0=40.0),
+            assembled=_line(n_rf=1.70, alpha=23.6, z0=49.2),
         )
         inside.check()
 
-        slow = LoadedLineComparison(direct=_line(n_rf=2.0), assembled=_line(n_rf=1.3))
+        slow = LoadedLineComparison(direct=_line(n_rf=2.0), assembled=_line(n_rf=1.5))
         with pytest.raises(ValueError, match="n_RF"):
             slow.check()
-        high = LoadedLineComparison(direct=_line(z0=40.0), assembled=_line(z0=60.0))
+        quiet = LoadedLineComparison(
+            direct=_line(alpha=40.0), assembled=_line(alpha=18.0)
+        )
+        with pytest.raises(ValueError, match="loss"):
+            quiet.check()
+        high = LoadedLineComparison(direct=_line(z0=40.0), assembled=_line(z0=54.0))
         with pytest.raises(ValueError, match="Z0"):
             high.check()
+
+    def test_a_silicon_only_charge_solve_needs_the_wider_gate(self):
+        """Measured without the oxide: 25 % on n_RF, 59 % on the loss, 42 % on |Z0|."""
+        silicon_only = LoadedLineComparison(
+            direct=_line(n_rf=2.0, alpha=40.0, z0=40.0),
+            assembled=_line(n_rf=1.5, alpha=16.4, z0=56.8),
+        )
+        with pytest.raises(ValueError, match="n_RF"):
+            silicon_only.check()
+        silicon_only.check(**SILICON_ONLY_RTOL)
 
     def test_the_tolerances_are_adjustable(self):
         cmp = LoadedLineComparison(direct=_line(n_rf=2.0), assembled=_line(n_rf=2.2))

@@ -47,17 +47,15 @@ class ChargeStage(Stage):
             in the silicon — the potential alone, no carriers — so the
             capacitance and the series-RC Junction branch count the field
             fringing around the Junction. The Carrier map holds the doped
-            Regions only either way. Off by default, for now: with the
-            oxide in the solve the fringing field depletes the silicon's
-            surfaces first, so the Carrier map varies in depth, and a
-            Staircase's Strip average weights nodes, not area. A third of
-            a charge mesh's nodes lie on the top and bottom surfaces, so
-            both the optical and the RF Staircase over-read the surface
-            depletion (carriers removed across a 4 V sweep, node average
-            over area average: 1.005 silicon-only, 1.354 with the oxide).
-            A continuous optical solve is not affected. Turn it on for
-            the Junction branch; read a Staircase built off it with that
-            in mind.
+            Regions only either way, but with the oxide it varies in
+            depth: the fringing field depletes the silicon's surfaces
+            first. A Staircase's Strips are uniform in depth and spread
+            that surface depletion over their whole height, where the
+            optical Mode is strongest: an optical Staircase then reads
+            the index shift about 7 % high, however many Strips it has
+            (the continuous optical solve is not affected). Turn it off
+            for the Poisson solve in the silicon alone that a
+            one-dimensional depletion formula describes.
         mobility: Low-field mobility model the transport solve runs on,
             and — unless the carriers Stage is given its own — the one
             the RF conductivity is evaluated with.
@@ -81,7 +79,7 @@ class ChargeStage(Stage):
     )
     airbox: dict[str, Any] = Field(default_factory=STAGE_AIRBOX.copy)
     temperature: float = Field(default=300.0, gt=0.0)
-    oxide: bool = False
+    oxide: bool = True
     mobility: MobilityModel = Field(default_factory=MobilityModel.masetti_silicon)
     settings: dict[str, Any] = Field(default_factory=dict)
 
@@ -142,6 +140,32 @@ class ChargeStage(Stage):
             for region, permittivity in self._oxide_regions().items():
                 sim.add_insulator(region=region, relative_permittivity=permittivity)
         return sim
+
+    def junction_boxes(self) -> list[tuple[float, float, float, float, float]]:
+        """The boxes this Stage's mesh is held to a size in, around the Junction.
+
+        The mesh pipeline sizes elements on its refinement lines — the
+        Junction, the silicon's surfaces — and lets the size grow at once
+        with the distance, so mid-slab and 50 nm from the Junction, where
+        the depletion edge sits under bias, an element is several times
+        the refined size. Carriers fall by decades across that edge: the
+        capacitance is then off by ten per cent and more, and nothing
+        downstream can read the edge's position off the Carrier map. The
+        two Regions the Junction separates are therefore held to the size
+        the lines get. ``refinement_boxes`` in :attr:`mesh` replaces them.
+
+        A Stage that carries the Carrier map onto a mesh of its own, not
+        onto Strips, needs the same boxes: a transfer onto coarser
+        elements smears the edge again.
+
+        Returns:
+            ``(h_min, h_max, z_min, z_max, size)`` boxes (um).
+        """
+        if "refinement_boxes" in self.mesh:
+            return [tuple(box) for box in self.mesh["refinement_boxes"]]
+        span = self._require_study().layout.junction_span
+        size = 0.5 * float(self.mesh["refined_mesh_size"])
+        return [(*span.h, *span.z, size)]
 
     def _oxide_regions(self) -> dict[str, float]:
         """The stack's insulating background dielectrics: Region to permittivity.
@@ -243,7 +267,7 @@ class ChargeStage(Stage):
             self._sim.reset_device()
         sim = self.simulation()
         self._sim = sim
-        sim.mesh(**self.mesh)
+        sim.mesh(**(self.mesh | {"refinement_boxes": self.junction_boxes()}))
         return sim.sweep(
             list(self.biases),
             contact=self.swept_contact(),

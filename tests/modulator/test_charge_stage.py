@@ -53,16 +53,48 @@ class TestSimulationAssembly:
         assert sim.cross_section.window == pytest.approx((-21.0, -19.0))
 
 
+class TestTheDepletionEdgeIsResolved:
+    """The mesh is held fine where the depletion edge moves, not only on lines."""
+
+    def _mesh_kwargs_of_a_run(self, study, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(
+            "gsim.tcad.sim.ChargeTransportSim.mesh",
+            lambda _self, **kwargs: seen.update(kwargs),
+        )
+        monkeypatch.setattr(
+            "gsim.tcad.sim.ChargeTransportSim.sweep",
+            lambda _self, _biases, **_kwargs: BiasSweepResult(
+                contact="cathode", points=[]
+            ),
+        )
+        monkeypatch.setattr("gsim.modulator.charge.require_devsim", lambda: None)
+        study.charge.run()
+        return seen
+
+    def test_the_junction_regions_are_held_to_the_lines_size(self, study, monkeypatch):
+        seen = self._mesh_kwargs_of_a_run(study, monkeypatch)
+        span = study.layout.junction_span
+        assert seen["refinement_boxes"] == [
+            (*span.h, *span.z, 0.5 * study.charge.mesh["refined_mesh_size"])
+        ]
+
+    def test_boxes_given_in_the_mesh_settings_are_kept(self, study, monkeypatch):
+        study.charge(mesh=study.charge.mesh | {"refinement_boxes": []})
+        assert self._mesh_kwargs_of_a_run(study, monkeypatch)["refinement_boxes"] == []
+
+
 class TestTheOxideAroundTheJunction:
     """Ticket 05: the electrostatic solve can reach into the surrounding oxide."""
 
-    def test_the_solve_is_silicon_only_unless_asked(self, study):
-        """Opt-in until Strips average by area (modulator-realism ticket 06)."""
-        assert study.charge.oxide is False
+    def test_the_oxide_is_in_the_solve_by_default(self, study):
+        assert study.charge.oxide is True
+
+    def test_the_solve_is_silicon_only_when_asked(self, study):
+        study.charge(oxide=False)
         assert study.charge.simulation().insulators == []
 
-    def test_asked_for_the_stacks_oxide_joins_the_solve_as_an_insulator(self, study):
-        study.charge(oxide=True)
+    def test_the_stacks_oxide_joins_the_solve_as_an_insulator(self, study):
         sim = study.charge.simulation()
         [oxide] = sim.insulators
         assert oxide.region == "sio2"

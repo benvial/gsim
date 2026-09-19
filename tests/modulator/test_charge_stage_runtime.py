@@ -180,6 +180,48 @@ class TestAGradedJunction:
 
 
 @pytest.mark.tcad_local
+class TestTheCapacitanceConvergesWithTheMesh:
+    """Modulator-realism ticket 06: the mesh resolves the depletion region."""
+
+    @staticmethod
+    def _capacitance_pf_per_m(output_dir, **mesh) -> float:
+        shifter = rib_phase_shifter()
+        study = pn_phase_shifter(
+            component=shifter.component,
+            stack=shifter.stack,
+            device=shifter.device,
+            electrodes=shifter.electrodes,
+            biases=[0.0],
+            output_dir=output_dir,
+        )
+        study.charge(mesh=study.charge.mesh | mesh)
+        return float(study.charge.run().capacitance_f_per_m[0]) * 1e12
+
+    def test_halving_the_mesh_size_moves_the_capacitance_by_under_two_percent(
+        self, tmp_path
+    ):
+        """With the oxide in the solve, where the node-built Interfaces are.
+
+        An insulator Interface leaves out the nodes that already carry a
+        Contact or an Interface, an error that scales with the element
+        size: measured, 417.1 against 415.5 pF/m at 10 and 5 nm.
+        """
+        pytest.importorskip("devsim")
+        default = self._capacitance_pf_per_m(tmp_path / "default")
+        halved = self._capacitance_pf_per_m(tmp_path / "halved", refined_mesh_size=0.01)
+
+        assert default == pytest.approx(halved, rel=0.02)
+
+    def test_refining_the_lines_alone_does_not_get_there(self, tmp_path):
+        """What the box is for: 452.6 pF/m without it against 417.1 with."""
+        pytest.importorskip("devsim")
+        boxed = self._capacitance_pf_per_m(tmp_path / "boxed")
+        lines_only = self._capacitance_pf_per_m(tmp_path / "lines", refinement_boxes=[])
+
+        assert lines_only > 1.05 * boxed
+
+
+@pytest.mark.tcad_local
 class TestJunctionModelExport:
     def test_the_demo_sweep_round_trips_through_the_model_file(self, tmp_path):
         """Ticket: the exported file reconstructs the sweep's fit exactly."""

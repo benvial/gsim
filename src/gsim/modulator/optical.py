@@ -764,7 +764,12 @@ class OpticalStage(EMStage):
 
         study = self._require_study()
         sim = self.simulation(output_dir=directory)
-        sim.mesh(**self.mesh)
+        # The Carrier map is transferred onto this mesh, element by
+        # element: where the charge mesh resolved the depletion edge this
+        # one has to, or the transfer smears it (the index shift read
+        # 15 % low at this Stage's own refined size).
+        boxes = {"refinement_boxes": study.charge.junction_boxes()}
+        sim.mesh(**(boxes | self.mesh))
         mesh = meshio.read(str(sim.mesh_path))
         base_epsilon = epsilon_by_region(
             mesh, study.stack, wavelength_um=self.wavelength_um

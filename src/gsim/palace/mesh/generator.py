@@ -33,6 +33,8 @@ from .geometry import (
 from .groups import assign_physical_groups
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from gsim.common.stack import LayerStack
     from gsim.palace.models import (
         BoundaryModeConfig,
@@ -45,6 +47,10 @@ if TYPE_CHECKING:
     from gsim.palace.ports.config import PalacePort
 
 logger = logging.getLogger(__name__)
+
+#: First gmsh field id given to a refinement box of a native-2D mesh; the
+#: refinement lines' Distance and Threshold fields hold ids 1 and 2.
+_FIRST_BOX_FIELD_ID: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -1093,6 +1099,7 @@ def generate_mesh(
     high_order_optimize: bool = True,
     verbosity: int = 3,
     decimate_tolerance: float | None = None,
+    refinement_boxes: Sequence[tuple[float, float, float, float, float]] = (),
 ) -> MeshResult:
     """Generate mesh for Palace EM simulation.
 
@@ -1145,6 +1152,8 @@ def generate_mesh(
         decimate_tolerance: Relative tolerance for polygon decimation
             (None = no decimation; typical 0.001-0.01)
         verbosity: Sets gmsh verbosity level
+        refinement_boxes: Native-2D cross-section meshes only: boxes held to
+            an element size, each ``(h_min, h_max, z_min, z_max, size)`` in um
 
     Returns:
         MeshResult with paths and metadata
@@ -1159,6 +1168,11 @@ def generate_mesh(
     geometry = extract_geometry(component, stack, decimate_tolerance=decimate_tolerance)
     logger.info("  Polygons: %s", len(geometry.polygons))
     logger.info("  Bbox: %s", geometry.bbox)
+
+    if refinement_boxes and simulation_type != "boundarymode":
+        raise ValueError(
+            "refinement_boxes apply to native-2D cross-section meshes only."
+        )
 
     # Initialize gmsh
     gmsh.initialize()
@@ -1213,16 +1227,29 @@ def generate_mesh(
                     for tag in info.get("tags", [])
                 }
             )
+            field_ids: list[int] = []
             if refinement_lines:
                 aggressive_size = max(refined_mesh_size * 0.5, 1e-4)
-                field_id = gmsh_utils.setup_mesh_refinement(
-                    refinement_lines,
-                    aggressive_size,
-                    max_mesh_size,
-                    sampling=400,
-                    dist_max=max_mesh_size * 0.5,
+                field_ids.append(
+                    gmsh_utils.setup_mesh_refinement(
+                        refinement_lines,
+                        aggressive_size,
+                        max_mesh_size,
+                        sampling=400,
+                        dist_max=max_mesh_size * 0.5,
+                    )
                 )
-                gmsh_utils.finalize_mesh_fields([field_id])
+            # The cross-section is meshed in its own (h, z) plane.
+            for offset, (h_min, h_max, z_min, z_max, size) in enumerate(
+                refinement_boxes
+            ):
+                field_id = _FIRST_BOX_FIELD_ID + offset
+                gmsh_utils.setup_box_refinement(
+                    field_id, h_min, z_min, -1.0, h_max, z_max, 1.0, size, max_mesh_size
+                )
+                field_ids.append(field_id)
+            if field_ids:
+                gmsh_utils.finalize_mesh_fields(field_ids)
             else:
                 gmsh.option.setNumber("Mesh.MeshSizeMin", refined_mesh_size)
                 gmsh.option.setNumber("Mesh.MeshSizeMax", max_mesh_size)

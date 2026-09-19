@@ -96,3 +96,24 @@ def draw_pn_rib(
         verbose=False,
     )
     return comp, stack
+
+
+def longest_edge_in_box(
+    mesh_path, h: tuple[float, float], z: tuple[float, float]
+) -> float:
+    """Longest edge (um) of the triangles whose centroid lies in a box."""
+    import meshio
+
+    mesh = meshio.read(str(mesh_path))
+    points = mesh.points[:, :2]
+    triangles = np.vstack([c.data for c in mesh.cells if c.type == "triangle"])
+    centroids = points[triangles].mean(axis=1)
+    inside = (
+        (centroids[:, 0] > h[0])
+        & (centroids[:, 0] < h[1])
+        & (centroids[:, 1] > z[0])
+        & (centroids[:, 1] < z[1])
+    )
+    corners = points[triangles[inside]]
+    edges = np.linalg.norm(corners - np.roll(corners, 1, axis=1), axis=-1)
+    return float(edges.max())

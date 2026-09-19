@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from gsim.common.stack.extractor import Layer, LayerStack
 
 __all__ = [
+    "BAND_TOL_UM",
     "COLUMN_TOL_FRACTION",
     "DEFAULT_DRAWING",
     "DEFAULT_ELECTRODES",
@@ -107,6 +108,21 @@ SURROUND_TOL_UM: float = 1e-9
 #: column of the mesh, when no explicit tolerance is given. Node columns
 #: are what a 2D cloud is averaged over before it is averaged over Strips.
 COLUMN_TOL_FRACTION: float = 1e-6
+
+#: How far outside a band a node still belongs to it (um). A mesh hands a
+#: surface over at its coordinate to rounding, and the surface rows are
+#: the band's own edges.
+BAND_TOL_UM: float = 1e-9
+
+#: Heights the band average samples the interpolant at, per ``h``. The
+#: interpolant is piecewise along a vertical line, with a kink at every
+#: element edge it crosses; this many samples put several inside each
+#: element of a mesh refined to a fortieth of the band.
+BAND_AVERAGE_HEIGHT_SAMPLES: int = 129
+
+#: Samples of the band average inside each Strip, along the junction axis,
+#: on top of the cloud's own columns.
+BAND_AVERAGE_SAMPLES_PER_STRIP: int = 8
 
 #: Drawn length of a Staircase along the propagation direction (um).
 #: The Cross-section is invariant along it, so it is not a setting;
@@ -264,15 +280,17 @@ def staircase_profile(
 
     edges = np.asarray(np.linspace(lo, hi, n_bins + 1), dtype=np.float64)
 
-    # Exact average of the piecewise-linear interpolant over each strip via
-    # its antiderivative sampled with cumulative trapezoids.
+    # Exact average of the piecewise-linear interpolant over each strip:
+    # trapezoids between the samples and the edges, summed strip by strip.
+    # Differencing one running integral instead would lose a depleted
+    # strip, decades below its neighbours, to cancellation.
     dense = np.union1d(edges, h_arr[(h_arr > lo) & (h_arr < hi)])
     dense_v = np.interp(dense, h_arr, v_arr)
-    cumulative = np.concatenate(
-        ([0.0], np.cumsum(0.5 * (dense_v[1:] + dense_v[:-1]) * np.diff(dense)))
-    )
-    edge_integrals = np.interp(edges, dense, cumulative)
-    means = np.asarray(np.diff(edge_integrals) / np.diff(edges), dtype=np.float64)
+    areas = 0.5 * (dense_v[1:] + dense_v[:-1]) * np.diff(dense)
+    midpoints = 0.5 * (dense[1:] + dense[:-1])
+    strip = np.clip(np.searchsorted(edges, midpoints) - 1, 0, n_bins - 1)
+    integrals = np.bincount(strip, weights=areas, minlength=n_bins)
+    means = np.asarray(integrals / np.diff(edges), dtype=np.float64)
     return edges, means
 
 
@@ -290,13 +308,28 @@ def strip_averages_from_nodes(
     """Average scattered node values into N strips along the junction axis.
 
     Node values (e.g. carrier concentrations on the charge-solve mesh) are
-    reduced to a 1D profile of ``h`` — nodes sharing a coordinate are
-    averaged, so a band selected with ``v_range`` contributes all of its
-    rows and not just one — and binned with
+    reduced to a 1D profile of ``h`` and binned with
     :func:`staircase_profile`, whose strip values are
     exact averages of the piecewise-linear interpolant — so ``n_strips=1``
     recovers the profile mean and increasing N converges to the continuous
     profile.
+
+    A band selected with ``v_range`` is averaged over its area: the
+    profile at each ``h`` is the mean over the band's height of the
+    linear interpolant of the node cloud — the field a linear transfer
+    reads off the same nodes. Counting nodes instead would weight
+    the field by the mesh's refinement: a charge-solve mesh puts a third
+    of its nodes on the silicon's top and bottom lines, which have no
+    area, and the carriers there are not the Strip's once they vary with
+    depth. A band whose nodes span no height (a single row) has no area
+    to weigh, and its nodes are the profile.
+
+    The band is taken as a rectangle of silicon, the height of its nodes.
+    Where the silicon changes height along the axis — a rib beside a
+    thinner slab — one band over both would average across the oxide
+    above the slab, on values interpolated between slab and rib; give
+    each height its own call and ``v_range``, as a Staircase's segments
+    do.
 
     Args:
         h_um: Node coordinates along the junction (binning) axis in um.
@@ -327,11 +360,24 @@ def strip_averages_from_nodes(
         if band.size != h_arr.size:
             raise ValueError("v_um must have the same length as h_um.")
         lo, hi = v_range
-        mask = (band >= lo) & (band <= hi)
+        mask = (band >= lo - BAND_TOL_UM) & (band <= hi + BAND_TOL_UM)
         if not np.any(mask):
             raise ValueError("No nodes inside v_range.")
         h_arr = np.asarray(h_arr[mask], dtype=np.float64)
         v_arr = np.asarray(v_arr[mask], dtype=np.float64)
+        profile = _band_averaged_profile(
+            h_arr,
+            np.asarray(band[mask], dtype=np.float64),
+            v_arr,
+            n_strips=n_strips,
+            h_min=h_min,
+            h_max=h_max,
+            column_tol_um=column_tol_um,
+        )
+        if profile is not None:
+            return staircase_profile(
+                *profile, n_bins=n_strips, h_min=h_min, h_max=h_max
+            )
     # A 2D node cloud carries many nodes per h coordinate. staircase_profile
     # reads its samples as a piecewise-linear function of h, so a column of
     # nodes would leave one arbitrary node standing per h and discard the
@@ -351,6 +397,88 @@ def strip_averages_from_nodes(
             np.bincount(inverse, weights=v_arr) / counts, dtype=np.float64
         )
     return staircase_profile(h_arr, v_arr, n_bins=n_strips, h_min=h_min, h_max=h_max)
+
+
+def _band_averaged_profile(
+    h_um: NDArray[np.float64],
+    v_um: NDArray[np.float64],
+    values: NDArray[np.float64],
+    *,
+    n_strips: int,
+    h_min: float | None,
+    h_max: float | None,
+    column_tol_um: float | None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+    """The height-averaged profile of a 2D node cloud, or None without area.
+
+    Args:
+        h_um: Node coordinates of the band along the junction axis (um).
+        v_um: Node coordinates of the band across it (um).
+        values: Node values.
+        n_strips: Number of Strips the profile is for; sets the sampling.
+        h_min: Start of the extent along the axis; the cloud's when None.
+        h_max: End of the extent along the axis; the cloud's when None.
+        column_tol_um: Nodes closer than this (um) are one point.
+
+    Returns:
+        ``(h, mean)`` — sample coordinates inside the extent and the mean
+        of the cloud's linear interpolant over the band's height at each; None
+        when the nodes span no height or no width.
+    """
+    from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+    from scipy.spatial import QhullError
+
+    v_lo, v_hi = float(v_um.min()), float(v_um.max())
+    h_lo, h_hi = float(h_um.min()), float(h_um.max())
+    span = h_hi - h_lo
+    if span <= 0.0 or v_hi - v_lo <= COLUMN_TOL_FRACTION * span:
+        return None
+
+    # Nodes on an Interface appear once per Region; one value per point.
+    tol = column_tol_um if column_tol_um is not None else COLUMN_TOL_FRACTION * span
+    if tol <= 0.0:
+        # Exact coordinates: the smallest spacing that still tells them apart.
+        tol = float(np.spacing(max(abs(h_lo), abs(h_hi), abs(v_lo), abs(v_hi))))
+    keys = np.round(np.column_stack([h_um, v_um]) / tol).astype(np.int64)
+    _unique, inverse, counts = np.unique(
+        keys, axis=0, return_inverse=True, return_counts=True
+    )
+    inverse = inverse.ravel()
+    points = np.column_stack(
+        [np.bincount(inverse, weights=c) / counts for c in (h_um, v_um)]
+    )
+    node_values = np.bincount(inverse, weights=values) / counts
+
+    try:
+        linear = LinearNDInterpolator(points, node_values)
+    except QhullError:
+        return None
+    nearest = NearestNDInterpolator(points, node_values)
+
+    # The cloud's own columns, and samples inside every Strip: the
+    # interpolant kinks wherever a vertical line meets an element edge,
+    # which is between the columns as well as on them.
+    lo = h_lo if h_min is None else max(h_lo, float(h_min))
+    hi = h_hi if h_max is None else min(h_hi, float(h_max))
+    inside = points[:, 0][(points[:, 0] >= lo) & (points[:, 0] <= hi)]
+    regular = np.linspace(lo, hi, n_strips * BAND_AVERAGE_SAMPLES_PER_STRIP + 1)
+    columns = np.unique(np.round(np.concatenate([inside, regular]) / tol)) * tol
+    columns = np.clip(columns, lo, hi)
+    heights = np.linspace(v_lo, v_hi, BAND_AVERAGE_HEIGHT_SAMPLES)
+
+    hh, vv = np.meshgrid(columns, heights, indexing="ij")
+    sampled = np.asarray(linear(hh, vv), dtype=np.float64)
+    # A sample outside the cloud's hull takes its nearest node: rounding
+    # leaves one on the hull's edge outside it now and then, and a band
+    # that is no rectangle (see the caller) has whole corners out there.
+    outside = np.isnan(sampled)
+    if np.any(outside):
+        sampled[outside] = nearest(hh[outside], vv[outside])
+    # Trapezoids on equal steps: the end samples count half.
+    means = (sampled.sum(axis=1) - 0.5 * (sampled[:, 0] + sampled[:, -1])) / (
+        heights.size - 1
+    )
+    return columns, np.asarray(means, dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -1021,7 +1149,7 @@ def carrier_map_extent(
     if band is None:
         inside = np.ones(v_um.shape, dtype=bool)
     else:
-        inside = (v_um >= band[0]) & (v_um <= band[1])
+        inside = (v_um >= band[0] - BAND_TOL_UM) & (v_um <= band[1] + BAND_TOL_UM)
     if not np.any(inside):
         raise ValueError(
             f"No carrier samples inside the vertical band {band}; "

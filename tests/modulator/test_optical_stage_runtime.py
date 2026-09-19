@@ -16,6 +16,7 @@ import pytest
 
 from gsim.modulator import Device, OpticalSweep, Study
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
+from tests._helpers import longest_edge_in_box
 
 from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_demo
 
@@ -117,6 +118,23 @@ class TestItsOwnMesh:
         assert points[:, 0].max() == pytest.approx(window[1], abs=0.05)
         assert points[:, 1].min() == pytest.approx(window_z[0], abs=0.05)
         assert points[:, 1].max() == pytest.approx(window_z[1], abs=0.05)
+
+    def test_the_continuous_mesh_resolves_the_junction_as_the_charge_mesh_did(
+        self, solved
+    ):
+        # The Carrier map comes off a charge mesh that resolves the
+        # depletion edge. A transfer onto elements several times coarser
+        # smears it: measured on a real charge solve, the index shift read
+        # 15 % low at this Stage's own 0.05 um.
+        study, _ = solved
+        span = study.layout.junction_span
+        longest = longest_edge_in_box(
+            study.stage_dir("optical") / "palace.msh", span.h, span.z
+        )
+        [(*_extent, size)] = study.charge.junction_boxes()
+
+        # gmsh takes a size as a target: an edge runs up to about twice it.
+        assert longest < 2.5 * size
 
 
 class TestSolvedModes:
