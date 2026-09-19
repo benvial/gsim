@@ -258,11 +258,11 @@ class LoadedLineComparison(BaseModel):
 
     What is measured. The two routes agree on the series R and L to 1 %;
     the gap is in the shunt branch. With the charge solve's default,
-    silicon-only Poisson domain the assembled route reads 15-22 % low on
+    Poisson solved in the doped silicon alone, the assembled route reads 15-22 % low on
     n_RF, 32-55 % low on the loss and 23-31 % high on |Z0| on the two
     demo devices, flat across 20-30 GHz: the direct solve finds 105-270
-    pF/m more shunt capacitance and four to eight times the shunt
-    conductance.
+    pF/m more shunt capacitance and, on the rib Phase shifter, about
+    four times the shunt conductance.
 
     What is provisional. Solving Poisson in the oxide around the Junction
     as well (the charge Stage's ``oxide=True``) adds the fringing field
@@ -271,11 +271,11 @@ class LoadedLineComparison(BaseModel):
     averaged as they are today, by node count. Averaged by area instead
     they do not close, because the direct solve itself moves: a Strip's
     value at the depletion edge depends on how a charge mesh that does
-    not resolve that edge is averaged. Until that is settled
-    (modulator-realism ticket 06) the oxide is opt-in and neither
-    reading is a result. The loss gap is an open question either way: it
-    stays above 30 % with the capacitance matched, so an earlier reading,
-    that it was the missing capacitance felt squared, is not supported.
+    not resolve that edge is averaged. Until that is settled the oxide
+    is opt-in and neither reading is a result. The loss gap is an open
+    question either way: it stays above 30 % with the capacitance
+    matched, so an earlier reading, that it was the missing capacitance
+    felt squared, is not supported.
 
     The default tolerances of :meth:`check` are set just outside the
     silicon-only gap; a route bug (a dropped conductivity, a wrong-branch

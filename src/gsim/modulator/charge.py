@@ -144,18 +144,22 @@ class ChargeStage(Stage):
         return sim
 
     def _oxide_regions(self) -> dict[str, float]:
-        """The stack's background dielectrics: mesh Region to permittivity.
+        """The stack's insulating background dielectrics: Region to permittivity.
 
         The mesh names a background dielectric's Region after its
         material, so two dielectric slabs of one material are one Region.
+        A slab drawn in a doped Region's material, or in one that
+        conducts (a silicon substrate), is no insulator and is left out.
         """
         stack = self._require_study().stack
         doped = set(self._require_study().device.doped_regions)
         regions: dict[str, float] = {}
         for dielectric in stack.dielectrics:
             material = str(dielectric["material"])
-            permittivity = stack.materials.get(material, {}).get("permittivity")
-            if material in doped or permittivity is None:
+            properties = stack.materials.get(material, {})
+            permittivity = properties.get("permittivity")
+            conducts = float(properties.get("conductivity") or 0.0) > 0.0
+            if material in doped or conducts or permittivity is None:
                 continue
             regions[material] = float(permittivity)
         return regions

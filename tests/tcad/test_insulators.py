@@ -16,6 +16,7 @@ import pytest
 from gsim.modulator.demo import demo_phase_shifter
 from gsim.tcad import ChargeTransportSim, Insulator, StepDoping
 from gsim.tcad.mesh import line_group_points
+from gsim.tcad.sim import VACUUM_PERMITTIVITY_F_PER_CM
 
 DOPED = {"n_pad": "donor", "n_rib": "donor", "p_rib": "acceptor", "p_pad": "acceptor"}
 OXIDE_PERMITTIVITY = 3.9
@@ -108,7 +109,7 @@ class TestPotentialOnlyRegion:
         ]
         assert permittivity["region"] == "sio2"
         assert permittivity["value"] == pytest.approx(
-            OXIDE_PERMITTIVITY * 8.8541878128e-14
+            OXIDE_PERMITTIVITY * VACUUM_PERMITTIVITY_F_PER_CM
         )
 
     def test_it_holds_no_doping_mobility_or_carriers(self, oxide_sim, fake_devsim):

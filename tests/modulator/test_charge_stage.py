@@ -71,11 +71,30 @@ class TestTheOxideAroundTheJunction:
         )
 
     def test_no_doped_region_is_declared_insulating(self, study):
+        # A background slab drawn in a doped Region's own material.
+        slab = dict(study.stack.dielectrics[0])
+        study.stack.dielectrics.append(
+            {**slab, "name": "doped_slab", "material": "p_rib"}
+        )
         study.charge(oxide=True)
         sim = study.charge.simulation()
         doped = {profile.region for profile in sim.doping}
-        assert sim.insulators
-        assert doped.isdisjoint(oxide.region for oxide in sim.insulators)
+        assert "p_rib" in doped
+        assert [oxide.region for oxide in sim.insulators] == ["sio2"]
+
+    def test_a_dielectric_that_conducts_is_not_declared_insulating(self, study):
+        # A silicon substrate is a background slab too, and no insulator.
+        slab = dict(study.stack.dielectrics[0])
+        study.stack.materials["substrate_si"] = {
+            "permittivity": 11.9,
+            "conductivity": 2.0,
+        }
+        study.stack.dielectrics.append(
+            {**slab, "name": "substrate", "material": "substrate_si"}
+        )
+        study.charge(oxide=True)
+        sim = study.charge.simulation()
+        assert [oxide.region for oxide in sim.insulators] == ["sio2"]
 
 
 class TestMissingExtra:

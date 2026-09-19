@@ -26,6 +26,7 @@ from typing import Any, ClassVar, Literal
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 
 from gsim.common.carriers import MobilityModel
 from gsim.tcad.doping import (
@@ -46,7 +47,7 @@ _DEVSIM_NAME_IDS = itertools.count()
 
 
 #: Vacuum permittivity in DEVSIM's units (F/cm).
-VACUUM_PERMITTIVITY_F_PER_CM: float = 8.8541878128e-14
+VACUUM_PERMITTIVITY_F_PER_CM: float = EPS0 * 1e-2
 
 #: Rounding of node coordinates (cm) when matching a mesh node to a DEVSIM
 #: region node: 1e-10 cm is a picometre, far below any element.
