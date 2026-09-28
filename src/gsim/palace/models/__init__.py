@@ -29,6 +29,7 @@ from gsim.palace.models.ports import (
     ImpedanceBoundaryConfig,
     PortConfig,
     TerminalConfig,
+    TwoTerminalPortConfig,
     WavePortConfig,
 )
 from gsim.palace.models.problems import (
@@ -62,6 +63,7 @@ __all__ = [
     "SimulationResult",
     "TerminalConfig",
     "TransientConfig",
+    "TwoTerminalPortConfig",
     "ValidationResult",
     "WavePortConfig",
 ]
