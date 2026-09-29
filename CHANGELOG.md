@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Two spec-validation rules are written once. `gsim.common.validation.AscendingInterval` is the annotated pydantic type
+  behind every `(min, max)` window: `tcad.doping`'s five hand-written `_validate_interval` calls and the identical loop
+  inside Palace's `CrossSectionPlaneConfig` validator are gone, and the rule now travels with the field declaration
+  instead of with a call a new field can forget. The message bodies are unchanged; the field name moves into pydantic's
+  error `loc`, so assert on the body rather than on the whole rendered error.
+  `gsim.common.cross_section.parse_plane_spec` is the one reading of a `"x=<value>"` plane spec, shared by
+  `CrossSectionPlaneConfig.from_spec` and `gsim.modulator.Study.plane`. The Study's own `partition("=")` variant
+  accepted a bare `x=`, naming no coordinate; it is now rejected where every other spec is.
+
 - Optional dependencies are guarded in one shape. `gsim.common.optional.require_module(name, extra=..., hint=...)` holds
   the import, the message naming the packaging extra and the chained cause that `require_devsim`,
   `import_simple_physics`, `require_femwell` and `require_skfem` each wrote out. The per-backend guards keep their names

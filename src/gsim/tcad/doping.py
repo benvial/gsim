@@ -28,7 +28,6 @@ superpose.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Self, Union
 
@@ -36,6 +35,8 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
+
+from gsim.common.validation import AscendingInterval
 
 __all__ = [
     "CallableDoping",
@@ -47,17 +48,6 @@ __all__ = [
     "acceptor_donor_concentrations",
     "net_doping_cm3",
 ]
-
-
-def _validate_interval(name: str, interval: tuple[float, float] | None) -> None:
-    """Reject non-finite or descending (min, max) intervals."""
-    if interval is None:
-        return
-    lo, hi = interval
-    if not (math.isfinite(lo) and math.isfinite(hi)):
-        raise ValueError(f"{name} bounds must be finite")
-    if hi <= lo:
-        raise ValueError(f"{name} must be an ascending (min, max) interval")
 
 
 def _window_mask(
@@ -147,15 +137,8 @@ class StepDoping(_DopingBase):
 
     kind: Literal["step"] = "step"
     concentration_cm3: float = Field(gt=0.0)
-    x_range: tuple[float, float] | None = None
-    y_range: tuple[float, float] | None = None
-
-    @model_validator(mode="after")
-    def validate_ranges(self) -> Self:
-        """Windows must be ascending finite intervals."""
-        _validate_interval("x_range", self.x_range)
-        _validate_interval("y_range", self.y_range)
-        return self
+    x_range: AscendingInterval | None = None
+    y_range: AscendingInterval | None = None
 
     def concentration(self, x: ArrayLike, y: ArrayLike) -> NDArray[np.float64]:
         """Uniform ``concentration_cm3`` inside the box, zero outside."""
@@ -190,16 +173,14 @@ class GaussianDoping(_DopingBase):
     center: tuple[float, float]
     sigma_x: float | None = Field(default=None, gt=0.0)
     sigma_y: float | None = Field(default=None, gt=0.0)
-    x_range: tuple[float, float] | None = None
-    y_range: tuple[float, float] | None = None
+    x_range: AscendingInterval | None = None
+    y_range: AscendingInterval | None = None
 
     @model_validator(mode="after")
     def validate_shape(self) -> Self:
-        """At least one sigma must be given; windows must be ascending."""
+        """At least one sigma must be given."""
         if self.sigma_x is None and self.sigma_y is None:
             raise ValueError("GaussianDoping needs sigma_x and/or sigma_y")
-        _validate_interval("x_range", self.x_range)
-        _validate_interval("y_range", self.y_range)
         return self
 
     def concentration(self, x: ArrayLike, y: ArrayLike) -> NDArray[np.float64]:
@@ -240,13 +221,7 @@ class ImplantDoping(_DopingBase):
     surface_y: float
     range_um: float = Field(ge=0.0)
     straggle_um: float = Field(gt=0.0)
-    x_range: tuple[float, float] | None = None
-
-    @model_validator(mode="after")
-    def validate_ranges(self) -> Self:
-        """Lateral window must be an ascending finite interval."""
-        _validate_interval("x_range", self.x_range)
-        return self
+    x_range: AscendingInterval | None = None
 
     def concentration(self, x: ArrayLike, y: ArrayLike) -> NDArray[np.float64]:
         """Gaussian in depth below the surface, zero above it."""
@@ -294,8 +269,8 @@ class TableDoping(_DopingBase):
     x_um: list[float] | None = None
     y_um: list[float] | None = None
     fill: Literal["edge", "zero"] = "edge"
-    x_range: tuple[float, float] | None = None
-    y_range: tuple[float, float] | None = None
+    x_range: AscendingInterval | None = None
+    y_range: AscendingInterval | None = None
 
     @model_validator(mode="after")
     def validate_samples(self) -> Self:
@@ -304,8 +279,6 @@ class TableDoping(_DopingBase):
             raise ValueError("TableDoping needs x_um and/or y_um to interpolate along")
         _validate_grid("x_um", self.x_um)
         _validate_grid("y_um", self.y_um)
-        _validate_interval("x_range", self.x_range)
-        _validate_interval("y_range", self.y_range)
 
         values = np.asarray(self.values_cm3, dtype=np.float64)
         if not np.all(np.isfinite(values)):
@@ -389,15 +362,8 @@ class CallableDoping(_DopingBase):
 
     kind: Literal["callable"] = "callable"
     function: SkipJsonSchema[Callable[[Any, Any], Any]]
-    x_range: tuple[float, float] | None = None
-    y_range: tuple[float, float] | None = None
-
-    @model_validator(mode="after")
-    def validate_ranges(self) -> Self:
-        """Windows must be ascending finite intervals."""
-        _validate_interval("x_range", self.x_range)
-        _validate_interval("y_range", self.y_range)
-        return self
+    x_range: AscendingInterval | None = None
+    y_range: AscendingInterval | None = None
 
     def concentration(self, x: ArrayLike, y: ArrayLike) -> NDArray[np.float64]:
         """Evaluate the function, then apply the hard windows.

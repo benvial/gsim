@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
+from gsim.common.cross_section import parse_plane_spec
 from gsim.modulator.carriers import CarriersStage
 from gsim.modulator.charge import ChargeStage
 from gsim.modulator.device import Device
@@ -75,17 +76,6 @@ def _dependents_of(name: str) -> list[str]:
         if grown == dependents:
             return [stage for stage in STAGE_ORDER if stage in dependents]
         dependents = grown
-
-
-def _parse_plane(plane: str) -> tuple[Literal["x", "y", "z"], float]:
-    """Split a ``"x=<value>"`` plane spec into its axis and coordinate."""
-    axis, _, value = plane.partition("=")
-    axis = axis.strip().lower()
-    if axis not in ("x", "y", "z") or not value:
-        raise ValueError(
-            f"Invalid cross-section plane {plane!r}; use 'x=<value>' or 'y=<value>'."
-        )
-    return axis, float(value)  # type: ignore[return-value]
 
 
 class Study:
@@ -220,7 +210,7 @@ class Study:
     @plane.setter
     def plane(self, value: str) -> None:
         """Move the Cross-section, dropping everything derived from it."""
-        _parse_plane(value)
+        parse_plane_spec(value)
         self._plane = value
         self.invalidate()
 
@@ -236,7 +226,7 @@ class Study:
         Cross-section, and cached.
         """
         if self._layout is None:
-            axis, value = _parse_plane(self.plane)
+            axis, value = parse_plane_spec(self.plane)
             self._layout = derive_layout(
                 self.component,
                 self.stack,
@@ -258,7 +248,7 @@ class Study:
         if self._section is None:
             from gsim.common.cross_section import extract_plane_section
 
-            axis, value = _parse_plane(self.plane)
+            axis, value = parse_plane_spec(self.plane)
             self._section = extract_plane_section(
                 self.component.copy(), self.stack, axis=axis, value=value
             )

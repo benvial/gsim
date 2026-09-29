@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import math
-import re
-from typing import Literal, Self, cast
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-_PLANE_SPEC_RE = re.compile(
-    r"^\s*([xXyYzZ])\s*=\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$"
-)
+from gsim.common.cross_section import parse_plane_spec
+from gsim.common.validation import AscendingInterval
 
 
 class ContactSpec(BaseModel):
@@ -92,38 +90,24 @@ class CrossSectionPlaneConfig(BaseModel):
 
     axis: Literal["x", "y", "z"]
     value: float = Field(description="Plane coordinate in um")
-    window: tuple[float, float] | None = Field(
+    window: AscendingInterval | None = Field(
         default=None, description="In-plane clip interval (min, max) in um"
     )
-    window_z: tuple[float, float] | None = Field(
+    window_z: AscendingInterval | None = Field(
         default=None, description="Vertical clip interval (min, max) in um"
     )
 
     @model_validator(mode="after")
     def validate_value(self) -> Self:
-        """Ensure the plane coordinate is finite and windows are ascending."""
+        """Ensure the plane coordinate is finite."""
         if not math.isfinite(self.value):
             raise ValueError("cross-section value must be finite")
-        for name, interval in (("window", self.window), ("window_z", self.window_z)):
-            if interval is None:
-                continue
-            lo, hi = interval
-            if not (math.isfinite(lo) and math.isfinite(hi)):
-                raise ValueError(f"{name} bounds must be finite")
-            if hi <= lo:
-                raise ValueError(f"{name} must be an ascending (min, max) interval")
         return self
 
     @classmethod
     def from_spec(cls, spec: str) -> Self:
         """Parse a string specification like ``x=0`` or ``y=100``."""
-        match = _PLANE_SPEC_RE.match(spec)
-        if match is None:
-            raise ValueError(
-                "Invalid plane spec. Use 'x=<value>', 'y=<value>', or 'z=<value>'"
-            )
-        axis = cast(Literal["x", "y", "z"], match.group(1).lower())
-        value = float(match.group(2))
+        axis, value = parse_plane_spec(spec)
         return cls(axis=axis, value=value)
 
     @property

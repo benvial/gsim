@@ -198,3 +198,8 @@ class TestDerivationCache:
     def test_moving_the_plane_is_validated(self, study):
         with pytest.raises(ValueError, match="plane"):
             study.plane = "w=3"
+
+    def test_a_plane_naming_no_coordinate_is_rejected(self, study):
+        """The shared parse refuses what the Study's own one accepted."""
+        with pytest.raises(ValueError, match="plane"):
+            study.plane = "x="
