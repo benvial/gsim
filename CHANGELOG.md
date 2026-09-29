@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- One power-current impedance definition serves both Routes. `gsim.common.modes.z0_power_current(power, current)` owns
+  `Z_0 = 2 P / |I|^2`, the zero-current refusal and the sign flip a Mode saved travelling against the plane normal
+  needs; `gsim.palace.mode_fields.z0_power_current` and `gsim.femwell.adapter.z0_power_current` keep their names and
+  signatures and now only reduce their own integrals and delegate. Each Backend keeps its own quadrature — Palace
+  integrates nodal arrays on second-order Lagrange triangles in numpy, femwell assembles skfem forms over the Basis the
+  solver still holds — so what is shared is the definition, not a field-sampler protocol that would put an skfem-shaped
+  interface into `gsim.common`. Both arguments arrive in the Backend's own coordinate scale and the ratio cancels it, so
+  the combiner does no unit work. `Conductor.model` now records that Palace's contour integral reads the same enclosed
+  current for either model and so never branches on the field, while femwell's `electrode_current` does.
+
 - Palace runtime knowledge lives in `gsim.palace`, not in the Palace Route. About 400 lines leave
   `gsim.modulator.palace_route`, and nothing under `gsim.palace` imports `gsim.modulator` to take them: every type the
   moved code needs — `Conductor`, `Extent`, `LineReading` — was already in `gsim.common.modes`.

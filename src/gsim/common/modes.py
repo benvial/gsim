@@ -66,6 +66,7 @@ __all__ = [
     "propagating_modes",
     "select_line_mode",
     "wall_mode_from_currents",
+    "z0_power_current",
 ]
 
 #: ``((h_min, h_max), (v_min, v_max))`` of a rectangle on the Cross-section (um).
@@ -82,6 +83,15 @@ class Conductor:
     named by its Region; left out of the meshed domain as a perfect
     conductor (``"pec"``) it carries Ampere's contour integral around
     the hole its outline leaves, located by its extent.
+
+    Which Backend reads which way is not symmetric: Palace's contour
+    integral around the electrode's outline reads the same enclosed
+    current for either model and so never branches on this field, while
+    femwell's ``electrode_current`` does, taking the conduction current
+    through the metal for a ``"volume"`` conductor and the contour
+    integral for a ``"pec"`` one. The field stays as it is either way
+    because it describes how the metal reached the mesh (ADR 0003),
+    which is true whoever reads it.
 
     Attributes:
         name: Region name of the electrode.
@@ -204,6 +214,57 @@ def wall_mode_from_currents(
         f"whose two electrodes carry currents {fraction:.0%} in common: equal "
         "and opposite, the line mode between them"
     )
+
+
+def z0_power_current(power: complex, current: complex) -> complex:
+    """Marks-Williams power-current impedance of a line Mode.
+
+    ``Z_0 = 2 P / |I|^2``: the one definition both Routes read a line's
+    characteristic impedance by, given the two integrals each measures
+    its own way — the complex Poynting flux over the whole
+    Cross-section, and the longitudinal current on the signal conductor.
+    Sharing the definition rather than the quadrature is the point: a
+    Palace Mode's integrals are numpy over nodal arrays read back from a
+    file, a femwell Mode's are skfem forms over the Basis the solver
+    still holds, and neither belongs in the other's module.
+
+    Both arguments arrive in whatever coordinate scale the Backend
+    integrated in — the um meshes in use put the power at ``1e12`` times
+    SI and the current at ``1e6`` — and the ratio ``2P / |I|^2`` cancels
+    it, so the result is in ohms whichever Backend asked and no unit
+    conversion happens here.
+
+    Args:
+        power: Complex Poynting flux of the Mode over the
+            Cross-section.
+        current: Longitudinal current on the signal conductor. Only its
+            magnitude is read, so the two electrodes' opposite signs and
+            either Route's phase convention make no difference.
+
+    Returns:
+        The complex characteristic impedance in ohms, its real part
+        positive.
+
+    Raises:
+        ValueError: When the current is zero, which means the Mode
+            carries no current on that conductor and so has no
+            power-current impedance.
+    """
+    if current == 0:
+        raise ValueError(
+            "The mode carries no current on the signal conductor, so it has "
+            "no power-current impedance."
+        )
+    z0 = complex(2.0 * power / (abs(current) ** 2))
+    # An eigenmode's propagation direction is the solver's to choose, and
+    # the Poynting flux changes sign with it while |I|^2 does not. The
+    # line's impedance does not depend on which way the solver looked, so
+    # a Mode saved travelling against the plane normal is flipped back.
+    # Measured on the shipped cross-Route gate: suppressing the flip puts
+    # Palace 203% from femwell instead of 2.98%, and the flipped reading
+    # lands on femwell's phase, which is what shows it is the right
+    # correction rather than a sign forced positive.
+    return -z0 if z0.real < 0.0 else z0
 
 
 def mode_index(mode: Any) -> complex:

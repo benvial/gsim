@@ -49,7 +49,12 @@ from gsim.common.mesh_regions import (
     group_tags,
     region_elements,
 )
-from gsim.common.modes import Conductor, LineReading, wall_mode_from_currents
+from gsim.common.modes import (
+    Conductor,
+    LineReading,
+    wall_mode_from_currents,
+)
+from gsim.common.modes import z0_power_current as common_z0
 from gsim.common.stack.materials import (
     MaterialProperties,
     ResolvedMaterial,
@@ -531,12 +536,14 @@ def z0_power_current(
 ) -> complex:
     """Marks-Williams power-current characteristic impedance of an RF mode.
 
-    ``Z_0 = 2 P / |I|^2`` with the complex Poynting flux
-    ``P = (1/2) integral (E_t x H_t*) . z dA`` over the whole cross-section
-    and the longitudinal current ``I`` on the signal conductor
-    (:func:`electrode_current`). The ratio is invariant to the mode's
-    field normalization; the mesh coordinates are in um and the unit
-    conversion is internal.
+    This Backend's two integrals — the complex Poynting flux
+    ``P = (1/2) integral (E_t x H_t*) . z dA`` over the whole
+    cross-section, and the longitudinal current ``I`` on the signal
+    conductor (:func:`electrode_current`) — divided through the shared
+    definition :func:`gsim.common.modes.z0_power_current`, which owns
+    ``Z_0 = 2 P / |I|^2`` and the zero-current refusal. The ratio is
+    invariant to the mode's field normalization; the mesh coordinates
+    are in um and the unit conversion is internal.
 
     Args:
         mode: A femwell ``Mode`` from :func:`solve_modes` (fields solved
@@ -575,9 +582,7 @@ def z0_power_current(
     current = electrode_current(
         mode, frequency_hz=frequency_hz, conductor=conductor, mesh=mesh
     )
-    if current == 0:
-        raise ValueError("Zero longitudinal current over the selected conductor.")
-    return complex(2.0 * power / (abs(current) ** 2))
+    return common_z0(power, current)
 
 
 def electrode_current(

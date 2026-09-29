@@ -11,9 +11,10 @@ solver's fields.
 
 The fields arrive as nodal values on second-order Lagrange triangles
 covering the meshed Cross-section, in um coordinates and SI units. The
-integrals here therefore land in the same scale the femwell adapter's do
-(:func:`gsim.femwell.adapter.z0_power_current`), which is what lets the
-two Routes be compared as numbers rather than as pictures.
+integrals here therefore land in the same scale the femwell adapter's
+do, and both Routes divide them through the one definition
+:func:`gsim.common.modes.z0_power_current` holds, which is what lets the
+two be compared as numbers rather than as pictures.
 
 Nothing has to be undone on the way in. Palace writes the two transverse
 components of a boundary Mode in the same order as the coordinates of
@@ -54,6 +55,8 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 from scipy.constants import mu_0 as MU0  # noqa: N812
+
+from gsim.common.modes import z0_power_current as common_z0
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -387,11 +390,14 @@ def z0_power_current(
 ) -> complex:
     """Marks-Williams power-current impedance of a saved Palace Mode.
 
-    ``Z_0 = 2 P / |I|^2`` with :func:`power_flux` over the whole
+    This Backend's two integrals — :func:`power_flux` over the whole
     Cross-section and :func:`contour_current` around the signal
-    conductor. The ratio is invariant to the mode's field normalization,
-    and the um coordinates cancel between the area and the length
-    integral, so the result is in ohms.
+    conductor — divided through the shared definition
+    :func:`gsim.common.modes.z0_power_current`, which owns
+    ``Z_0 = 2 P / |I|^2``, the zero-current refusal and the sign flip.
+    The ratio is invariant to the mode's field normalization, and the um
+    coordinates cancel between the area and the length integral, so the
+    result is in ohms.
 
     Args:
         field: The Mode's saved fields.
@@ -409,17 +415,7 @@ def z0_power_current(
             means the Mode carries no current on that conductor.
     """
     current = contour_current(field, h_span=h_span, v_span=v_span, tol_um=tol_um)
-    if current == 0:
-        raise ValueError(
-            "The saved mode carries no current around the signal conductor, so "
-            "it has no power-current impedance."
-        )
-    z0 = complex(2.0 * power_flux(field) / (abs(current) ** 2))
-    # An eigenmode's propagation direction is the solver's to choose, and
-    # the Poynting flux changes sign with it while |I|^2 does not. The
-    # line's impedance does not depend on which way the solver looked, so
-    # a mode saved travelling against the plane normal is flipped back.
-    return -z0 if z0.real < 0.0 else z0
+    return common_z0(power_flux(field), current)
 
 
 def field_index_ratio(field: BoundaryModeField) -> float:

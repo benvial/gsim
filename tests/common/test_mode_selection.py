@@ -16,6 +16,7 @@ from gsim.common.modes import (
     propagating_modes,
     select_line_mode,
     wall_mode_from_currents,
+    z0_power_current,
 )
 
 
@@ -220,6 +221,26 @@ class TestWallModeFromCurrents:
         # |1 - 0.34| / 1.34 sits just under one half, |1 - 0.32| / 1.32 just over.
         assert wall_mode_from_currents(1.0 + 0j, -0.34 + 0j)[0] is False
         assert wall_mode_from_currents(1.0 + 0j, -0.32 + 0j)[0] is True
+
+
+class TestZ0PowerCurrent:
+    def test_it_divides_twice_the_power_by_the_squared_current(self):
+        assert z0_power_current(50.0 + 5.0j, 2.0) == pytest.approx(25.0 + 2.5j)
+
+    def test_the_current_enters_as_a_magnitude_only(self):
+        forward = z0_power_current(50.0, 2.0)
+        assert z0_power_current(50.0, -2.0) == forward
+        assert z0_power_current(50.0, 2.0j) == forward
+
+    def test_a_mode_travelling_against_the_normal_is_flipped_back(self):
+        flipped = z0_power_current(-41.716 - 0.067j, 1.0)
+        assert flipped == z0_power_current(41.716 + 0.067j, 1.0)
+        assert flipped.real > 0.0
+        assert flipped.imag > 0.0
+
+    def test_a_mode_carrying_no_current_is_reported(self):
+        with pytest.raises(ValueError, match="no current"):
+            z0_power_current(50.0, 0.0)
 
 
 class TestDescriptors:
