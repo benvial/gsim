@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- gmsh physical groups are read in one place: `gsim.common.mesh_regions` holds `group_tags` / `group_names` (the two
+  directions of the `field_data` lookup, over an explicit `dim`), `cell_blocks` (the block-concatenation loop) and the
+  triangle conveniences `element_regions`, `node_regions` and `region_elements` on top. The join between a group's name
+  and its cells' tags had been written four times — twice inside `gsim.common.carrier_transfer`, twice in
+  `gsim.femwell.adapter`, and once more at dim 1 in `gsim.tcad.mesh.line_group_points`, which now keeps its coordinate
+  extraction and drops its copy of the mechanics. `region_elements` moves with them: it is meshio and gmsh only, with
+  nothing femwell in it, so it is `gsim.common.mesh_regions.region_elements` and leaves `gsim.femwell.__all__` with no
+  shim. `epsilon_by_region` and `elementwise_epsilon` stay in femwell, which owns the `exp(+i omega t)` convention they
+  carry. Nothing joins `gsim.common.__all__`; the module is imported by path. A cell block the mesh gives no physical
+  tag reads tag `0` — gmsh's "no physical group" — so a mesh written without `gmsh:physical` still yields its cells,
+  naming no region and matching no group; `line_group_points` now says a mesh holds no line cells rather than returning
+  no points.
+
 - `gsim.common.modes` gives up its modulator vocabulary: `wall_mode_hint` is gone from the module and from `__all__`,
   and the sentence it returned is now `RFStage._wall_mode_hint`, beside the `window_hint` it reads like. It named a
   Stage and its settings, which `gsim.common` must not know about, and the RF Stage was its only caller. `Extent` — the

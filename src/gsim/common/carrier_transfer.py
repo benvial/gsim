@@ -27,6 +27,8 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from pydantic import BaseModel, ConfigDict
 
+from gsim.common.mesh_regions import element_regions, group_names, node_regions
+
 __all__ = ["CarrierMapLike", "TransferredCarriers", "transfer_carriers"]
 
 Granularity = Literal["nodes", "elements"]
@@ -79,50 +81,6 @@ def _read_mesh(mesh: meshio.Mesh | str | Path) -> meshio.Mesh:
     return mesh if isinstance(mesh, meshio.Mesh) else meshio.read(str(mesh))
 
 
-def _triangles(mesh: meshio.Mesh) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
-    """Triangle connectivity and physical tags, in meshio block order."""
-    blocks = [
-        (block.data, np.asarray(phys))
-        for block, phys in zip(
-            mesh.cells, mesh.cell_data.get("gmsh:physical", []), strict=False
-        )
-        if block.type == "triangle"
-    ]
-    if not blocks:
-        raise ValueError("Mesh has no triangle elements.")
-    tris = np.asarray(np.vstack([data for data, _ in blocks]), dtype=np.int64)
-    tags = np.asarray(np.concatenate([phys for _, phys in blocks]), dtype=np.int64)
-    return tris, tags
-
-
-def _tag_names(mesh: meshio.Mesh) -> dict[int, str]:
-    """Map dim-2 physical tags to their group names."""
-    return {
-        int(np.asarray(data)[0]): str(name)
-        for name, data in mesh.field_data.items()
-        if int(np.asarray(data)[1]) == 2
-    }
-
-
-def _element_regions(mesh: meshio.Mesh) -> tuple[NDArray[np.int64], list[str]]:
-    """Triangle connectivity and the group name of every triangle."""
-    tris, tags = _triangles(mesh)
-    names = _tag_names(mesh)
-    return tris, [names.get(int(tag), "") for tag in tags]
-
-
-def _node_regions(
-    mesh: meshio.Mesh, n_points: int
-) -> tuple[NDArray[np.int64], list[str]]:
-    """Triangle connectivity and the group name inherited by every node."""
-    tris, element_names = _element_regions(mesh)
-    node_names = [""] * n_points
-    for element in range(tris.shape[0] - 1, -1, -1):
-        for node in tris[element]:
-            node_names[int(node)] = element_names[element]
-    return tris, node_names
-
-
 def _validated_samples(
     carriers: CarrierMapLike | Any,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
@@ -165,11 +123,11 @@ def _target_points(
     """Target coordinates and their region names, in mesh order."""
     points = np.asarray(mesh.points, dtype=np.float64)
     if at == "nodes":
-        _tris, regions = _node_regions(mesh, points.shape[0])
+        regions = node_regions(mesh)
         return np.asarray(points[:, :2], dtype=np.float64), regions
     if at != "elements":
         raise ValueError(f"Unknown granularity {at!r}; use 'nodes' or 'elements'.")
-    tris, regions = _element_regions(mesh)
+    tris, regions = element_regions(mesh)
     centroids = points[tris][:, :, :2].mean(axis=1)
     return np.asarray(centroids, dtype=np.float64), regions
 
@@ -228,7 +186,7 @@ def transfer_carriers(
     n_holes, _ = _interpolate(source, holes, target)
 
     if regions is not None:
-        available = sorted(set(_tag_names(target_mesh).values()))
+        available = sorted(set(group_names(target_mesh, dim=2).values()))
         unknown = [name for name in regions if name not in available]
         if unknown:
             raise ValueError(

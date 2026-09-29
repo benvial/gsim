@@ -43,6 +43,12 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
+from gsim.common.mesh_regions import (
+    cell_blocks,
+    group_names,
+    group_tags,
+    region_elements,
+)
 from gsim.common.modes import Conductor, LineReading, wall_mode_from_currents
 from gsim.common.stack.materials import (
     MaterialProperties,
@@ -62,7 +68,6 @@ __all__ = [
     "epsilon_by_region",
     "field_fraction_outside",
     "line_reading",
-    "region_elements",
     "region_material_map",
     "solve_modes",
     "z0_power_current",
@@ -90,15 +95,6 @@ def _complex_permittivity(
     return complex(eps_re * (1.0 - 1j * loss_tangent) - 1j * sigma / (omega * EPS0))
 
 
-def _group_tags_2d(mesh: meshio.Mesh) -> dict[str, int]:
-    """Map dim-2 physical-group names to their gmsh tags."""
-    return {
-        str(name): int(np.asarray(data)[0])
-        for name, data in mesh.field_data.items()
-        if int(np.asarray(data)[1]) == 2
-    }
-
-
 def region_material_map(stack: LayerStack, regions: list[str]) -> dict[str, str]:
     """Map mesh region (physical-group) names to stack material names.
 
@@ -118,47 +114,6 @@ def region_material_map(stack: LayerStack, regions: list[str]) -> dict[str, str]
         layer = stack.layers.get(region)
         mapping[region] = layer.material if layer is not None else region
     return mapping
-
-
-def region_elements(mesh: meshio.Mesh | str | Path, region: str) -> NDArray[np.int64]:
-    """Indices of the triangles belonging to one 2D region.
-
-    The indices are into the mesh's triangle order, which is the element
-    order :func:`solve_modes` builds its basis in — so they address the
-    same elements a solved Mode's per-element arrays do. That is what
-    :func:`z0_power_current` needs to integrate the current over one
-    conductor of a multi-conductor line.
-
-    Args:
-        mesh: The shared msh v2.2 mesh (path or loaded meshio mesh).
-        region: Name of the dim-2 physical group.
-
-    Returns:
-        The element indices, ascending.
-
-    Raises:
-        ValueError: When the mesh has no triangles, or no 2D group of
-            that name.
-    """
-    if not isinstance(mesh, meshio.Mesh):
-        mesh = meshio.read(str(mesh))
-    group_tags = _group_tags_2d(mesh)
-    if region not in group_tags:
-        raise ValueError(
-            f"Region '{region}' not found on the mesh. "
-            f"Available subdomains: {sorted(group_tags)}"
-        )
-    blocks = [
-        np.asarray(phys)
-        for block, phys in zip(
-            mesh.cells, mesh.cell_data.get("gmsh:physical", []), strict=False
-        )
-        if block.type == "triangle"
-    ]
-    if not blocks:
-        raise ValueError("Mesh has no triangle elements.")
-    tags = np.concatenate(blocks)
-    return np.asarray(np.flatnonzero(tags == group_tags[region]), dtype=np.int64)
 
 
 def epsilon_by_region(
@@ -200,7 +155,7 @@ def epsilon_by_region(
 
     if not isinstance(mesh, meshio.Mesh):
         mesh = meshio.read(str(mesh))
-    regions = list(_group_tags_2d(mesh))
+    regions = list(group_tags(mesh, dim=2))
     if not regions:
         raise ValueError("Mesh has no 2D physical groups.")
 
@@ -260,10 +215,7 @@ def elementwise_epsilon(
 
     if not isinstance(mesh, meshio.Mesh):
         mesh = meshio.read(str(mesh))
-    triangles = [block.data for block in mesh.cells if block.type == "triangle"]
-    if not triangles:
-        raise ValueError("Mesh has no triangle elements.")
-    tris = np.vstack(triangles)
+    tris, _tags = cell_blocks(mesh, "triangle")
     centroids = mesh.points[tris][:, :, :2].mean(axis=1)
 
     points = np.column_stack(
@@ -370,27 +322,27 @@ def solve_modes(
     basis0 = skfem.Basis(mesh, skfem.ElementTriP0())
 
     if isinstance(epsilon, dict):
-        group_tags = _group_tags_2d(mio)
+        tags_by_name = group_tags(mio, dim=2)
         eps = basis0.zeros(dtype=complex)
         # cast: ty cannot narrow the dict half of the union on its own.
         eps_map = cast("dict[str, complex]", epsilon)  # type: ignore[redundant-cast]
         for region, value in eps_map.items():
-            if region not in group_tags:
+            if region not in tags_by_name:
                 raise ValueError(
                     f"Region '{region}' not found on the mesh. "
-                    f"Available subdomains: {sorted(group_tags)}"
+                    f"Available subdomains: {sorted(tags_by_name)}"
                 )
             # ElementTriP0: one dof per element, in element order.
-            eps[phys_tags == group_tags[region]] = value
+            eps[phys_tags == tags_by_name[region]] = value
         # Every element must get a permittivity: a region left out of the map
         # keeps eps = 0, which is not a material at all -- it either makes the
         # shift-invert factorization singular or returns modes of a structure
         # the caller never described.
-        mapped = {group_tags[region] for region in eps_map}
+        mapped = {tags_by_name[region] for region in eps_map}
         present = {int(tag) for tag in np.unique(phys_tags)}
         missing = sorted(present - mapped)
         if missing:
-            tag_names = {tag: name for name, tag in group_tags.items()}
+            tag_names = group_names(mio, dim=2)
             named = [
                 f"'{tag_names[tag]}'" if tag in tag_names else f"tag {tag}"
                 for tag in missing

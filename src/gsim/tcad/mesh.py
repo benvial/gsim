@@ -15,6 +15,8 @@ import meshio
 import numpy as np
 from numpy.typing import NDArray
 
+from gsim.common.mesh_regions import cell_blocks, group_tags
+
 #: Coordinate scale from the gsim mesh unit (um) to DEVSIM's cm.
 UM_TO_CM: float = 1e-4
 
@@ -55,19 +57,15 @@ def line_group_points(path: str | Path, group: str) -> NDArray[np.float64]:
         in the mesh's own unit.
 
     Raises:
-        ValueError: When the mesh holds no line group of that name.
+        ValueError: When the mesh holds no line group of that name, or no
+            line cells at all.
     """
     mesh = meshio.read(str(path))
-    tag = mesh.field_data.get(group)
-    if tag is None or int(tag[1]) != 1:
+    tag = group_tags(mesh, dim=1).get(group)
+    if tag is None:
         raise ValueError(f"The mesh holds no line group named '{group}'.")
-    nodes: list[NDArray[np.int64]] = []
-    for block, physical in zip(
-        mesh.cells, mesh.cell_data["gmsh:physical"], strict=True
-    ):
-        if block.type == "line":
-            nodes.append(block.data[np.asarray(physical) == int(tag[0])].ravel())
-    indices = np.unique(np.concatenate(nodes)) if nodes else np.array([], dtype=int)
+    lines, tags = cell_blocks(mesh, "line")
+    indices = np.unique(lines[tags == tag].ravel())
     return np.asarray(mesh.points[indices, :2], dtype=np.float64)
 
 
