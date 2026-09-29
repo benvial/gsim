@@ -32,7 +32,7 @@ from gsim.modulator.route import EMRoute, Route
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from gsim.common.stack.staircase import (
+    from gsim.modulator.staircase import (
         ConductorModel,
         StaircaseCrossSection,
         SurroundingRegion,

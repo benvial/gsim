@@ -45,6 +45,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from gsim.common.carriers import permittivity_perturbation
+from gsim.common.cross_section import build_doped_cross_section
 from gsim.common.stack.materials import MaterialProperties, make_doped_materials
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ __all__ = [
     "STRIP_LENGTH_UM",
     "CarrierCoupling",
     "ConductorModel",
+    "CrossSectionOrientationError",
     "ElectrodeSpec",
     "MaterialResponseLike",
     "OpticalStripMaterial",
@@ -1052,8 +1054,6 @@ class StaircaseCrossSection:
             materials of the Stage this Staircase was built for.
         """
         if self._stack is None:
-            from gsim.common.cross_section import build_doped_cross_section
-
             stack, _section = build_doped_cross_section(
                 self.component,
                 axis=self._drawing.axis,
@@ -1194,6 +1194,10 @@ class SurroundingRegion:
     mesh_resolution: str | float = "fine"
 
 
+class CrossSectionOrientationError(ValueError):
+    """A drawn Cross-section was not cut on an x-normal plane."""
+
+
 def _cut_against(
     h: tuple[float, float],
     z: tuple[float, float],
@@ -1255,8 +1259,8 @@ def surroundings_from_section(
         section: Rectangles of the drawn Cross-section, each exposing
             ``layer_name``, ``material``, ``y0``, ``y1``, ``zmin`` and
             ``zmax`` (the output of
-            :func:`gsim.common.cross_section.extract_plane_section` on a
-            vertical plane).
+            :func:`gsim.common.cross_section.extract_plane_section` on an
+            x-normal plane).
         strip_span: ``(min, max)`` extent the Strips tile (um).
         strip_z: ``(min, max)`` vertical extent of the Strips (um).
         stack: The drawn layer stack, read for two things the section
@@ -1269,11 +1273,25 @@ def surroundings_from_section(
         The surrounding Regions, in section order, each named after the
         Region it came from (suffixed when one rectangle cuts into
         several pieces).
+
+    Raises:
+        CrossSectionOrientationError: The Cross-section was not cut on an
+            x-normal plane. No caller builds a y-normal Staircase, so the
+            contract is enforced rather than generalised.
     """
     material_map = dict(stack.materials) if stack is not None else {}
     layers = dict(stack.layers) if stack is not None else {}
+    rectangles = tuple(section)
+    if rectangles and not hasattr(rectangles[0], "y0"):
+        raise CrossSectionOrientationError(
+            "A Staircase is cut on an x-normal plane, where every "
+            "Cross-section rectangle carries a y extent. This one carries "
+            "none: extract_plane_section returns RectYZ2D for axis 'x' "
+            "alone (Rect2D for 'y', PolygonXY2D for 'z'), and the Staircase "
+            "is built on the x-normal Cross-section only."
+        )
     regions: list[SurroundingRegion] = []
-    for rect in section:
+    for rect in rectangles:
         name = str(rect.layer_name)
         h = (float(rect.y0), float(rect.y1))
         z = (float(rect.zmin), float(rect.zmax))

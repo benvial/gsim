@@ -63,24 +63,24 @@ from pydantic import Field, PrivateAttr, field_validator
 from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 
 from gsim.common.modes import LineModeRule
-from gsim.common.stack.staircase import (
+from gsim.modulator.em import EMStage
+from gsim.modulator.staircase import (
     DEFAULT_ELECTRODES,
     ConductorModel,
     ElectrodeSpec,
     RFStripMaterial,
 )
-from gsim.modulator.em import EMStage
 from gsim.tcad.results import BIAS_TOL_V
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from gsim.common.modes import Conductor, LineReading
-    from gsim.common.stack.staircase import StaircaseCrossSection
     from gsim.common.transmission_line import JunctionBranch, RFLineParams
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
     from gsim.modulator.report import LoadedLineComparison
     from gsim.modulator.route import Route
+    from gsim.modulator.staircase import StaircaseCrossSection
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import BiasSweepResult, CarrierMap
 
@@ -353,7 +353,7 @@ class RFStage(EMStage):
         the same Window — every Strip at zero electron and hole
         concentration, so it carries no Drude conductivity and the solve
         answers for the bare Traveling-wave electrode
-        (:meth:`~gsim.common.stack.staircase.StaircaseCrossSection.unloaded`).
+        (:meth:`~gsim.modulator.staircase.StaircaseCrossSection.unloaded`).
 
         Returns:
             The Staircase Cross-section, drawn on its own component.

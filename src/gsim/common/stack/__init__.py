@@ -56,10 +56,6 @@ from gsim.common.stack.pn_junction import (
     depletion_width,
     junction_capacitance_per_area,
 )
-from gsim.common.stack.staircase import (
-    staircase_profile,
-    strip_averages_from_nodes,
-)
 from gsim.common.stack.visualization import (
     StackLayer,
     parse_layer_stack,
@@ -207,6 +203,4 @@ __all__ = [
     "print_stack_table",
     "resolve_material_at_wavelength",
     "should_enable_dispersion",
-    "staircase_profile",
-    "strip_averages_from_nodes",
 ]

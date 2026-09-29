@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from gsim.common.modes import Conductor, LineReading
-    from gsim.common.stack.staircase import ConductorModel, StaircaseCrossSection
+    from gsim.modulator.staircase import ConductorModel, StaircaseCrossSection
     from gsim.palace import BoundaryModeSim
 
 __all__ = [

@@ -12,6 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
+import gdsfactory as gf
 import numpy as np
 import pytest
 
@@ -39,6 +40,19 @@ LENGTH_UM = DEFAULT_LENGTH_UM
 #: femwell off its two electrode currents, Palace off its gap voltage
 #: (ADR 0005).
 WALL_MODE_WARNING = "window wall"
+
+
+@pytest.fixture(autouse=True)
+def _generic_pdk_active() -> None:
+    """Ensure the generic PDK is active for each test.
+
+    Activation happens before every test rather than only at collection
+    time: Palace tests (e.g. the IHP mesh-regression suite) switch the
+    active PDK during execution and never restore it, so module-level
+    activation alone lets the IHP PDK leak into later modulator tests
+    under the random test ordering used by ``pytest-randomly``.
+    """
+    gf.gpdk.PDK.activate()
 
 
 def build_demo():

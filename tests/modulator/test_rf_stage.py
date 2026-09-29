@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from gsim.common.carriers import MobilityModel
-from gsim.common.stack.staircase import ElectrodeSpec
+from gsim.modulator.staircase import ElectrodeSpec
 
 from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, SLAB
 
@@ -216,7 +216,7 @@ class TestPerfectElectrodesNeedTheWall:
 
     def test_a_pec_electrode_without_the_wall_is_refused(self):
         """Off, the electrode hole would come out as an open slot."""
-        from gsim.modulator import FemwellRoute
+        from gsim.modulator.femwell_route import FemwellRoute
 
         with pytest.raises(ValueError, match="open slots"):
             FemwellRoute().check_line_settings(
@@ -227,7 +227,7 @@ class TestPerfectElectrodesNeedTheWall:
             )
 
     def test_a_pec_electrode_with_the_wall_is_fine(self):
-        from gsim.modulator import FemwellRoute
+        from gsim.modulator.femwell_route import FemwellRoute
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")
@@ -240,7 +240,7 @@ class TestPerfectElectrodesNeedTheWall:
 
     def test_a_volume_electrode_does_not_need_the_wall(self, biased):
         """A metal region is a conductor whatever the boundary is."""
-        from gsim.modulator import FemwellRoute
+        from gsim.modulator.femwell_route import FemwellRoute
 
         biased.rf(conductor_model="volume", metallic_boundaries=False)
         assert biased.rf.effective_conductor_model() == "volume"
@@ -298,7 +298,7 @@ class TestContourOrder:
     """A perfect conductor's current is read off the field around it."""
 
     def test_a_first_order_solve_of_a_pec_staircase_is_reported(self):
-        from gsim.modulator import FemwellRoute
+        from gsim.modulator.femwell_route import FemwellRoute
 
         with pytest.warns(UserWarning, match="biased high by tens of percent"):
             FemwellRoute().check_line_settings(
@@ -309,7 +309,7 @@ class TestContourOrder:
             )
 
     def test_a_second_order_solve_is_not(self):
-        from gsim.modulator import FemwellRoute
+        from gsim.modulator.femwell_route import FemwellRoute
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")

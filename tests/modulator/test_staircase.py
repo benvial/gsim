@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from gsim.common.stack.staircase import (
+from gsim.modulator.staircase import (
     OpticalStripMaterial,
     RFStripMaterial,
     StaircaseDrawing,

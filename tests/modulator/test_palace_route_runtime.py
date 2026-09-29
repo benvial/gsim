@@ -27,7 +27,8 @@ import numpy as np
 import pytest
 
 from gsim.common.modes import NoLineModeError
-from gsim.modulator import Device, PalaceRoute, Study
+from gsim.modulator import Device, Study
+from gsim.modulator.palace_route import PalaceRoute
 
 from .conftest import (
     CENTER_Y,

@@ -33,9 +33,9 @@ if TYPE_CHECKING:
     import gdsfactory as gf
 
     from gsim.common.stack.extractor import LayerStack
-    from gsim.common.stack.staircase import ElectrodeSpec
     from gsim.modulator.device import Device
     from gsim.modulator.route import EMRoute
+    from gsim.modulator.staircase import ElectrodeSpec
 
 __all__ = ["pn_phase_shifter"]
 

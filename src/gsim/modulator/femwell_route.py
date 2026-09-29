@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from gsim.common.modes import Conductor, LineReading
-    from gsim.common.stack.staircase import ConductorModel
+    from gsim.modulator.staircase import ConductorModel
     from gsim.palace import BoundaryModeSim
 
 __all__ = ["FemwellRoute"]

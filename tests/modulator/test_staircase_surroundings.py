@@ -17,7 +17,8 @@ import numpy as np
 import pytest
 
 from gsim.common.stack.extractor import Layer, LayerStack
-from gsim.common.stack.staircase import (
+from gsim.modulator.staircase import (
+    CrossSectionOrientationError,
     SurroundingRegion,
     carrier_map_extent,
     surroundings_from_section,
@@ -127,6 +128,29 @@ class TestCuttingAgainstTheStrips:
         )
 
 
+class TestTheSectionIsXNormal:
+    """A y-normal Cross-section is refused by name, not by ``AttributeError``."""
+
+    @dataclass(frozen=True)
+    class XZRect:
+        """A rectangle of a y-normal Cross-section, as ``Rect2D`` carries it."""
+
+        layer_name: str
+        material: str
+        x0: float
+        x1: float
+        zmin: float
+        zmax: float
+
+    def test_a_y_normal_section_is_reported(self):
+        section = [self.XZRect("slab", "si", -5.0, 5.0, -0.5, 0.5)]
+
+        with pytest.raises(CrossSectionOrientationError, match="x-normal"):
+            surroundings_from_section(
+                section, strip_span=(-0.6, 0.6), strip_z=(0.0, 0.22)
+            )
+
+
 class TestWhatTheRegionsCarry:
     def test_a_conductor_stays_a_conductor(self):
         """ADR 0003: metal is meshed as an outline, not as a domain."""
@@ -206,7 +230,7 @@ class TestTheRegionsAreDrawable:
     def test_a_non_ascending_extent_is_reported(self):
         import gdsfactory as gf
 
-        from gsim.common.stack.staircase import _surrounding_layers
+        from gsim.modulator.staircase import _surrounding_layers
 
         bad = SurroundingRegion(name="x", h=(1.0, 1.0), z=(0.0, 0.2), material="si")
         with pytest.raises(ValueError, match="in-plane extent"):
@@ -217,7 +241,7 @@ class TestTheRegionsAreDrawable:
     def test_two_regions_of_one_name_are_reported(self):
         import gdsfactory as gf
 
-        from gsim.common.stack.staircase import _surrounding_layers
+        from gsim.modulator.staircase import _surrounding_layers
 
         one = SurroundingRegion(name="x", h=(0.0, 1.0), z=(0.0, 0.2), material="si")
         with pytest.raises(ValueError, match="both named"):

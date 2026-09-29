@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- The Staircase is `gsim.modulator.staircase`, not `gsim.common.stack.staircase`, and `gsim.common.stack` no longer
+  re-exports `staircase_profile` / `strip_averages_from_nodes`, so `import gsim.common` stops loading the Staircase at
+  all. No Backend imported it: every consumer already sat under `gsim.modulator`, and what femwell, Palace and tcad mesh
+  is the `LayerStack` that `StaircaseCrossSection.stack()` resolves to. The whole module moves in one piece, with no
+  compatibility shims; with it modulator-side, its `build_doped_cross_section` import is no longer deferred to dodge a
+  cycle. `surroundings_from_section` raises the new `CrossSectionOrientationError` naming the x-normal contract where a
+  y-normal Cross-section used to reach an `AttributeError`.
+
+- `gsim.modulator.__all__` drops `Stage`, `Route`, `FemwellRoute`, `PalaceRoute` and `DEFAULT_PALACE_STRIPS`, each of
+  which stays importable from its own module (`gsim.modulator.stage`, `.route`, `.femwell_route`, `.palace_route`).
+  Nothing outside the package subclasses or instantiates them: a Route is selected by name string (`route="palace"`).
+  `StageNotRunError` stays public because callers catch it, and `EMRoute` stays because it is the literal type of a
+  setting users pass.
+
 - The line theory and the modulator physics are separate modules, and `gsim.common.twmzm` / `gsim.common.twmzm_report`
   are gone with no shims. `gsim.common.transmission_line` keeps what describes a transmission line with no modulator in
   sight — `RFLineParams`, `line_params_from_neff` / `line_params_from_gamma`, `rlgc_from_line_params`, `JunctionBranch`,

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     import gdsfactory as gf
 
     from gsim.common.stack.extractor import LayerStack
-    from gsim.common.stack.staircase import ElectrodeSpec
+    from gsim.modulator.staircase import ElectrodeSpec
     from gsim.tcad.doping import StepDoping, TableDoping
 
 __all__ = [
@@ -468,7 +468,7 @@ def rib_phase_shifter(
     from gsim.common.cross_section import build_doped_cross_section
     from gsim.common.stack.extractor import Layer
     from gsim.common.stack.materials import make_doped_materials
-    from gsim.common.stack.staircase import ElectrodeSpec
+    from gsim.modulator.staircase import ElectrodeSpec
     from gsim.tcad.doping import StepDoping
 
     if lateral_straggle_um < 0.0:

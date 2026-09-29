@@ -42,21 +42,21 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from gsim.common.stack.staircase import DEFAULT_SI_INDEX, OpticalStripMaterial
 from gsim.modulator.em import EMStage
 from gsim.modulator.route import DEFAULT_PALACE_STRIPS
+from gsim.modulator.staircase import DEFAULT_SI_INDEX, OpticalStripMaterial
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     import meshio
 
-    from gsim.common.stack.staircase import (
+    from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
+    from gsim.modulator.route import Route
+    from gsim.modulator.staircase import (
         StaircaseCrossSection,
         SurroundingRegion,
     )
-    from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
-    from gsim.modulator.route import Route
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import CarrierMap
 
@@ -384,7 +384,7 @@ class OpticalStage(EMStage):
         Returns:
             The configured ``strip_index``, or the index of the drawn
             Junction's material at this Stage's wavelength.
-            :data:`~gsim.common.stack.staircase.DEFAULT_SI_INDEX` stands
+            :data:`~gsim.modulator.staircase.DEFAULT_SI_INDEX` stands
             in for a material the stack cannot resolve.
         """
         if self.strip_index is not None:
@@ -445,7 +445,7 @@ class OpticalStage(EMStage):
             The surrounding Regions, empty when the drawn Cross-section
             has nothing on it but the doped silicon the Strips replace.
         """
-        from gsim.common.stack.staircase import surroundings_from_section
+        from gsim.modulator.staircase import surroundings_from_section
 
         study = self._require_study()
         junction = study.layout.junction_span

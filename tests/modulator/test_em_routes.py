@@ -22,7 +22,8 @@ import pytest
 from pydantic import ValidationError
 
 from gsim.common.modes import Conductor
-from gsim.modulator import DEFAULT_PALACE_STRIPS, OpticalStage, RFStage
+from gsim.modulator import OpticalStage, RFStage
+from gsim.modulator.route import DEFAULT_PALACE_STRIPS
 from gsim.palace.results import PalaceTextResults
 
 from .conftest import SLAB
@@ -30,7 +31,8 @@ from .conftest import SLAB
 
 class TestRouteRegistry:
     def test_each_name_resolves_to_its_adapter(self):
-        from gsim.modulator import FemwellRoute, PalaceRoute
+        from gsim.modulator.femwell_route import FemwellRoute
+        from gsim.modulator.palace_route import PalaceRoute
         from gsim.modulator.route import route_for
 
         assert isinstance(route_for("femwell"), FemwellRoute)
@@ -52,7 +54,8 @@ class TestRouteRegistry:
         assert isinstance(biased.rf.resolved_route(), fake_route)
 
     def test_the_adapters_say_what_they_can_express(self):
-        from gsim.modulator import FemwellRoute, PalaceRoute
+        from gsim.modulator.femwell_route import FemwellRoute
+        from gsim.modulator.palace_route import PalaceRoute
 
         assert FemwellRoute.continuous_materials is True
         assert PalaceRoute.continuous_materials is False
@@ -787,7 +790,7 @@ class TestPalaceRoutePreparesTheLine:
         return sim, staircase
 
     def test_the_paths_are_declared_on_the_meshed_simulation(self, biased):
-        from gsim.modulator import PalaceRoute
+        from gsim.modulator.palace_route import PalaceRoute
 
         sim, staircase = self._meshed(biased)
         signal, return_ = biased.rf.line_conductors(staircase)
@@ -807,7 +810,7 @@ class TestPalaceRoutePreparesTheLine:
 
     def test_a_signal_the_window_clips_leaves_the_reading_to_the_fields(self, biased):
         """A Window clipping an electrode is no reason to refuse the solve."""
-        from gsim.modulator import PalaceRoute
+        from gsim.modulator.palace_route import PalaceRoute
 
         sim, staircase = self._meshed(biased, conductor_model="volume")
         signal, return_ = biased.rf.line_conductors(staircase)
@@ -824,7 +827,7 @@ class TestPalaceRoutePreparesTheLine:
         assert sim.mode_paths == []
 
     def test_a_line_without_a_single_return_is_read_off_the_fields(self, biased):
-        from gsim.modulator import PalaceRoute
+        from gsim.modulator.palace_route import PalaceRoute
 
         sim, staircase = self._meshed(biased)
         signal, _ = biased.rf.line_conductors(staircase)
@@ -843,7 +846,7 @@ class TestFemwellRouteReadsTheWallOffTheSimulation:
     def test_the_solve_uses_the_simulation_flag(self, monkeypatch, wall):
         from types import SimpleNamespace
 
-        from gsim.modulator import FemwellRoute
+        from gsim.modulator.femwell_route import FemwellRoute
 
         seen = {}
 
