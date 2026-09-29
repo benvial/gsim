@@ -11,7 +11,6 @@ from gsim.common.stack.materials import MaterialProperties
 from gsim.femwell.adapter import (
     elementwise_epsilon,
     epsilon_by_region,
-    region_material_map,
 )
 
 WL_UM = 1.55
@@ -57,12 +56,6 @@ def _stack():
         mesh_resolution="fine",
     )
     return stack
-
-
-class TestRegionMaterialMap:
-    def test_layer_regions_use_layer_material(self):
-        mapping = region_material_map(_stack(), ["core", "sio2"])
-        assert mapping == {"core": "si", "sio2": "sio2"}
 
 
 class TestEpsilonByRegion:

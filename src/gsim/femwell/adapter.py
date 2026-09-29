@@ -59,7 +59,8 @@ from gsim.common.modes import z0_power_current as common_z0
 from gsim.common.stack.materials import (
     MaterialProperties,
     ResolvedMaterial,
-    resolve_material_at_wavelength,
+    region_material_map,
+    resolve_stack_material,
 )
 from gsim.femwell.runtime import require_femwell, require_skfem
 
@@ -74,7 +75,6 @@ __all__ = [
     "epsilon_by_region",
     "field_fraction_outside",
     "line_reading",
-    "region_material_map",
     "solve_modes",
     "z0_power_current",
 ]
@@ -99,27 +99,6 @@ def _complex_permittivity(
     )
     omega = 2.0 * np.pi * frequency_hz
     return complex(eps_re * (1.0 - 1j * loss_tangent) - 1j * sigma / (omega * EPS0))
-
-
-def region_material_map(stack: LayerStack, regions: list[str]) -> dict[str, str]:
-    """Map mesh region (physical-group) names to stack material names.
-
-    Regions matching a stack layer use that layer's material; other
-    regions (background media like ``sio2`` / ``air``, or generated strip
-    regions whose material shares the region name) map to their own name.
-
-    Args:
-        stack: The layer stack the mesh was generated from.
-        regions: 2D physical-group names on the mesh.
-
-    Returns:
-        ``{region_name: material_name}``.
-    """
-    mapping: dict[str, str] = {}
-    for region in regions:
-        layer = stack.layers.get(region)
-        mapping[region] = layer.material if layer is not None else region
-    return mapping
 
 
 def epsilon_by_region(
@@ -166,21 +145,13 @@ def epsilon_by_region(
         raise ValueError("Mesh has no 2D physical groups.")
 
     materials = region_material_map(stack, regions)
-    merged_overrides: dict[str, MaterialProperties] = {}
-    for name, props in (stack.materials or {}).items():
-        merged_overrides[name] = (
-            props
-            if isinstance(props, MaterialProperties)
-            else MaterialProperties.model_validate(props)
-        )
-    merged_overrides.update(overrides or {})
+    stack_materials = dict(stack.materials or {})
 
     result: dict[str, complex] = {}
     for region in regions:
         material = materials[region]
-        resolved = resolve_material_at_wavelength(
-            material, wavelength, overrides=merged_overrides
-        )
+        entry = (overrides or {}).get(material, stack_materials.get(material))
+        resolved = resolve_stack_material(material, entry, wavelength)
         if resolved is None:
             raise ValueError(
                 f"Region '{region}' maps to material '{material}' which is "

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- One material-resolution rule. `gsim.common.stack.materials.resolve_stack_material(name, entry, wavelength_um)` owns
+  the contested part both Backends had written out: validate the stack entry as an override so a user's `set_material`
+  scalars and any dispersion model survive, fall through to the database when the entry is no valid `MaterialProperties`
+  record, and answer `None` when neither resolves. Each Backend keeps its own policy on top — femwell raises naming the
+  region, Palace skips a conductive material and leaves an unresolvable entry as the stack wrote it.
+  `region_material_map` moves to the same file, directly above it, and leaves `gsim.femwell.__all__` with no shim: it
+  reads the stack and names mesh regions, with nothing femwell in it.
+
 - One scatter interpolator behind every mesh-to-mesh sample.
   `gsim.common.interpolate.sample_at(points, values, targets, fill=...)` is the linear interpolant over a cloud's
   triangulation with nearest-neighbour or a scalar outside its hull, and it always returns the missing mask, so a caller

@@ -18,7 +18,6 @@ from gsim.femwell.adapter import (
     epsilon_by_region,
     field_fraction_outside,
     line_reading,
-    region_material_map,
     solve_modes,
     z0_power_current,
 )
@@ -31,7 +30,6 @@ __all__ = [
     "epsilon_by_region",
     "field_fraction_outside",
     "line_reading",
-    "region_material_map",
     "require_femwell",
     "require_skfem",
     "solve_modes",
