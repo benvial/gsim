@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         EigenmodeConfig,
         NumericalConfig,
     )
+    from gsim.palace.models.cross_section import _LayerPairSpec
     from gsim.palace.models.pec import PECBlockConfig
     from gsim.palace.ports.config import PalacePort
 
@@ -289,8 +290,8 @@ def _generate_native_boundarymode_groups(
     airbox_z_above: float | None,
     airbox_z_below: float | None,
     airbox_material: str = "air",
-    contact_specs: list | None = None,
-    interface_specs: list | None = None,
+    contact_specs: list[_LayerPairSpec] | None = None,
+    interface_specs: list[_LayerPairSpec] | None = None,
 ) -> dict:
     """Build a native 2D gmsh model and groups for BoundaryMode."""
     if cross_section.axis not in {"x", "y"}:
@@ -764,7 +765,9 @@ def _generate_native_boundarymode_groups(
                 )
             return curves
 
-        def _tag_line_groups(specs: list, *, kind: str, key: str) -> None:
+        def _tag_line_groups(
+            specs: list[_LayerPairSpec], *, kind: str, key: str
+        ) -> None:
             groups[key] = {}
             for spec in specs:
                 shared_curves = _layer_curves(
@@ -1154,8 +1157,8 @@ def generate_mesh(
     numerical_config: NumericalConfig | None = None,
     boundary_mode_config: BoundaryModeConfig | None = None,
     cross_section: CrossSectionPlaneConfig | None = None,
-    contact_specs: list | None = None,
-    interface_specs: list | None = None,
+    contact_specs: list[_LayerPairSpec] | None = None,
+    interface_specs: list[_LayerPairSpec] | None = None,
     write_config: bool = True,
     planar_conductors: bool = False,
     pec_blocks: list[PECBlockConfig] | None = None,

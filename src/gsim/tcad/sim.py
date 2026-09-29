@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 
 from gsim.common.carriers import MobilityModel
+from gsim.palace.base import MeshSourceMixin
 from gsim.tcad.doping import (
     DopingProfile,
     acceptor_donor_concentrations,
@@ -91,7 +92,7 @@ class Insulator(BaseModel):
     relative_permittivity: float = Field(gt=0.0)
 
 
-class ChargeTransportSim(BaseModel):
+class ChargeTransportSim(MeshSourceMixin, BaseModel):
     """Poisson + drift-diffusion simulation of a waveguide cross-section.
 
     Example:
@@ -181,7 +182,7 @@ class ChargeTransportSim(BaseModel):
     # Delegated configuration (shared geometry seam)
     # ------------------------------------------------------------------
 
-    def _boundary_sim(self) -> Any:
+    def _mesh_source(self) -> Any:
         """Lazily create the internal BoundaryModeSim used for meshing."""
         if self._bsim is None:
             from gsim.palace import BoundaryModeSim
@@ -189,62 +190,9 @@ class ChargeTransportSim(BaseModel):
             self._bsim = BoundaryModeSim()
         return self._bsim
 
-    def set_geometry(self, component: Any) -> None:
-        """Set the gdsfactory component (delegates to the mesh pipeline)."""
-        self._boundary_sim().set_geometry(component)
-
-    def set_stack(self, *args: Any, **kwargs: Any) -> None:
-        """Configure the layer stack (same arguments as the palace backends)."""
-        self._boundary_sim().set_stack(*args, **kwargs)
-
-    def set_airbox(self, **kwargs: Any) -> None:
-        """Configure the background region around the clipped domain."""
-        self._boundary_sim().set_airbox(**kwargs)
-
-    def set_output_dir(self, path: str | Path) -> None:
-        """Set the output directory for mesh files."""
-        self._boundary_sim().set_output_dir(path)
-
-    def set_cross_section(
-        self,
-        plane: Any,
-        *,
-        window: tuple[float, float] | None = None,
-        window_z: tuple[float, float] | None = None,
-    ) -> None:
-        """Set the cross-section plane and charge-transport window.
-
-        Args:
-            plane: Plane spec (``"x=<value>"`` / ``"y=<value>"``) or a
-                prebuilt ``CrossSectionPlaneConfig``.
-            window: In-plane ``(min, max)`` clip in um — typically the doped
-                slab between the contacts.
-            window_z: Vertical ``(min, max)`` clip in um.
-        """
-        self._boundary_sim().set_cross_section(plane, window=window, window_z=window_z)
-
-    def add_contact(self, *, name: str, layer_a: str, layer_b: str) -> None:
-        """Declare a named contact at the interface between two layers."""
-        self._boundary_sim().add_contact(name=name, layer_a=layer_a, layer_b=layer_b)
-
-    def add_interface(self, *, name: str, layer_a: str, layer_b: str) -> None:
-        """Declare a semiconductor-semiconductor interface between regions.
-
-        Adjacent doped mesh regions (e.g. the P and N halves of a rib) load
-        into DEVSIM as separate regions; without an interface they are
-        electrically disconnected and no junction forms. The shared curves
-        between the two layers are tagged as a dim-1 physical group and
-        bound with ``devsim.add_gmsh_interface`` plus potential/carrier
-        continuity, so the drift-diffusion solution is continuous across
-        the junction. An interface is never a contact: it carries no
-        terminal voltage, and the mesh keeps the two apart.
-
-        Args:
-            name: Interface / physical-group name (e.g. ``"junction"``).
-            layer_a: First doped region layer name.
-            layer_b: Second doped region layer name.
-        """
-        self._boundary_sim().add_interface(name=name, layer_a=layer_a, layer_b=layer_b)
+    def _mesh_source_or_none(self) -> Any | None:
+        """The internal BoundaryModeSim, or None while nothing configured it."""
+        return self._bsim
 
     def add_doping(self, profile: DopingProfile) -> None:
         """Add an analytic doping profile (see :mod:`gsim.tcad.doping`)."""
@@ -296,43 +244,6 @@ class ChargeTransportSim(BaseModel):
         return self._bsim.cross_section if self._bsim is not None else None
 
     @property
-    def contact_specs(self) -> list[Any]:
-        """Declared contacts — the ohmic terminals, and nothing else."""
-        return list(self._bsim.contact_specs) if self._bsim is not None else []
-
-    @property
-    def interface_specs(self) -> list[Any]:
-        """Declared semiconductor-semiconductor interfaces."""
-        return list(self._bsim.interface_specs) if self._bsim is not None else []
-
-    @property
-    def output_dir(self) -> Path | None:
-        """Output directory (or None)."""
-        return self._bsim.output_dir if self._bsim is not None else None
-
-    @property
-    def has_mesh(self) -> bool:
-        """Whether ``mesh()`` has run and left a mesh to read."""
-        return self._bsim is not None and bool(self._bsim.has_mesh)
-
-    def _meshed_boundary_sim(self) -> Any:
-        """Return the delegated mesh pipeline, or explain it has not meshed."""
-        if not self.has_mesh:
-            raise ValueError(
-                "No mesh generated for this ChargeTransportSim. Call mesh() first."
-            )
-        return self._bsim
-
-    @property
-    def mesh_path(self) -> Path:
-        """Path of the shared native-2D mesh (um), once meshed.
-
-        Raises:
-            ValueError: When read before ``mesh()`` has run.
-        """
-        return Path(self._meshed_boundary_sim().mesh_path)
-
-    @property
     def devsim_mesh_path(self) -> Path:
         """Path of the cm-scaled mesh copy loaded by DEVSIM, once meshed.
 
@@ -345,15 +256,6 @@ class ChargeTransportSim(BaseModel):
                 "Call mesh() first."
             )
         return self._devsim_mesh_path
-
-    @property
-    def mesh_groups(self) -> dict[str, Any]:
-        """Physical groups of the generated mesh, once meshed.
-
-        Raises:
-            ValueError: When read before ``mesh()`` has run.
-        """
-        return dict(self._meshed_boundary_sim().mesh_groups)
 
     # ------------------------------------------------------------------
     # Meshing
@@ -369,7 +271,7 @@ class ChargeTransportSim(BaseModel):
         Returns:
             The mesh-generation result of the shared pipeline.
         """
-        bsim = self._boundary_sim()
+        bsim = self._mesh_source()
         if not bsim.contact_specs:
             raise ValueError(
                 "Charge transport requires at least one contact. "

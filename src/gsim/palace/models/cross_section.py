@@ -11,7 +11,32 @@ from gsim.common.cross_section import parse_plane_spec
 from gsim.common.validation import AscendingInterval
 
 
-class ContactSpec(BaseModel):
+class _LayerPairSpec(BaseModel):
+    """A named dim-1 physical group declared as a pair of layers.
+
+    What a contact and an interface have in common and nothing more: a
+    name to tag the shared curves between two layers' meshed regions
+    with, and the two distinct layers to find them between. The two
+    concepts stay apart — an Interface carries no terminal voltage,
+    which is the whole difference — so this base is private and neither
+    subclass is a substitute for the other.
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    name: str = Field(min_length=1, description="Physical-group name")
+    layer_a: str = Field(min_length=1, description="First layer of the interface")
+    layer_b: str = Field(min_length=1, description="Second layer of the interface")
+
+    @model_validator(mode="after")
+    def validate_layers_differ(self) -> Self:
+        """A layer pair needs two distinct layers."""
+        if self.layer_a == self.layer_b:
+            raise ValueError("layer_a and layer_b must differ")
+        return self
+
+
+class ContactSpec(_LayerPairSpec):
     """Named contact between two layers on the native-2D cross-section mesh.
 
     The shared interface curves between the two layers' meshed regions are
@@ -25,21 +50,10 @@ class ContactSpec(BaseModel):
         layer_b: Second layer of the interface (e.g. the doped semiconductor).
     """
 
-    model_config = ConfigDict(validate_assignment=True)
-
     name: str = Field(min_length=1, description="Contact physical-group name")
-    layer_a: str = Field(min_length=1, description="First layer of the interface")
-    layer_b: str = Field(min_length=1, description="Second layer of the interface")
-
-    @model_validator(mode="after")
-    def validate_layers_differ(self) -> Self:
-        """A contact needs two distinct layers."""
-        if self.layer_a == self.layer_b:
-            raise ValueError("layer_a and layer_b must differ")
-        return self
 
 
-class InterfaceSpec(BaseModel):
+class InterfaceSpec(_LayerPairSpec):
     """Named interface between two semiconductor layers on the native-2D mesh.
 
     The shared curves between the two layers' meshed regions are tagged as
@@ -54,18 +68,7 @@ class InterfaceSpec(BaseModel):
         layer_b: Second semiconductor layer.
     """
 
-    model_config = ConfigDict(validate_assignment=True)
-
     name: str = Field(min_length=1, description="Interface physical-group name")
-    layer_a: str = Field(min_length=1, description="First layer of the interface")
-    layer_b: str = Field(min_length=1, description="Second layer of the interface")
-
-    @model_validator(mode="after")
-    def validate_layers_differ(self) -> Self:
-        """An interface needs two distinct layers."""
-        if self.layer_a == self.layer_b:
-            raise ValueError("layer_a and layer_b must differ")
-        return self
 
 
 class CrossSectionPlaneConfig(BaseModel):

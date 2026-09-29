@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A simulation that delegates its meshing no longer hand-mirrors the surface. `gsim.palace.base.MeshSourceMixin` carries
+  the thirteen accessors and the "call mesh() first" guard over an abstract `_mesh_source()` hook, so
+  `ChargeTransportSim` — which delegates to a lazily-created `BoundaryModeSim` rather than inheriting from one — keeps
+  its delegate private and loses about 90 lines of mirroring. The readers answer for an unconfigured simulation instead
+  of building one to ask, which is the behaviour the hand-written `has_mesh` had, and the guard still names the concrete
+  class. tcad keeps `devsim_mesh_path`, which has no counterpart.
+
+- `ContactSpec` and `InterfaceSpec` gain a private `_LayerPairSpec` base in the file they already share, keeping their
+  own names and docstrings. They were field-identical and validator-identical; they are still different concepts — an
+  Interface carries no terminal voltage — so the base is private and neither is a substitute for the other.
+  `gsim.palace.mesh.generator`, which already treats them alike, types against the base.
+
 - A sweep of points over one scalar key has one base. `gsim.common.sweep.ScalarSweep[PointT]` holds the key array and
   the tolerant `point_at` lookup that `CarrierResponseSweep` and `BiasSweepResult` each wrote out, with a `_key(point)`
   hook naming the swept axis; everything else about the two stays where it was, and `BiasSweepResult` keeps `voltages`
