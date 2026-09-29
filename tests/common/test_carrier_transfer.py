@@ -155,6 +155,33 @@ class TestPhysicalGroups:
         assert got.electrons_cm3[0] != 0.0
         assert got.filled.tolist() == [False, True]
 
+    def test_a_restricted_point_inside_the_hull_takes_the_nearest_sample(
+        self, tmp_path
+    ):
+        """`fill="nearest"` reaches the region restriction, not only the hull.
+
+        A point the regions exclude sits well inside the solved domain,
+        where the interpolant has an answer; the nearest fill has to
+        override it, or the restriction does nothing for that point.
+        """
+        mesh_path = _unit_square_mesh(tmp_path)
+
+        restricted = transfer_carriers(
+            _linear_carriers(),
+            mesh_path,
+            at="elements",
+            fill="nearest",
+            regions=["core"],
+        )
+        unrestricted = transfer_carriers(
+            _linear_carriers(), mesh_path, at="elements", fill="nearest"
+        )
+
+        assert restricted.filled.tolist() == [False, True]
+        assert restricted.electrons_cm3[1] != pytest.approx(
+            unrestricted.electrons_cm3[1]
+        )
+
     def test_unknown_region_name_is_rejected_with_the_available_ones(self, tmp_path):
         mesh_path = _unit_square_mesh(tmp_path)
 

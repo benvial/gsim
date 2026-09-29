@@ -522,6 +522,37 @@ class TestAbortedBinaryIsReported:
         with pytest.raises(RuntimeError, match="opal_shmem_base_select failed"):
             self._boundary_mode_run(tmp_path)
 
+    def test_a_streaming_run_is_diagnosed_too(self, monkeypatch, tmp_path):
+        """`verbose=True` is the default, and it streams rather than checks."""
+        _setup_local_palace(monkeypatch, tmp_path)
+        monkeypatch.delenv("PALACE_SIF", raising=False)
+        monkeypatch.delenv("PALACE_EXECUTABLE", raising=False)
+
+        class _DeadProcess:
+            stdout = iter(["opal_shmem_base_select failed\n"])
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def wait(self):
+                return -6
+
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: _DeadProcess())
+
+        sim = DrivenSim()
+        sim._last_mesh_result = _mesh_result(50_000)
+        _setup_sim(sim, tmp_path / "sim")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            sim.run_local(verbose=True)
+        message = str(excinfo.value)
+        assert "SIGABRT" in message
+        assert "any solver output" in message
+        assert "opal_shmem_base_select failed" in message
+
     def test_partial_output_is_not_blamed_on_the_runtime(
         self, tmp_path, aborting_palace
     ):

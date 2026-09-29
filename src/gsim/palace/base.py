@@ -1,7 +1,12 @@
-"""Base mixin for Palace simulation classes.
+"""What every Palace simulation does the same way.
 
-Provides common methods shared across all simulation types:
-DrivenSim, EigenmodeSim, ElectrostaticSim.
+:class:`PalaceSimMixin` provides the methods shared across the simulation
+types — DrivenSim, EigenmodeSim, ElectrostaticSim and BoundaryModeSim:
+geometry and stack configuration, meshing, config generation, and the
+local run, including what a run that dies on a signal means.
+
+:class:`MeshSourceMixin` is the same surface for a simulation that does
+not mesh for itself but delegates to one that does.
 """
 
 from __future__ import annotations
@@ -365,14 +370,6 @@ class PalaceSimMixin:
     def _run_context(self) -> str:
         """What was being run, named in the first line of an abort report."""
         return f"during the {self.simulation_type} solve"
-
-    def _mesh_source(self) -> Any:
-        """A Palace simulation meshes for itself, so it is its own source."""
-        return self
-
-    def _mesh_source_or_none(self) -> Any | None:
-        """A Palace simulation always exists, so it is always the source."""
-        return self
 
     def _require_mesh_result(self) -> Any:
         """Return the last mesh result, or explain that meshing is missing."""
@@ -2602,7 +2599,10 @@ class PalaceSimMixin:
             _emit_info("Command: %s", " ".join(cmd))
             _emit_info("Processes: %d", num_processes)
 
-        # Run simulation
+        # Run simulation. Both paths report a failure the same way, so
+        # the one that streams records it rather than raising inside the
+        # block whose handler would catch it.
+        failure: subprocess.CalledProcessError | None = None
         try:
             if verbose:
                 streamed_lines: list[str] = []
@@ -2624,13 +2624,15 @@ class PalaceSimMixin:
                     returncode = process.wait()
 
                 if returncode != 0:
-                    tail = "\n".join(streamed_lines[-200:])
-                    error_msg = (
-                        f"Palace simulation failed with return code {returncode}"
+                    # The output was streamed as it arrived, so a report
+                    # quoting the decisive line loses nothing a user has
+                    # not already seen.
+                    failure = subprocess.CalledProcessError(
+                        returncode,
+                        cmd,
+                        output="",
+                        stderr="\n".join(streamed_lines[-200:]),
                     )
-                    if tail:
-                        error_msg += f"\n\nOutput (tail):\n{tail}"
-                    raise RuntimeError(error_msg)
             else:
                 result = subprocess.run(  # noqa: S603
                     cmd,
@@ -2656,18 +2658,21 @@ class PalaceSimMixin:
                 "or set PALACE_EXECUTABLE environment variable."
             ) from e
         except subprocess.CalledProcessError as err:
+            failure = err
+
+        if failure is not None:
             from gsim.palace.runtime import binary_that_ran, local_abort_report
 
             raise RuntimeError(
                 local_abort_report(
-                    err,
-                    binary=binary_that_ran(err, palace_executable),
+                    failure,
+                    binary=binary_that_ran(failure, palace_executable),
                     output_dir=output_dir,
                     wrote_output=_wrote_solver_output(output_dir),
                     during=self._run_context(),
                     remedy=remedy,
                 )
-            ) from err
+            ) from failure
 
         if verbose:
             _emit_info("Simulation completed successfully")

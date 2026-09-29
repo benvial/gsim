@@ -3,8 +3,9 @@
 ## Unreleased
 
 - **Behaviour change:** every Palace simulation now diagnoses a binary that died on a signal, not only
-  `BoundaryModeSim`. `PalaceSimMixin.run_local` wires `gsim.palace.runtime.local_abort_report` and takes a `remedy`, so
-  `DrivenSim`, `EigenSim` and `ElectrostaticSim` raise `RuntimeError` where they used to surface a raw
+  `BoundaryModeSim`, and on both local paths — the streaming `verbose=True` default as well as the quiet one, which used
+  to report a bare exit status. `PalaceSimMixin.run_local` wires `gsim.palace.runtime.local_abort_report` and takes a
+  `remedy`, so `DrivenSim`, `EigenSim` and `ElectrostaticSim` raise `RuntimeError` where they used to surface a raw
   `subprocess.CalledProcessError` — a caller catching `CalledProcessError` around a Palace run stops catching it, and
   the original error is chained as the cause. Each sim names what was being run through `_run_context()`: the frequency
   for a boundary-mode solve, the simulation type for the others. `binary_that_ran` moves to `gsim.palace.runtime` beside

@@ -192,12 +192,15 @@ def transfer_carriers(
 
     if missing.any():
         if fill_pair is None:
-            nearest, _ = sample_at(
-                source,
-                np.column_stack([electrons, holes]),
-                target[missing],
-                fill="nearest",
-            )
+            # Not sample_at again: a point the regions exclude can sit
+            # well inside the hull, where the interpolant has an answer,
+            # and the nearest fill has to override it rather than defer
+            # to it.
+            from scipy.interpolate import NearestNDInterpolator
+
+            nearest = NearestNDInterpolator(
+                source, np.column_stack([electrons, holes])
+            )(target[missing])
             n_electrons[missing] = nearest[:, 0]
             n_holes[missing] = nearest[:, 1]
         else:

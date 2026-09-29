@@ -217,12 +217,13 @@ def wall_mode_from_currents(
 
 
 def z0_power_current(power: complex, current: complex) -> complex:
-    """Marks-Williams power-current impedance of a line Mode.
+    """The power-current impedance of a line Mode.
 
-    ``Z_0 = 2 P / |I|^2``: the one definition both Routes read a line's
-    characteristic impedance by, given the two integrals each measures
-    its own way — the complex Poynting flux over the whole
-    Cross-section, and the longitudinal current on the signal conductor.
+    ``Z_0 = 2 P / |I|^2`` (the definition Marks and Williams give):
+    the one definition both Routes read a line's characteristic
+    impedance by, given the two integrals each measures its own way —
+    the complex Poynting flux over the whole Cross-section, and the
+    longitudinal current on the signal conductor.
     Sharing the definition rather than the quadrature is the point: a
     Palace Mode's integrals are numpy over nodal arrays read back from a
     file, a femwell Mode's are skfem forms over the Basis the solver
