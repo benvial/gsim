@@ -1,4 +1,4 @@
-"""One-call wiring from mode-solver outputs to TW-MZM figures of merit.
+"""What ``Study.report()`` returns: the whole-device figures of merit.
 
 The mode solvers (Palace BoundaryMode or the femwell adapter) produce
 complex effective indices and characteristic impedances versus frequency
@@ -9,7 +9,12 @@ report: EO frequency response and 3 dB bandwidth, velocity mismatch and
 the analytic walk-off limit, RLGC line parameters, V_pi·L, and the
 Mach-Zehnder built from that Phase shifter — its static transfer, V_pi,
 insertion loss, extinction ratio and chirp — all computed with the pure
-analysis functions of :mod:`gsim.common.twmzm`.
+analysis functions of :mod:`gsim.modulator.twmzm` over the line
+:mod:`gsim.common.transmission_line` describes.
+
+:class:`LoadedLineComparison` is the other container the Study hands
+back: the two loaded-line routes side by side at one Bias point, and the
+gate that fails where they disagree.
 
 Sign convention for complex effective indices is ``exp(+i omega t)``
 (lossy: ``Im(n_eff) < 0``); the extraction accepts either sign of the
@@ -21,11 +26,11 @@ from __future__ import annotations
 from typing import Self
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from scipy.constants import speed_of_light as C0  # noqa: N812
 
-from gsim.common.twmzm import (
+from gsim.common.transmission_line import RFLineParams, segmented_line
+from gsim.modulator.twmzm import (
     QUADRATURE_RAD,
     DriveConfiguration,
     eo_bandwidth,
@@ -34,9 +39,7 @@ from gsim.common.twmzm import (
     mzm_drive_range,
     mzm_transfer,
     mzm_transfer_figures,
-    rlgc_from_line_params,
     segmented_eo_response,
-    segmented_line_params,
     vpi_length_vcm,
     walkoff_bandwidth_dispersive,
 )
@@ -45,207 +48,9 @@ __all__ = [
     "SILICON_ONLY_RTOL",
     "LoadedLineComparison",
     "OpticalPhaseSweep",
-    "RFLineParams",
     "TWMZMReport",
-    "line_params_from_gamma",
-    "line_params_from_neff",
-    "segmented_line",
     "twmzm_figures_of_merit",
 ]
-
-
-class RFLineParams(BaseModel):
-    """RF transmission-line parameters versus frequency at one bias.
-
-    Attributes:
-        freq_hz: RF frequencies in Hz (ascending).
-        n_rf: RF effective (phase) index per frequency.
-        alpha_rf_np_m: RF amplitude loss in Np/m per frequency.
-        z0_ohm: Complex characteristic impedance in ohms per frequency.
-        unloaded: Whether these are the bare electrode's parameters —
-            the cross-section solved with every carrier switched off —
-            rather than a Bias point's answer.
-        bias_v: The Bias the Cross-section was built at (V), when it was
-            built from a Bias point; ``None`` for parameters that came
-            from nowhere in particular (a hand-assembled line).
-        signal_contact: Name of the Contact the RF drive is applied to,
-            which names the conductor the impedance was read over;
-            ``None`` when no Contact was involved.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    freq_hz: NDArray[np.float64]
-    n_rf: NDArray[np.float64]
-    alpha_rf_np_m: NDArray[np.float64]
-    z0_ohm: NDArray[np.complex128]
-    unloaded: bool = False
-    bias_v: float | None = None
-    signal_contact: str | None = None
-
-    @model_validator(mode="after")
-    def validate_shapes(self) -> Self:
-        """All arrays share the frequency axis; frequencies are positive."""
-        shape = self.freq_hz.shape
-        for name in ("n_rf", "alpha_rf_np_m", "z0_ohm"):
-            if getattr(self, name).shape != shape:
-                raise ValueError(f"{name} must have the same shape as freq_hz.")
-        if self.freq_hz.ndim != 1 or self.freq_hz.size == 0:
-            raise ValueError("freq_hz must be a non-empty 1D array.")
-        if np.any(self.freq_hz <= 0):
-            raise ValueError("Frequencies must be positive.")
-        return self
-
-    @property
-    def gamma_per_m(self) -> NDArray[np.complex128]:
-        """Complex propagation constant ``alpha + j beta`` in 1/m."""
-        omega = 2.0 * np.pi * self.freq_hz
-        return np.asarray(
-            self.alpha_rf_np_m + 1j * omega * self.n_rf / C0, dtype=np.complex128
-        )
-
-    @property
-    def rlgc(self) -> dict[str, NDArray[np.float64]]:
-        """RLGC per-unit-length parameters (Marks-Williams relations)."""
-        return rlgc_from_line_params(
-            self.freq_hz, gamma_per_m=self.gamma_per_m, z0_ohm=self.z0_ohm
-        )
-
-    def resampled(self, freq_hz: ArrayLike) -> RFLineParams:
-        """These parameters on another frequency grid.
-
-        Linear interpolation of the index, the loss and the complex
-        impedance — its real and imaginary parts separately — onto
-        ``freq_hz``, with the end values held outside the solved range
-        rather than extrapolated. What the line Stage's response grid and
-        the SAX line model both read, so a frequency axis interpolates
-        one way everywhere.
-
-        Args:
-            freq_hz: Frequencies to sample at (Hz, ascending, 1D).
-
-        Returns:
-            The same line on the new grid, carrying the same Bias, signal
-            Contact and loaded/unloaded flag.
-
-        Raises:
-            ValueError: When the grid is not ascending.
-        """
-        grid = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64))
-        if grid.ndim != 1 or np.any(np.diff(grid) < 0.0):
-            raise ValueError("freq_hz must be a 1D ascending frequency grid.")
-        return RFLineParams(
-            freq_hz=grid,
-            n_rf=np.interp(grid, self.freq_hz, self.n_rf),
-            alpha_rf_np_m=np.interp(grid, self.freq_hz, self.alpha_rf_np_m),
-            z0_ohm=np.asarray(
-                np.interp(grid, self.freq_hz, self.z0_ohm.real)
-                + 1j * np.interp(grid, self.freq_hz, self.z0_ohm.imag),
-                dtype=np.complex128,
-            ),
-            unloaded=self.unloaded,
-            bias_v=self.bias_v,
-            signal_contact=self.signal_contact,
-        )
-
-
-def line_params_from_neff(
-    freq_hz: ArrayLike,
-    n_eff: ArrayLike,
-    *,
-    z0_ohm: ArrayLike,
-    unloaded: bool = False,
-    bias_v: float | None = None,
-    signal_contact: str | None = None,
-) -> RFLineParams:
-    """Build :class:`RFLineParams` from complex mode effective indices.
-
-    This is the extraction step shared by both solver routes: Palace
-    BoundaryMode (``PalaceTextResults.modes[m]["n_eff"]`` per frequency)
-    and the femwell adapter (``mode.n_eff``) both deliver a complex
-    effective index; ``beta = omega Re(n_eff) / c0`` and
-    ``alpha = omega |Im(n_eff)| / c0``.
-
-    Args:
-        freq_hz: RF frequencies in Hz.
-        n_eff: Complex effective index per frequency (either sign
-            convention for the imaginary part).
-        z0_ohm: Characteristic impedance per frequency (complex allowed),
-            e.g. from Palace's impedance postprocessing or a
-            Marks-Williams extraction.
-        unloaded: Flag the result as the bare electrode's — solved with
-            the carriers switched off — rather than a Bias point's.
-        bias_v: The Bias the Cross-section was built at (V), if any.
-        signal_contact: The Contact the impedance was read over, if any.
-
-    Returns:
-        The RF line parameters.
-    """
-    freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64))
-    n_arr = np.broadcast_to(
-        np.atleast_1d(np.asarray(n_eff, dtype=np.complex128)), freq.shape
-    )
-    z0 = np.broadcast_to(
-        np.atleast_1d(np.asarray(z0_ohm, dtype=np.complex128)), freq.shape
-    )
-    omega = 2.0 * np.pi * freq
-    return RFLineParams(
-        freq_hz=freq.copy(),
-        n_rf=np.array(n_arr.real, dtype=np.float64),
-        alpha_rf_np_m=np.asarray(np.abs(n_arr.imag) * omega / C0, dtype=np.float64),
-        z0_ohm=np.array(z0, dtype=np.complex128),
-        unloaded=unloaded,
-        bias_v=bias_v,
-        signal_contact=signal_contact,
-    )
-
-
-def line_params_from_gamma(
-    freq_hz: ArrayLike,
-    gamma_per_m: ArrayLike,
-    *,
-    z0_ohm: ArrayLike,
-    unloaded: bool = False,
-    bias_v: float | None = None,
-    signal_contact: str | None = None,
-) -> RFLineParams:
-    """Build :class:`RFLineParams` from complex propagation constants.
-
-    The inverse of :attr:`RFLineParams.gamma_per_m`, for routes that
-    produce ``gamma`` directly — the loaded-line assembly
-    (:func:`gsim.common.twmzm.loaded_line_params`) rather than a mode
-    solve: ``n_RF = |Im(gamma)| c0 / omega`` and
-    ``alpha = |Re(gamma)|``, so either sign convention is read as loss.
-
-    Args:
-        freq_hz: RF frequencies in Hz.
-        gamma_per_m: Complex propagation constant per frequency (1/m).
-        z0_ohm: Characteristic impedance per frequency (complex allowed).
-        unloaded: Flag the result as the bare electrode's.
-        bias_v: The Bias the Cross-section was built at (V), if any.
-        signal_contact: The Contact the impedance was read over, if any.
-
-    Returns:
-        The RF line parameters.
-    """
-    freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64))
-    gamma = np.broadcast_to(
-        np.atleast_1d(np.asarray(gamma_per_m, dtype=np.complex128)), freq.shape
-    )
-    z0 = np.broadcast_to(
-        np.atleast_1d(np.asarray(z0_ohm, dtype=np.complex128)), freq.shape
-    )
-    omega = 2.0 * np.pi * freq
-    return RFLineParams(
-        freq_hz=freq.copy(),
-        n_rf=np.asarray(np.abs(gamma.imag) * C0 / omega, dtype=np.float64),
-        alpha_rf_np_m=np.array(np.abs(gamma.real), dtype=np.float64),
-        z0_ohm=np.array(z0, dtype=np.complex128),
-        unloaded=unloaded,
-        bias_v=bias_v,
-        signal_contact=signal_contact,
-    )
-
 
 #: The :meth:`LoadedLineComparison.check` tolerances a silicon-only charge
 #: solve (``study.charge(oxide=False)``) needs: just outside the gap
@@ -464,7 +269,7 @@ class TWMZMReport(BaseModel):
         transfer_message: Why ``v_pi_v``, ``insertion_loss_db`` and
             ``extinction_ratio_db`` are absent, when they are.
         chirp: Small-signal chirp parameter at each bias point, in the sign
-            convention of :func:`gsim.common.twmzm.mzm_chirp`.
+            convention of :func:`gsim.modulator.twmzm.mzm_chirp`.
         fill_factor: Fraction of the Traveling-wave electrode the Junction
             loads. One is an electrode loaded all the way; below one the
             electrode is segmented, and every line quantity here —
@@ -511,55 +316,6 @@ class TWMZMReport(BaseModel):
 _TRANSFER_POINTS = 401
 
 
-def segmented_line(
-    loaded: RFLineParams,
-    unloaded: RFLineParams,
-    *,
-    fill_factor: float,
-    period_m: float,
-) -> RFLineParams:
-    """The periodic line a segmented Traveling-wave electrode behaves as.
-
-    Between period boundaries the segmented electrode is exactly a
-    uniform line with the Bloch propagation constant and impedance
-    (:func:`gsim.common.twmzm.segmented_line_params`), so these parameters
-    stand wherever a uniform line's do: in the report, and in the
-    two-port of a whole number of periods.
-
-    Args:
-        loaded: The loaded line's parameters.
-        unloaded: The unloaded line's, on the same frequencies.
-        fill_factor: Loaded fraction of the period, 0 to 1.
-        period_m: Length of one period (m, > 0).
-
-    Returns:
-        The Bloch propagation constant and impedance as line parameters,
-        on the loaded line's frequencies and with its provenance.
-
-    Raises:
-        ValueError: When the two lines are not on one frequency axis.
-    """
-    if loaded.freq_hz.shape != unloaded.freq_hz.shape or np.any(
-        loaded.freq_hz != unloaded.freq_hz
-    ):
-        raise ValueError("The loaded and unloaded lines must share one freq_hz axis.")
-    gamma, z_bloch = segmented_line_params(
-        gamma_loaded_per_m=loaded.gamma_per_m,
-        z0_loaded_ohm=loaded.z0_ohm,
-        gamma_unloaded_per_m=unloaded.gamma_per_m,
-        z0_unloaded_ohm=unloaded.z0_ohm,
-        fill_factor=fill_factor,
-        period_m=period_m,
-    )
-    return line_params_from_gamma(
-        loaded.freq_hz,
-        gamma,
-        z0_ohm=z_bloch,
-        bias_v=loaded.bias_v,
-        signal_contact=loaded.signal_contact,
-    )
-
-
 def twmzm_figures_of_merit(
     rf: RFLineParams,
     optical: OpticalPhaseSweep,
@@ -582,7 +338,7 @@ def twmzm_figures_of_merit(
     unloaded ones, which reaches toward 50 ohm and a lower RF index at the
     price of modulating over the loaded fraction only. Its line behaviour
     is cascaded from the two Cross-section solves
-    (:func:`gsim.common.twmzm.segmented_line_params`), which is an
+    (:func:`gsim.common.transmission_line.segmented_line_params`), which is an
     approximation of the 3D structure: both sections share one electrode
     Cross-section, with no loading fins drawn, and the fields at each
     section boundary are not solved. The electrode is taken as the whole

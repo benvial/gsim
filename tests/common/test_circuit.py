@@ -173,7 +173,7 @@ class TestSaxLineModel:
     def test_between_solved_points_the_line_parameters_interpolate(self):
         """The model resamples the way the line record does: the RF index,
         the loss and the complex impedance each linearly in frequency."""
-        from gsim.common.twmzm_report import line_params_from_gamma
+        from gsim.common.transmission_line import line_params_from_gamma
 
         gamma, z0 = lossy_line()
         f_mid = np.asarray([15e9, 30e9])

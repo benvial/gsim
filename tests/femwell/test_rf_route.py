@@ -15,12 +15,9 @@ from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
 from gsim.common.modes import Conductor
-from gsim.common.twmzm_report import (
-    OpticalPhaseSweep,
-    line_params_from_neff,
-    twmzm_figures_of_merit,
-)
+from gsim.common.transmission_line import line_params_from_neff
 from gsim.femwell.adapter import solve_modes, z0_power_current
+from gsim.modulator.report import OpticalPhaseSweep, twmzm_figures_of_merit
 
 pytest.importorskip("femwell")
 pytest.importorskip("skfem")

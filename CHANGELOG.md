@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The line theory and the modulator physics are separate modules, and `gsim.common.twmzm` / `gsim.common.twmzm_report`
+  are gone with no shims. `gsim.common.transmission_line` keeps what describes a transmission line with no modulator in
+  sight — `RFLineParams`, `line_params_from_neff` / `line_params_from_gamma`, `rlgc_from_line_params`, `JunctionBranch`,
+  `series_rc_from_admittance`, `loaded_line_params`, the new public `section_abcd`, and the segmented-electrode set
+  (`segmented_period_abcd`, `segmented_line_params`, `segmented_line`, `bragg_fraction`). `gsim.modulator.twmzm` takes
+  the MZM physics (`eo_response`, `eo_bandwidth`, the two walk-off limits, `vpi_length_vcm`, `mzm_transfer`,
+  `mzm_transfer_figures`, `mzm_chirp`, `mzm_drive_range`, `segmented_eo_response`) and `gsim.modulator.report` what
+  `Study.report()` returns (`TWMZMReport`, `OpticalPhaseSweep`, `LoadedLineComparison`, `twmzm_figures_of_merit`).
+  `gsim.common.circuit` now imports the line theory at module level instead of lazily, its driven-line response and its
+  S-matrix share one broadcast guard, and the driven response builds its telegrapher ABCD with `section_abcd` rather
+  than rebuilding it.
+
 - Strip averages weight area, the charge mesh resolves the depletion region, and the oxide is in the charge solve by
   default. Three changes that only hold together, and what followed from them:
 
@@ -89,7 +101,7 @@
   under `exp(+j omega t)`, positive for a frequency that rises with the intensity: `+1` for a lossless single drive at
   the default quadrature point, exactly 0 for a balanced push-pull drive whose absorption does not move with bias. A
   Bias sweep too short to take the transfer from a peak to a null leaves the three figures `None` and says why in
-  `transfer_message`, rather than extrapolating. The pure functions are `gsim.common.twmzm.mzm_transfer`,
+  `transfer_message`, rather than extrapolating. The pure functions are `gsim.modulator.twmzm.mzm_transfer`,
   `mzm_transfer_figures`, `mzm_chirp` and `mzm_drive_range`.
 
 - The optical group index comes from the optical Stage. `study.optical.group_index()` solves the Mode at the reference

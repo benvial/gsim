@@ -77,9 +77,9 @@ if TYPE_CHECKING:
 
     from gsim.common.modes import Conductor, LineReading
     from gsim.common.stack.staircase import StaircaseCrossSection
-    from gsim.common.twmzm import JunctionBranch
-    from gsim.common.twmzm_report import LoadedLineComparison, RFLineParams
+    from gsim.common.transmission_line import JunctionBranch, RFLineParams
     from gsim.modulator.carriers import CarrierResponse, CarrierResponseSweep
+    from gsim.modulator.report import LoadedLineComparison
     from gsim.modulator.route import Route
     from gsim.palace import BoundaryModeSim
     from gsim.tcad.results import BiasSweepResult, CarrierMap
@@ -644,7 +644,7 @@ class RFStage(EMStage):
         Contact its impedance was read over, so nothing downstream has to
         ask this Stage what it solved.
         """
-        from gsim.common.twmzm_report import line_params_from_neff
+        from gsim.common.transmission_line import line_params_from_neff
 
         sim = self.simulation(staircase, output_dir=output_dir)
         sim.mesh(**self.mesh)
@@ -700,7 +700,7 @@ class RFStage(EMStage):
         Traveling-wave electrode the loaded-line assembly inserts.
 
         Returns:
-            The fitted :class:`~gsim.common.twmzm.JunctionBranch`.
+            The fitted :class:`~gsim.common.transmission_line.JunctionBranch`.
 
         Raises:
             ValueError: When the sweep's point holds no small-signal
@@ -721,7 +721,7 @@ class RFStage(EMStage):
 
         Returns:
             ``(bias_v, branch)`` — the biases in sweep order (V) and a
-            :class:`~gsim.common.twmzm.JunctionBranch` of arrays over
+            :class:`~gsim.common.transmission_line.JunctionBranch` of arrays over
             them.
 
         Raises:
@@ -739,7 +739,7 @@ class RFStage(EMStage):
         solves the carrier-loaded Staircase (:meth:`run`); the assembled
         route loads the unloaded RLGC (:meth:`run_unloaded`) with the
         charge solve's series-RC junction branch
-        (:func:`gsim.common.twmzm.loaded_line_params`). The returned
+        (:func:`gsim.common.transmission_line.loaded_line_params`). The returned
         comparison holds both routes' n_RF, loss and Z0 with their
         relative deltas, and its ``check()`` fails loudly where they
         disagree.
@@ -750,11 +750,11 @@ class RFStage(EMStage):
         Returns:
             The side-by-side comparison.
         """
-        from gsim.common.twmzm import loaded_line_params
-        from gsim.common.twmzm_report import (
-            LoadedLineComparison,
+        from gsim.common.transmission_line import (
             line_params_from_gamma,
+            loaded_line_params,
         )
+        from gsim.modulator.report import LoadedLineComparison
 
         direct: RFLineParams = self.run(force=force)
         unloaded = self.run_unloaded(force=force)

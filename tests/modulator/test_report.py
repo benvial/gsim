@@ -1,7 +1,7 @@
-"""Hermetic tests: solver outputs wired into TW-MZM figures of merit.
+"""Hermetic tests: solver outputs wired into the TW-MZM device report.
 
 Synthetic mode results drive the wiring; results are checked against the
-analytic limits of the ticket-02 assembly functions.
+analytic limits of the physics functions in :mod:`gsim.modulator.twmzm`.
 """
 
 from __future__ import annotations
@@ -10,19 +10,20 @@ import numpy as np
 import pytest
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
-from gsim.common.twmzm import (
-    SINC_3DB_ARGUMENT,
-    segmented_eo_response,
+from gsim.common.transmission_line import (
+    line_params_from_neff,
     segmented_line_params,
-    walkoff_bandwidth,
 )
-from gsim.common.twmzm_report import (
+from gsim.modulator.report import (
     SILICON_ONLY_RTOL,
     LoadedLineComparison,
     OpticalPhaseSweep,
-    line_params_from_gamma,
-    line_params_from_neff,
     twmzm_figures_of_merit,
+)
+from gsim.modulator.twmzm import (
+    SINC_3DB_ARGUMENT,
+    segmented_eo_response,
+    walkoff_bandwidth,
 )
 
 FREQ = np.linspace(1e9, 100e9, 200)
@@ -37,39 +38,6 @@ def _optical(n_group=3.8, slope=-1e-4):
         wavelength_um=WL_UM,
         n_group=n_group,
     )
-
-
-class TestLineParamsExtraction:
-    def test_complex_neff_hand_values(self):
-        freq = np.array([10e9, 50e9])
-        n_eff = np.array([2.0 - 0.1j, 2.5 - 0.2j])
-        rf = line_params_from_neff(freq, n_eff, z0_ohm=40.0)
-        np.testing.assert_allclose(rf.n_rf, [2.0, 2.5])
-        np.testing.assert_allclose(
-            rf.alpha_rf_np_m, 2.0 * np.pi * freq * [0.1, 0.2] / C0
-        )
-        np.testing.assert_allclose(rf.z0_ohm, 40.0)
-
-    def test_either_imag_sign_gives_loss(self):
-        freq = np.array([10e9])
-        plus = line_params_from_neff(freq, [2.0 + 0.1j], z0_ohm=50.0)
-        minus = line_params_from_neff(freq, [2.0 - 0.1j], z0_ohm=50.0)
-        np.testing.assert_allclose(plus.alpha_rf_np_m, minus.alpha_rf_np_m)
-        assert plus.alpha_rf_np_m[0] > 0
-
-    def test_gamma_round_trips_through_rlgc(self):
-        # Lossless 50-ohm line: R = G = 0, L/C give back n_rf and Z0.
-        rf = line_params_from_neff(FREQ, 2.5 + 0j, z0_ohm=50.0)
-        rlgc = rf.rlgc
-        np.testing.assert_allclose(rlgc["R"], 0.0, atol=1e-9)
-        np.testing.assert_allclose(rlgc["G"], 0.0, atol=1e-12)
-        np.testing.assert_allclose(np.sqrt(rlgc["L"] / rlgc["C"]), 50.0, rtol=1e-9)
-        np.testing.assert_allclose(C0 * np.sqrt(rlgc["L"] * rlgc["C"]), 2.5, rtol=1e-9)
-
-    def test_scalar_broadcast(self):
-        rf = line_params_from_neff(FREQ, 2.0 - 0.05j, z0_ohm=45.0)
-        assert rf.n_rf.shape == FREQ.shape
-        assert rf.z0_ohm.shape == FREQ.shape
 
 
 class TestFiguresOfMerit:
@@ -397,48 +365,6 @@ class TestSegmentedElectrode:
                 self.segmented(fill_factor)
 
 
-class TestUnloadedFlag:
-    def test_line_params_are_loaded_unless_said_otherwise(self):
-        rf = line_params_from_neff(FREQ, 2.5 + 0j, z0_ohm=50.0)
-        assert rf.unloaded is False
-
-    def test_an_unloaded_solve_is_flagged(self):
-        rf = line_params_from_neff(FREQ, 2.5 + 0j, z0_ohm=50.0, unloaded=True)
-        assert rf.unloaded is True
-
-
-class TestLineParamsFromGamma:
-    def test_roundtrips_the_gamma_property(self):
-        rf = line_params_from_neff(FREQ, 2.5 - 0.05j, z0_ohm=45.0 + 2.0j)
-
-        back = line_params_from_gamma(FREQ, rf.gamma_per_m, z0_ohm=rf.z0_ohm)
-
-        assert back.n_rf == pytest.approx(rf.n_rf)
-        assert back.alpha_rf_np_m == pytest.approx(rf.alpha_rf_np_m)
-        assert back.z0_ohm == pytest.approx(rf.z0_ohm)
-        assert back.unloaded is False
-
-    def test_hand_values(self):
-        freq = np.array([10e9])
-        omega = 2 * np.pi * freq
-        gamma = 30.0 + 1j * omega * 2.5 / C0
-
-        rf = line_params_from_gamma(freq, gamma, z0_ohm=40.0)
-
-        assert rf.n_rf == pytest.approx([2.5])
-        assert rf.alpha_rf_np_m == pytest.approx([30.0])
-
-    def test_either_sign_convention_is_loss(self):
-        freq = np.array([10e9])
-        omega = 2 * np.pi * freq
-        gamma = -30.0 - 1j * omega * 2.5 / C0
-
-        rf = line_params_from_gamma(freq, gamma, z0_ohm=40.0)
-
-        assert rf.n_rf == pytest.approx([2.5])
-        assert rf.alpha_rf_np_m == pytest.approx([30.0])
-
-
 def _line(n_rf=2.5, alpha=40.0, z0=45.0, unloaded=False):
     freq = np.array([10e9, 40e9])
     return line_params_from_neff(
@@ -518,67 +444,3 @@ class TestLoadedLineComparison:
 
         with pytest.raises(ValueError, match="freq"):
             LoadedLineComparison(direct=_line(), assembled=long)
-
-
-class TestProvenance:
-    def test_line_params_carry_no_bias_or_contact_unless_given(self):
-        line = line_params_from_neff([10e9], [2.0 - 0.01j], z0_ohm=[50.0])
-        assert line.bias_v is None
-        assert line.signal_contact is None
-
-    def test_the_bias_and_the_contact_travel_with_the_record(self):
-        line = line_params_from_neff(
-            [10e9], [2.0 - 0.01j], z0_ohm=[50.0], bias_v=2.0, signal_contact="cathode"
-        )
-        assert line.bias_v == 2.0
-        assert line.signal_contact == "cathode"
-        from_gamma = line_params_from_gamma(
-            line.freq_hz, line.gamma_per_m, z0_ohm=line.z0_ohm, bias_v=2.0
-        )
-        assert from_gamma.bias_v == 2.0
-
-
-class TestResampling:
-    def _line(self):
-        return line_params_from_neff(
-            [10e9, 20e9, 40e9],
-            [3.2 - 0.004j, 3.1 - 0.010j, 3.0 - 0.020j],
-            z0_ohm=[46.0 + 1.0j, 44.0 + 0.5j, 42.0 + 0.2j],
-            bias_v=1.5,
-            signal_contact="cathode",
-        )
-
-    def test_the_solved_points_are_reproduced(self):
-        line = self._line()
-        same = line.resampled(line.freq_hz)
-        np.testing.assert_allclose(same.n_rf, line.n_rf)
-        np.testing.assert_allclose(same.alpha_rf_np_m, line.alpha_rf_np_m)
-        np.testing.assert_allclose(same.z0_ohm, line.z0_ohm)
-
-    def test_between_points_every_quantity_interpolates_linearly(self):
-        line = self._line()
-        mid = line.resampled([15e9, 30e9])
-        np.testing.assert_allclose(mid.n_rf, [3.15, 3.05])
-        np.testing.assert_allclose(
-            mid.alpha_rf_np_m,
-            np.interp([15e9, 30e9], line.freq_hz, line.alpha_rf_np_m),
-        )
-        # Real and imaginary parts of the impedance interpolate separately.
-        np.testing.assert_allclose(mid.z0_ohm, [45.0 + 0.75j, 43.0 + 0.35j])
-
-    def test_outside_the_solved_range_the_end_values_hold(self):
-        line = self._line()
-        clamped = line.resampled([1e9, 100e9])
-        np.testing.assert_allclose(clamped.n_rf, [3.2, 3.0])
-        np.testing.assert_allclose(clamped.z0_ohm, [46.0 + 1.0j, 42.0 + 0.2j])
-
-    def test_the_provenance_and_the_flag_travel_with_it(self):
-        line = self._line().model_copy(update={"unloaded": True})
-        resampled = line.resampled([12e9])
-        assert resampled.bias_v == 1.5
-        assert resampled.signal_contact == "cathode"
-        assert resampled.unloaded is True
-
-    def test_a_descending_grid_is_refused(self):
-        with pytest.raises(ValueError, match="ascending"):
-            self._line().resampled([20e9, 10e9])

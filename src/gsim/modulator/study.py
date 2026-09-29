@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
     from gsim.common.cross_section import PolygonXY2D, Rect2D, RectYZ2D
     from gsim.common.stack.extractor import LayerStack
-    from gsim.common.twmzm_report import TWMZMReport
+    from gsim.modulator.report import TWMZMReport
     from gsim.modulator.stage import Stage
 
 __all__ = ["Study"]

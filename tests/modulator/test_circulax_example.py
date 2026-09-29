@@ -86,7 +86,7 @@ class TestExampleReassembly:
         assert model["c_j_f_per_m"].tolist() == [3.3e-10, 2.8e-10, 2.4e-10]
 
     def test_the_junction_admittance_inverts_the_series_rc_fit(self, example):
-        from gsim.common.twmzm import series_rc_from_admittance
+        from gsim.common.transmission_line import series_rc_from_admittance
 
         r_s, c_j = 1.1e-4, 2.8e-10
         y = example.junction_shunt_admittance(1e9, r_s, c_j)

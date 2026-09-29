@@ -1,5 +1,12 @@
 # Common API
 
+`gsim.common` itself is a narrow façade: it re-exports the geometry and
+stack names of the two sections below and nothing else. Everything else in
+the package — `modes`, `circuit`, `carriers`, `transmission_line` and the
+rest — is imported by its submodule path, as
+`from gsim.common.transmission_line import RFLineParams`, so importing
+`gsim.common` never pulls a backend's dependencies in with it.
+
 ## Geometry
 
 ::: gsim.common.Geometry
@@ -79,6 +86,62 @@ reference its numeric `C(V)` is validated against.
       show_source: false
 
 ::: gsim.common.viz.export_3d_mesh
+    options:
+      show_source: false
+
+## Transmission line
+
+The Traveling-wave electrode as a transmission line, described with no
+modulator in sight: what a mode solve says about it, its per-unit-length
+circuit, how the junction's series-RC branch loads it, and what a
+periodically loaded electrode behaves as. The physics that turns these
+into device figures of merit lives in `gsim.modulator`.
+
+::: gsim.common.transmission_line.RFLineParams
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.line_params_from_neff
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.line_params_from_gamma
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.rlgc_from_line_params
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.JunctionBranch
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.series_rc_from_admittance
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.loaded_line_params
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.section_abcd
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.segmented_period_abcd
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.segmented_line_params
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.segmented_line
+    options:
+      show_source: false
+
+::: gsim.common.transmission_line.bragg_fraction
     options:
       show_source: false
 

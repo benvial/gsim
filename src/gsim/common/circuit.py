@@ -41,6 +41,8 @@ from typing import Any, NamedTuple, Protocol
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+from gsim.common.transmission_line import line_params_from_gamma, section_abcd
+
 __all__ = [
     "JUNCTION_MODEL_FORMAT",
     "JUNCTION_MODEL_VERSION",
@@ -96,6 +98,37 @@ def _require_ascending(freq_hz: NDArray[np.float64], where: str) -> None:
         )
 
 
+def _broadcast_line_params(
+    gamma_per_m: ArrayLike, z0_ohm: ArrayLike
+) -> tuple[NDArray[np.complex128], NDArray[np.complex128]]:
+    """The two line parameters on one frequency axis, or a clear refusal.
+
+    Args:
+        gamma_per_m: Complex propagation constant per frequency (1/m).
+        z0_ohm: Complex characteristic impedance per frequency (ohm); a
+            scalar broadcasts over ``gamma_per_m``.
+
+    Returns:
+        The pair, broadcast against each other.
+
+    Raises:
+        ValueError: When the two do not share one frequency axis.
+    """
+    gamma = np.asarray(gamma_per_m, dtype=np.complex128)
+    z_c = np.asarray(z0_ohm, dtype=np.complex128)
+    try:
+        wide_gamma, wide_z_c = np.broadcast_arrays(gamma, z_c)
+    except ValueError as error:
+        raise ValueError(
+            f"gamma_per_m (shape {np.shape(gamma_per_m)}) and z0_ohm (shape "
+            f"{np.shape(z0_ohm)}) must share one frequency axis."
+        ) from error
+    return (
+        np.asarray(wide_gamma, dtype=np.complex128),
+        np.asarray(wide_z_c, dtype=np.complex128),
+    )
+
+
 def line_smatrix(
     gamma_per_m: ArrayLike,
     z0_ohm: ArrayLike,
@@ -121,15 +154,7 @@ def line_smatrix(
             parameter arrays do not broadcast against each other.
     """
     _require_positive_length(length_m)
-    gamma = np.asarray(gamma_per_m, dtype=np.complex128)
-    z_c = np.asarray(z0_ohm, dtype=np.complex128)
-    try:
-        gamma, z_c = np.broadcast_arrays(gamma, z_c)
-    except ValueError as error:
-        raise ValueError(
-            f"gamma_per_m (shape {np.shape(gamma_per_m)}) and z0_ohm (shape "
-            f"{np.shape(z0_ohm)}) must share one frequency axis."
-        ) from error
+    gamma, z_c = _broadcast_line_params(gamma_per_m, z0_ohm)
     z_r = complex(z_ref_ohm)
 
     gl = gamma * length_m
@@ -249,8 +274,6 @@ def sax_line_model(
         ValueError: When the length is not positive, the frequency axis
             is not ascending, or the arrays do not share it.
     """
-    from gsim.common.twmzm_report import line_params_from_gamma
-
     _require_positive_length(length_m)
     freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64)).copy()
     _require_ascending(freq, "freq_hz")
@@ -643,22 +666,13 @@ def line_driven_response(
             parameter arrays do not broadcast against each other.
     """
     _require_positive_length(length_m)
-    gamma = np.asarray(gamma_per_m, dtype=np.complex128)
-    z_c = np.asarray(z0_ohm, dtype=np.complex128)
-    try:
-        gamma, z_c = np.broadcast_arrays(gamma, z_c)
-    except ValueError as error:
-        raise ValueError(
-            f"gamma_per_m (shape {np.shape(gamma_per_m)}) and z0_ohm (shape "
-            f"{np.shape(z0_ohm)}) must share one frequency axis."
-        ) from error
-    gl = gamma * length_m
-    sinh, cosh = np.sinh(gl), np.cosh(gl)
+    gamma, z_c = _broadcast_line_params(gamma_per_m, z0_ohm)
+    abcd = section_abcd(gamma * length_m, z_c)
     return _abcd_response(
-        cosh,
-        z_c * sinh,
-        sinh / z_c,
-        cosh,
+        abcd[..., 0, 0],
+        abcd[..., 0, 1],
+        abcd[..., 1, 0],
+        abcd[..., 1, 1],
         z_gen_ohm=z_gen_ohm,
         z_load_ohm=z_load_ohm,
     )

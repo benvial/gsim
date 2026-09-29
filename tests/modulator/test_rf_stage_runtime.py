@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 
 from gsim.common.modes import Conductor, NoLineModeError
-from gsim.common.twmzm_report import RFLineParams
+from gsim.common.transmission_line import RFLineParams
 from gsim.modulator import Device, Study, pn_phase_shifter
 
 from .conftest import (
