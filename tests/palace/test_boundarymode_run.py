@@ -227,127 +227,43 @@ class TestCrashedRunSalvage:
             self._asking_for(tmp_path, 4).run_local(verbose=False, salvage=False)
 
 
-class TestAbortedBinaryIsReported:
-    """A Palace binary that aborts is reported as a runtime failure.
+class TestAnAbortedBinaryStillSalvages:
+    """An abort is asked for its answer before it is diagnosed.
 
-    A broken Palace runtime — typically a bundled MPI that cannot start —
-    kills the binary before it writes any solver output, and the raw
-    ``CalledProcessError`` that surfaces carries an exit status and
-    nothing a user can act on. The simulation turns that into a report
-    naming the binary that ran and saying that an abort with no solver
-    output means the runtime rather than the model.
+    Where the diagnosis itself is written — and that a Palace binary
+    that died on a signal is reported as a runtime failure rather than
+    as a raw exit status — is
+    :mod:`tests.palace.test_run_local`; what is here is that the
+    salvage runs first, on a solve that answered before it died.
     """
 
     @pytest.fixture
     def aborting_palace(self, monkeypatch):
         """A Palace binary that dies, having written *modes* Modes."""
-        script = {"modes": 0, "returncode": 134, "stderr": ""}
+        script: dict[str, Any] = {"modes": 0}
 
         def fake_run_local(self, **_kwargs):
             if script["modes"]:
                 write_table(self.run_dir, text=mode_table_text(script["modes"]))
             raise subprocess.CalledProcessError(
-                script["returncode"],
+                134,
                 ["/opt/somewhere/palace", "-np", "1", "config.json"],
                 output="",
-                stderr=script["stderr"],
+                stderr="",
             )
 
         monkeypatch.setattr(PalaceSimMixin, "run_local", fake_run_local)
         return script
-
-    @staticmethod
-    def _run(tmp_path, **kwargs):
-        sim = sim_at(tmp_path)
-        sim.set_boundary_mode(freq=10e9, num_modes=4)
-        return sim.run_local(verbose=False, **kwargs)
-
-    @pytest.mark.usefixtures("aborting_palace")
-    def test_the_report_names_the_binary_and_blames_the_runtime(self, tmp_path):
-        with pytest.raises(RuntimeError) as excinfo:
-            self._run(tmp_path)
-        message = str(excinfo.value)
-        assert "/opt/somewhere/palace" in message
-        assert "exit status 134" in message
-        assert "SIGABRT" in message
-        assert "any solver output" in message
-        assert "runtime" in message
-        assert "PALACE_BIN" in message
-
-    @pytest.mark.usefixtures("aborting_palace")
-    def test_the_caller_names_the_binary_when_it_resolved_one(self, tmp_path):
-        with pytest.raises(RuntimeError, match="/elsewhere/palace"):
-            self._run(tmp_path, palace_executable="/elsewhere/palace")
-
-    @pytest.mark.usefixtures("aborting_palace")
-    def test_a_caller_supplied_remedy_closes_the_report(self, tmp_path):
-        """The one Route-shaped sentence is handed down, not written here."""
-        with pytest.raises(RuntimeError, match="route='femwell'"):
-            self._run(
-                tmp_path, remedy="re-solve on the default route with route='femwell'"
-            )
-
-    @pytest.mark.usefixtures("aborting_palace")
-    def test_without_a_remedy_only_palace_bin_is_offered(self, tmp_path):
-        with pytest.raises(RuntimeError) as excinfo:
-            self._run(tmp_path)
-        assert str(excinfo.value).endswith("runtime works here.")
-
-    def test_a_plain_exit_is_not_blamed_on_the_runtime(self, tmp_path, aborting_palace):
-        """Exit 1 is Palace refusing the run itself; its stderr says why."""
-        aborting_palace["returncode"] = 1
-        aborting_palace["stderr"] = "Invalid configuration\n"
-
-        with pytest.raises(RuntimeError) as excinfo:
-            self._run(tmp_path)
-        message = str(excinfo.value)
-        assert "exit status 1." in message
-        assert "runtime" not in message.split("Point PALACE_BIN", maxsplit=1)[0]
-        assert "Invalid configuration" in message
-
-    @pytest.mark.usefixtures("aborting_palace")
-    def test_the_raw_error_is_chained_not_lost(self, tmp_path):
-        with pytest.raises(RuntimeError) as excinfo:
-            self._run(tmp_path)
-        assert isinstance(excinfo.value.__cause__, subprocess.CalledProcessError)
-        assert excinfo.value.__cause__.returncode == 134
-
-    def test_a_segfault_is_named_as_one(self, tmp_path, aborting_palace):
-        aborting_palace["returncode"] = 139
-
-        with pytest.raises(RuntimeError, match="SIGSEGV"):
-            self._run(tmp_path)
-
-    def test_the_last_worded_stderr_line_is_quoted(self, tmp_path, aborting_palace):
-        """MPI ends its error blocks with a dashed rule; quote past it."""
-        aborting_palace["stderr"] = (
-            "noise\nopal_shmem_base_select failed\n" + "-" * 40 + "\n"
-        )
-
-        with pytest.raises(RuntimeError, match="opal_shmem_base_select failed"):
-            self._run(tmp_path)
-
-    def test_partial_output_is_not_blamed_on_the_runtime(
-        self, tmp_path, aborting_palace
-    ):
-        """A truncated table means the solver ran; the runtime did start."""
-        aborting_palace["modes"] = 2
-
-        with pytest.raises(RuntimeError) as excinfo:
-            self._run(tmp_path)
-        message = str(excinfo.value)
-        assert "any solver output" not in message
-        assert "partial solver output" in message
-        assert "exit status 134" in message
-        assert str(tmp_path) in message
 
     def test_a_complete_table_left_by_an_abort_is_still_salvaged(
         self, tmp_path, aborting_palace
     ):
         """The salvage runs before the report: an answer beats a diagnosis."""
         aborting_palace["modes"] = 4
+        sim = sim_at(tmp_path)
+        sim.set_boundary_mode(freq=10e9, num_modes=4)
 
         with pytest.warns(UserWarning, match="exited abnormally"):
-            results = self._run(tmp_path)
+            results = sim.run_local(verbose=False)
 
         assert len(results.modes) == 4

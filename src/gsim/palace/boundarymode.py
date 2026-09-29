@@ -38,7 +38,6 @@ from gsim.palace.models import (
     NumericalConfig,
 )
 from gsim.palace.models.results import ValidationResult
-from gsim.palace.runtime import local_abort_report
 
 if TYPE_CHECKING:
     from gsim.common.modes import Extent
@@ -50,23 +49,6 @@ __all__ = ["BoundaryModeSim", "ModePath"]
 #: Where a local Palace run writes its tables, under the simulation's
 #: output directory.
 RUN_SUBDIR = Path("output") / "palace"
-
-
-def _binary_that_ran(
-    err: subprocess.CalledProcessError, requested: str | Path | None
-) -> str | Path:
-    """The Palace executable an aborted run used.
-
-    The caller names it when it resolved one itself; otherwise the
-    command the failed run carries does, since the mixin resolves the
-    binary on its own and the report is about which one died.
-    """
-    if requested is not None:
-        return requested
-    cmd = err.cmd
-    if isinstance(cmd, (list, tuple)) and cmd:
-        return str(cmd[0])
-    return str(cmd)
 
 
 class ModePath(BaseModel):
@@ -501,6 +483,10 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
         )
         return text
 
+    def _run_context(self) -> str:
+        """A boundary-mode solve is named by the frequency it ran at."""
+        return f"at f = {self.boundary_mode.freq:g} Hz"
+
     def run_local(
         self, *, salvage: bool = True, remedy: str | None = None, **kwargs: Any
     ) -> PalaceTextResults:
@@ -538,22 +524,10 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
         """
         shutil.rmtree(self.run_dir, ignore_errors=True)
         try:
-            super().run_local(**kwargs)
-        except subprocess.CalledProcessError as err:
-            salvaged = self._salvage_mode_table(err) if salvage else None
-            if salvaged is not None:
-                return salvaged
-            raise RuntimeError(
-                local_abort_report(
-                    err,
-                    binary=_binary_that_ran(err, kwargs.get("palace_executable")),
-                    output_dir=self.output_dir,
-                    wrote_output=bool(self.last_run_files),
-                    during=f"at f = {self.boundary_mode.freq:g} Hz",
-                    remedy=remedy,
-                )
-            ) from err
-        except RuntimeError as err:
+            super().run_local(remedy=remedy, **kwargs)
+        except (RuntimeError, subprocess.CalledProcessError) as err:
+            # The mixin reports an aborted binary; what is asked here
+            # first is whether this solve answered before it died.
             salvaged = self._salvage_mode_table(err) if salvage else None
             if salvaged is None:
                 raise

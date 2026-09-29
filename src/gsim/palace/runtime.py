@@ -51,6 +51,7 @@ from zipfile import ZipFile, is_zipfile
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "binary_that_ran",
     "install_palace_runtime",
     "local_abort_report",
     "require_palace_binary",
@@ -475,6 +476,30 @@ def _death_signal(returncode: int) -> int | None:
     if returncode > 128:
         return returncode - 128
     return None
+
+
+def binary_that_ran(
+    err: subprocess.CalledProcessError, requested: str | Path | None
+) -> str | Path:
+    """The Palace executable an aborted run used.
+
+    The caller names it when it resolved one itself; otherwise the
+    command the failed run carries does, since a run that resolved its
+    own binary still has to say which one died.
+
+    Args:
+        err: What the local run raised.
+        requested: The executable the caller asked for, if any.
+
+    Returns:
+        The executable, as a path or as the command's first word.
+    """
+    if requested is not None:
+        return requested
+    cmd = err.cmd
+    if isinstance(cmd, (list, tuple)) and cmd:
+        return str(cmd[0])
+    return str(cmd)
 
 
 def local_abort_report(

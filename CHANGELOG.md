@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Behaviour change:** every Palace simulation now diagnoses a binary that died on a signal, not only
+  `BoundaryModeSim`. `PalaceSimMixin.run_local` wires `gsim.palace.runtime.local_abort_report` and takes a `remedy`, so
+  `DrivenSim`, `EigenSim` and `ElectrostaticSim` raise `RuntimeError` where they used to surface a raw
+  `subprocess.CalledProcessError` — a caller catching `CalledProcessError` around a Palace run stops catching it, and
+  the original error is chained as the cause. Each sim names what was being run through `_run_context()`: the frequency
+  for a boundary-mode solve, the simulation type for the others. `binary_that_ran` moves to `gsim.palace.runtime` beside
+  the report it feeds.
+
 - `docs/api/modulator.md` describes the modulator surface: the Study and its namespaced Stage sections, the device
   description, the result types and the presets, plus the three modules imported by path — `gsim.modulator.twmzm` for
   the MZM physics, `gsim.modulator.report` for what `Study.report()` returns, and `gsim.modulator.staircase`. It says

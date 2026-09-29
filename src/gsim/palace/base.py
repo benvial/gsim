@@ -144,6 +144,22 @@ def _recommend_parallel(
     return max(1, recommended), num_threads
 
 
+def _wrote_solver_output(output_dir: Path) -> bool:
+    """Whether a local run left any solver output under its output dir.
+
+    What separates a dead Palace runtime from a dead solve: a runtime
+    that cannot start kills the binary before the solver writes
+    anything.
+    """
+    postpro_dir = output_dir / "output/palace/"
+    if not postpro_dir.is_dir():
+        return False
+    return any(
+        file.is_file() and not file.name.startswith(".")
+        for file in postpro_dir.iterdir()
+    )
+
+
 class MeshSourceMixin:
     """The configuration and mesh reads of whoever holds the mesh.
 
@@ -345,6 +361,10 @@ class PalaceSimMixin:
     def has_mesh(self) -> bool:
         """Whether ``mesh()`` has run and left a mesh to read."""
         return getattr(self, "_last_mesh_result", None) is not None
+
+    def _run_context(self) -> str:
+        """What was being run, named in the first line of an abort report."""
+        return f"during the {self.simulation_type} solve"
 
     def _mesh_source(self) -> Any:
         """A Palace simulation meshes for itself, so it is its own source."""
@@ -2207,6 +2227,7 @@ class PalaceSimMixin:
         num_processes: int | None = None,
         num_threads: int | None = None,
         verbose: bool = True,
+        remedy: str | None = None,
     ) -> SParams | PalaceTextResults | dict[str, Path]:
         """Run simulation locally using Palace.
 
@@ -2239,6 +2260,9 @@ class PalaceSimMixin:
                 omitted, defaults to the number of physical CPU cores so
                 shared-memory parallelism is used.
             verbose: Print progress messages and stream Palace output in real time
+            remedy: A second way out of a dead Palace runtime, named at the
+                end of the abort report beyond pointing ``PALACE_BIN``
+                somewhere else. A caller with no other way out gives none.
 
         Returns:
             Parsed Palace result object (``SParams``) when ``port-S.csv`` is
@@ -2250,7 +2274,10 @@ class PalaceSimMixin:
         Raises:
             ValueError: If output_dir not set or Palace not configured
             FileNotFoundError: If mesh, config, or Palace not found
-            RuntimeError: If simulation fails
+            RuntimeError: If the simulation fails. A binary that died on a
+                signal is reported through
+                :func:`gsim.palace.runtime.local_abort_report`, which says
+                whether the runtime or the model is at fault.
 
         Example:
             >>> # Using Apptainer (default)
@@ -2628,6 +2655,19 @@ class PalaceSimMixin:
                 "correct path via palace_executable parameter, "
                 "or set PALACE_EXECUTABLE environment variable."
             ) from e
+        except subprocess.CalledProcessError as err:
+            from gsim.palace.runtime import binary_that_ran, local_abort_report
+
+            raise RuntimeError(
+                local_abort_report(
+                    err,
+                    binary=binary_that_ran(err, palace_executable),
+                    output_dir=output_dir,
+                    wrote_output=_wrote_solver_output(output_dir),
+                    during=self._run_context(),
+                    remedy=remedy,
+                )
+            ) from err
 
         if verbose:
             _emit_info("Simulation completed successfully")
