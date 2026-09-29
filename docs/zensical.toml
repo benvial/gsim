@@ -33,6 +33,7 @@ nav = [
     { "Palace" = "api/palace.md" },
     { "Meep" = "api/meep.md" },
     { "Common" = "api/common.md" },
+    { "Modulator" = "api/modulator.md" },
     { "Cloud" = "api/cloud.md" }
   ] }
 ]

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `docs/api/modulator.md` describes the modulator surface: the Study and its namespaced Stage sections, the device
+  description, the result types and the presets, plus the three modules imported by path — `gsim.modulator.twmzm` for
+  the MZM physics, `gsim.modulator.report` for what `Study.report()` returns, and `gsim.modulator.staircase`. It says
+  what the narrowed `__all__` means for a caller: a Route is selected by name (`route="palace"`), because the Route
+  classes are not exported.
+
 - One material-resolution rule. `gsim.common.stack.materials.resolve_stack_material(name, entry, wavelength_um)` owns
   the contested part both Backends had written out: validate the stack entry as an override so a user's `set_material`
   scalars and any dispersion model survive, fall through to the database when the entry is no valid `MaterialProperties`
