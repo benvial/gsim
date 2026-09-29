@@ -46,6 +46,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from gsim.common.carriers import permittivity_perturbation
 from gsim.common.cross_section import build_doped_cross_section
+from gsim.common.interpolate import DegenerateSampleCloudError, sample_at
 from gsim.common.stack.materials import MaterialProperties, make_doped_materials
 
 if TYPE_CHECKING:
@@ -427,9 +428,6 @@ def _band_averaged_profile(
         of the cloud's linear interpolant over the band's height at each; None
         when the nodes span no height or no width.
     """
-    from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
-    from scipy.spatial import QhullError
-
     v_lo, v_hi = float(v_um.min()), float(v_um.max())
     h_lo, h_hi = float(h_um.min()), float(h_um.max())
     span = h_hi - h_lo
@@ -451,12 +449,6 @@ def _band_averaged_profile(
     )
     node_values = np.bincount(inverse, weights=values) / counts
 
-    try:
-        linear = LinearNDInterpolator(points, node_values)
-    except QhullError:
-        return None
-    nearest = NearestNDInterpolator(points, node_values)
-
     # The cloud's own columns, and samples inside every Strip: the
     # interpolant kinks wherever a vertical line meets an element edge,
     # which is between the columns as well as on them.
@@ -469,13 +461,19 @@ def _band_averaged_profile(
     heights = np.linspace(v_lo, v_hi, BAND_AVERAGE_HEIGHT_SAMPLES)
 
     hh, vv = np.meshgrid(columns, heights, indexing="ij")
-    sampled = np.asarray(linear(hh, vv), dtype=np.float64)
     # A sample outside the cloud's hull takes its nearest node: rounding
     # leaves one on the hull's edge outside it now and then, and a band
     # that is no rectangle (see the caller) has whole corners out there.
-    outside = np.isnan(sampled)
-    if np.any(outside):
-        sampled[outside] = nearest(hh[outside], vv[outside])
+    try:
+        flat, _outside = sample_at(
+            points,
+            node_values,
+            np.column_stack([hh.ravel(), vv.ravel()]),
+            fill="nearest",
+        )
+    except DegenerateSampleCloudError:
+        return None
+    sampled = np.asarray(flat, dtype=np.float64).reshape(hh.shape)
     # Trapezoids on equal steps: the end samples count half.
     means = (sampled.sum(axis=1) - 0.5 * (sampled[:, 0] + sampled[:, -1])) / (
         heights.size - 1

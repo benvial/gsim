@@ -24,9 +24,10 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 import meshio
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict
 
+from gsim.common.interpolate import sample_at
 from gsim.common.mesh_regions import element_regions, group_names, node_regions
 
 __all__ = ["CarrierMapLike", "TransferredCarriers", "transfer_carriers"]
@@ -132,21 +133,6 @@ def _target_points(
     return np.asarray(centroids, dtype=np.float64), regions
 
 
-def _interpolate(
-    source: NDArray[np.float64],
-    values: ArrayLike,
-    target: NDArray[np.float64],
-) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
-    """Linear interpolation onto the target points, flagging what missed."""
-    from scipy.interpolate import LinearNDInterpolator
-
-    interpolated = np.asarray(
-        LinearNDInterpolator(source, np.asarray(values, dtype=np.float64))(target),
-        dtype=np.float64,
-    )
-    return interpolated, np.asarray(np.isnan(interpolated), dtype=np.bool_)
-
-
 def transfer_carriers(
     carriers: CarrierMapLike | Any,
     mesh: meshio.Mesh | str | Path,
@@ -182,8 +168,14 @@ def transfer_carriers(
     target, point_regions = _target_points(target_mesh, at)
     fill_pair = _fill_values(fill)
 
-    n_electrons, missing = _interpolate(source, electrons, target)
-    n_holes, _ = _interpolate(source, holes, target)
+    # Both carriers share one hull and one triangulation; the fill is
+    # applied below, over the mask this returns and the region
+    # restriction together.
+    sampled, missing = sample_at(
+        source, np.column_stack([electrons, holes]), target, fill=np.nan
+    )
+    n_electrons = np.asarray(sampled[:, 0], dtype=np.float64)
+    n_holes = np.asarray(sampled[:, 1], dtype=np.float64)
 
     if regions is not None:
         available = sorted(set(group_names(target_mesh, dim=2).values()))
@@ -200,12 +192,14 @@ def transfer_carriers(
 
     if missing.any():
         if fill_pair is None:
-            from scipy.interpolate import NearestNDInterpolator
-
-            n_electrons[missing] = NearestNDInterpolator(source, electrons)(
-                target[missing]
+            nearest, _ = sample_at(
+                source,
+                np.column_stack([electrons, holes]),
+                target[missing],
+                fill="nearest",
             )
-            n_holes[missing] = NearestNDInterpolator(source, holes)(target[missing])
+            n_electrons[missing] = nearest[:, 0]
+            n_holes[missing] = nearest[:, 1]
         else:
             n_electrons[missing] = fill_pair[0]
             n_holes[missing] = fill_pair[1]

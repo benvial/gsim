@@ -43,6 +43,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
+from gsim.common.interpolate import sample_at
 from gsim.common.mesh_regions import (
     cell_blocks,
     group_names,
@@ -216,8 +217,6 @@ def elementwise_epsilon(
     Returns:
         Complex epsilon per triangle, in the mesh's triangle order.
     """
-    from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
-
     if not isinstance(mesh, meshio.Mesh):
         mesh = meshio.read(str(mesh))
     tris, _tags = cell_blocks(mesh, "triangle")
@@ -235,18 +234,10 @@ def elementwise_epsilon(
     if points.shape[0] < 3:
         raise ValueError("At least three sample points are required.")
 
-    linear = LinearNDInterpolator(points, values)
-    result = np.asarray(linear(centroids), dtype=np.complex128)
-    missing = np.isnan(result.real)
-    if np.any(missing):
-        if fill is not None:
-            result[missing] = fill
-        else:
-            nearest = NearestNDInterpolator(points, values)
-            result[missing] = np.asarray(
-                nearest(centroids[missing]), dtype=np.complex128
-            )
-    return result
+    sampled, _missing = sample_at(
+        points, values, centroids, fill="nearest" if fill is None else fill
+    )
+    return np.asarray(sampled, dtype=np.complex128)
 
 
 def solve_modes(

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- One scatter interpolator behind every mesh-to-mesh sample.
+  `gsim.common.interpolate.sample_at(points, values, targets, fill=...)` is the linear interpolant over a cloud's
+  triangulation with nearest-neighbour or a scalar outside its hull, and it always returns the missing mask, so a caller
+  with its own notion of missing — a region restriction, a per-column fill — composes with it instead of recomputing
+  NaNs. `values` may be real or complex and `(n,)` or `(n, k)`, so several columns share one hull and one triangulation.
+  `common.carrier_transfer`, `femwell.elementwise_epsilon` and the Staircase's band average now go through it, with
+  behaviour preserved and two gaps closed: complex values were only handled in the femwell copy, and the
+  degenerate-cloud guard only in the Staircase's. A cloud that spans no area now raises `DegenerateSampleCloudError`
+  instead of being swallowed into a nearest-neighbour answer; the Staircase catches it and keeps returning `None`.
+
 - A simulation that delegates its meshing no longer hand-mirrors the surface. `gsim.palace.base.MeshSourceMixin` carries
   the thirteen accessors and the "call mesh() first" guard over an abstract `_mesh_source()` hook, so
   `ChargeTransportSim` — which delegates to a lazily-created `BoundaryModeSim` rather than inheriting from one — keeps
