@@ -149,6 +149,7 @@ from gsim.palace.results import (
 # Runtime / binary resolution (self-contained; can auto-download a Palace CPU runtime)
 from gsim.palace.runtime import (
     install_palace_runtime,
+    local_abort_report,
     resolve_palace_binary,
     resolve_palace_library_dir,
 )
@@ -234,6 +235,7 @@ __all__ = [
     "load_sparams",
     "load_stack_yaml",
     "load_volume_field_data",
+    "local_abort_report",
     "parse_layer_stack",
     "plot_boundary_field",
     "plot_cross_section",

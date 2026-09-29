@@ -1,12 +1,21 @@
-"""A boundary-mode simulation owns its run directory.
+"""A boundary-mode simulation owns its run.
 
 Where Palace's tables land, that the previous run's are gone before the
-next one, and that what is read back is this run's — none of which a
-caller should have to spell.
+next one, that what is read back is this run's — and what a run that
+ends badly means: Palace 0.17 crashes on shutdown *after* answering, so
+a complete table left behind is the answer, while a binary that died
+before writing anything is a broken runtime and is reported as one. None
+of it is something a caller should have to spell.
 """
 
 from __future__ import annotations
 
+import subprocess
+from types import SimpleNamespace
+from typing import Any
+
+import meshio
+import numpy as np
 import pytest
 
 from gsim.palace import BoundaryModeSim
@@ -19,6 +28,16 @@ MODE_TABLE = (
 )
 
 
+def mode_table_text(n_modes: int) -> str:
+    """A ``mode-kn.csv`` carrying *n_modes* Modes."""
+    header = "m, Re{kn} (1/m), Im{kn} (1/m), Re{n_eff}, Im{n_eff}\n"
+    rows = "".join(
+        f"{m}, {4.2e7 + m:.6e}, -1.0e2, {2.0 + 0.1 * m:.6e}, -1.0e-5\n"
+        for m in range(1, n_modes + 1)
+    )
+    return header + rows
+
+
 def sim_at(tmp_path) -> BoundaryModeSim:
     sim = BoundaryModeSim()
     sim.set_output_dir(tmp_path)
@@ -28,6 +47,38 @@ def sim_at(tmp_path) -> BoundaryModeSim:
 def write_table(directory, name="mode-kn.csv", text=MODE_TABLE) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / name).write_text(text)
+
+
+class TestMeshExtent:
+    """The rectangle the mesh covers, read off the mesh itself."""
+
+    @staticmethod
+    def _meshed(tmp_path, points) -> BoundaryModeSim:
+        """A simulation standing on a hand-written two-triangle mesh."""
+        path = tmp_path / "palace.msh"
+        meshio.write(
+            path,
+            meshio.Mesh(
+                np.asarray(points, dtype=float),
+                [("triangle", np.array([[0, 1, 2], [1, 2, 3]]))],
+            ),
+            file_format="gmsh",
+        )
+        sim = sim_at(tmp_path)
+        sim._last_mesh_result = SimpleNamespace(mesh_path=path)
+        return sim
+
+    def test_it_is_the_bounding_box_of_the_mesh_nodes(self, tmp_path):
+        sim = self._meshed(
+            tmp_path,
+            [(-2.5, -1.0, 0.0), (3.5, -1.0, 0.0), (-2.5, 4.0, 0.0), (3.5, 4.0, 0.0)],
+        )
+
+        assert sim.mesh_extent == ((-2.5, 3.5), (-1.0, 4.0))
+
+    def test_without_a_mesh_it_is_an_error(self):
+        with pytest.raises(ValueError, match="Call mesh"):
+            _ = BoundaryModeSim().mesh_extent
 
 
 class TestRunDirectory:
@@ -98,3 +149,205 @@ class TestRunningLocally:
         again = sim.read_results()
         assert again is not None
         assert again.modes == results.modes
+
+
+class TestCrashedRunSalvage:
+    """Palace 0.17 can corrupt its heap on shutdown, after answering.
+
+    A run that exits abnormally with its complete mode table on disk is
+    an answer, not a failure; a truncated or absent table stays one.
+    """
+
+    @pytest.fixture
+    def crashing_palace(self, monkeypatch):
+        """A Palace that writes *modes* Modes and then dies."""
+        script: dict[str, Any] = {
+            "modes": 0,
+            "raises": RuntimeError("free(): corrupted chunks"),
+        }
+
+        def fake_run_local(self, **_kwargs):
+            if script["modes"]:
+                write_table(self.run_dir, text=mode_table_text(script["modes"]))
+            raise script["raises"]
+
+        monkeypatch.setattr(PalaceSimMixin, "run_local", fake_run_local)
+        return script
+
+    @staticmethod
+    def _asking_for(tmp_path, num_modes: int) -> BoundaryModeSim:
+        sim = sim_at(tmp_path)
+        sim.set_boundary_mode(freq=10e9, num_modes=num_modes)
+        return sim
+
+    def test_a_complete_table_is_used_and_the_crash_reported(
+        self, tmp_path, crashing_palace
+    ):
+        crashing_palace["modes"] = 4
+
+        with pytest.warns(UserWarning, match="exited abnormally"):
+            results = self._asking_for(tmp_path, 4).run_local(verbose=False)
+
+        assert len(results.modes) == 4
+        assert results.modes[1]["n_eff"].real == pytest.approx(2.1)
+
+    def test_the_warning_names_the_frequency_and_the_palace_bug(
+        self, tmp_path, crashing_palace
+    ):
+        crashing_palace["modes"] = 1
+
+        with pytest.warns(UserWarning, match="f = 1e\\+10 Hz"):
+            self._asking_for(tmp_path, 1).run_local(verbose=False)
+
+    def test_a_truncated_table_is_not_an_answer(self, tmp_path, crashing_palace):
+        crashing_palace["modes"] = 2
+
+        with pytest.raises(RuntimeError, match="corrupted chunks"):
+            self._asking_for(tmp_path, 4).run_local(verbose=False)
+
+    @pytest.mark.usefixtures("crashing_palace")
+    def test_no_output_at_all_is_not_an_answer(self, tmp_path):
+        with pytest.raises(RuntimeError, match="corrupted chunks"):
+            self._asking_for(tmp_path, 4).run_local(verbose=False)
+
+    @pytest.mark.usefixtures("crashing_palace")
+    def test_a_previous_runs_table_is_not_salvaged_as_this_ones(self, tmp_path):
+        """The run directory is cleared before running, so a stale table is gone."""
+        sim = self._asking_for(tmp_path, 4)
+        write_table(sim.run_dir, text=mode_table_text(4))
+
+        with pytest.raises(RuntimeError, match="corrupted chunks"):
+            sim.run_local(verbose=False)
+
+    def test_salvage_can_be_turned_off(self, tmp_path, crashing_palace):
+        """A caller who wants the raise back keeps it reachable."""
+        crashing_palace["modes"] = 4
+
+        with pytest.raises(RuntimeError, match="corrupted chunks"):
+            self._asking_for(tmp_path, 4).run_local(verbose=False, salvage=False)
+
+
+class TestAbortedBinaryIsReported:
+    """A Palace binary that aborts is reported as a runtime failure.
+
+    A broken Palace runtime — typically a bundled MPI that cannot start —
+    kills the binary before it writes any solver output, and the raw
+    ``CalledProcessError`` that surfaces carries an exit status and
+    nothing a user can act on. The simulation turns that into a report
+    naming the binary that ran and saying that an abort with no solver
+    output means the runtime rather than the model.
+    """
+
+    @pytest.fixture
+    def aborting_palace(self, monkeypatch):
+        """A Palace binary that dies, having written *modes* Modes."""
+        script = {"modes": 0, "returncode": 134, "stderr": ""}
+
+        def fake_run_local(self, **_kwargs):
+            if script["modes"]:
+                write_table(self.run_dir, text=mode_table_text(script["modes"]))
+            raise subprocess.CalledProcessError(
+                script["returncode"],
+                ["/opt/somewhere/palace", "-np", "1", "config.json"],
+                output="",
+                stderr=script["stderr"],
+            )
+
+        monkeypatch.setattr(PalaceSimMixin, "run_local", fake_run_local)
+        return script
+
+    @staticmethod
+    def _run(tmp_path, **kwargs):
+        sim = sim_at(tmp_path)
+        sim.set_boundary_mode(freq=10e9, num_modes=4)
+        return sim.run_local(verbose=False, **kwargs)
+
+    @pytest.mark.usefixtures("aborting_palace")
+    def test_the_report_names_the_binary_and_blames_the_runtime(self, tmp_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            self._run(tmp_path)
+        message = str(excinfo.value)
+        assert "/opt/somewhere/palace" in message
+        assert "exit status 134" in message
+        assert "SIGABRT" in message
+        assert "any solver output" in message
+        assert "runtime" in message
+        assert "PALACE_BIN" in message
+
+    @pytest.mark.usefixtures("aborting_palace")
+    def test_the_caller_names_the_binary_when_it_resolved_one(self, tmp_path):
+        with pytest.raises(RuntimeError, match="/elsewhere/palace"):
+            self._run(tmp_path, palace_executable="/elsewhere/palace")
+
+    @pytest.mark.usefixtures("aborting_palace")
+    def test_a_caller_supplied_remedy_closes_the_report(self, tmp_path):
+        """The one Route-shaped sentence is handed down, not written here."""
+        with pytest.raises(RuntimeError, match="route='femwell'"):
+            self._run(
+                tmp_path, remedy="re-solve on the default route with route='femwell'"
+            )
+
+    @pytest.mark.usefixtures("aborting_palace")
+    def test_without_a_remedy_only_palace_bin_is_offered(self, tmp_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            self._run(tmp_path)
+        assert str(excinfo.value).endswith("runtime works here.")
+
+    def test_a_plain_exit_is_not_blamed_on_the_runtime(self, tmp_path, aborting_palace):
+        """Exit 1 is Palace refusing the run itself; its stderr says why."""
+        aborting_palace["returncode"] = 1
+        aborting_palace["stderr"] = "Invalid configuration\n"
+
+        with pytest.raises(RuntimeError) as excinfo:
+            self._run(tmp_path)
+        message = str(excinfo.value)
+        assert "exit status 1." in message
+        assert "runtime" not in message.split("Point PALACE_BIN", maxsplit=1)[0]
+        assert "Invalid configuration" in message
+
+    @pytest.mark.usefixtures("aborting_palace")
+    def test_the_raw_error_is_chained_not_lost(self, tmp_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            self._run(tmp_path)
+        assert isinstance(excinfo.value.__cause__, subprocess.CalledProcessError)
+        assert excinfo.value.__cause__.returncode == 134
+
+    def test_a_segfault_is_named_as_one(self, tmp_path, aborting_palace):
+        aborting_palace["returncode"] = 139
+
+        with pytest.raises(RuntimeError, match="SIGSEGV"):
+            self._run(tmp_path)
+
+    def test_the_last_worded_stderr_line_is_quoted(self, tmp_path, aborting_palace):
+        """MPI ends its error blocks with a dashed rule; quote past it."""
+        aborting_palace["stderr"] = (
+            "noise\nopal_shmem_base_select failed\n" + "-" * 40 + "\n"
+        )
+
+        with pytest.raises(RuntimeError, match="opal_shmem_base_select failed"):
+            self._run(tmp_path)
+
+    def test_partial_output_is_not_blamed_on_the_runtime(
+        self, tmp_path, aborting_palace
+    ):
+        """A truncated table means the solver ran; the runtime did start."""
+        aborting_palace["modes"] = 2
+
+        with pytest.raises(RuntimeError) as excinfo:
+            self._run(tmp_path)
+        message = str(excinfo.value)
+        assert "any solver output" not in message
+        assert "partial solver output" in message
+        assert "exit status 134" in message
+        assert str(tmp_path) in message
+
+    def test_a_complete_table_left_by_an_abort_is_still_salvaged(
+        self, tmp_path, aborting_palace
+    ):
+        """The salvage runs before the report: an answer beats a diagnosis."""
+        aborting_palace["modes"] = 4
+
+        with pytest.warns(UserWarning, match="exited abnormally"):
+            results = self._run(tmp_path)
+
+        assert len(results.modes) == 4

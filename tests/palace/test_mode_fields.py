@@ -15,6 +15,7 @@ import pytest
 
 from gsim.palace.mode_fields import (
     BoundaryModeField,
+    check_field_is_the_mode,
     contour_current,
     field_index_ratio,
     load_boundary_mode_field,
@@ -318,3 +319,90 @@ class TestFieldIndexRatio:
             h_n=None,
         )
         assert np.isnan(field_index_ratio(field))
+
+
+class TestCheckFieldIsTheMode:
+    """Asking a saved field whether it is the Mode it was fetched for.
+
+    Which ParaView cycle holds which Mode is a convention, and a
+    convention changes without an error; the fields carry their own
+    index, so they can be asked.
+    """
+
+    @staticmethod
+    def _field(*, n_from_fields: float) -> BoundaryModeField:
+        """A TEM field whose own index is *n_from_fields*."""
+        eta0 = 376.730313668
+        e_t = np.tile([1.0 + 0j, 0.0 + 0j], (6, 1))
+        h_t = (n_from_fields / eta0) * np.stack([-e_t[:, 1], e_t[:, 0]], axis=1)
+        return BoundaryModeField(
+            points_um=np.zeros((6, 2)),
+            cells=np.arange(6).reshape(1, 6),
+            attribute=np.array([1]),
+            e_t=e_t,
+            e_n=np.zeros(6, dtype=complex),
+            h_t=h_t,
+            h_n=None,
+        )
+
+    def test_fields_matching_the_mode_table_pass_quietly(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            check_field_is_the_mode(
+                self._field(n_from_fields=2.4),
+                mode_id=2,
+                n_eff=complex(2.5, -0.01),
+                context="The rf stage",
+            )
+
+    def test_fields_from_another_mode_are_reported(self):
+        with pytest.warns(UserWarning, match="different mode's fields"):
+            check_field_is_the_mode(
+                self._field(n_from_fields=0.02),
+                mode_id=2,
+                n_eff=complex(2.5, -0.01),
+                context="The rf stage",
+            )
+
+    def test_the_warning_opens_with_the_context_it_was_given(self):
+        with pytest.warns(UserWarning, match="^The eigen read read back fields"):
+            check_field_is_the_mode(
+                self._field(n_from_fields=0.02),
+                mode_id=2,
+                n_eff=complex(2.5),
+                context="The eigen read",
+            )
+
+    def test_a_mode_carrying_no_field_says_nothing(self):
+        """Nothing to compare is not the same as a mismatch."""
+        import warnings
+
+        field = self._field(n_from_fields=2.4)
+        field = type(field)(
+            points_um=field.points_um,
+            cells=field.cells,
+            attribute=field.attribute,
+            e_t=np.zeros_like(field.e_t),
+            e_n=field.e_n,
+            h_t=field.h_t,
+            h_n=None,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            check_field_is_the_mode(
+                field, mode_id=1, n_eff=complex(2.5), context="The rf stage"
+            )
+
+    def test_a_mode_table_claiming_no_index_says_nothing(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            check_field_is_the_mode(
+                self._field(n_from_fields=2.4),
+                mode_id=1,
+                n_eff=complex(0.0),
+                context="The rf stage",
+            )

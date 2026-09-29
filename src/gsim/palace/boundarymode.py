@@ -7,11 +7,20 @@ own tables of a run land (:attr:`BoundaryModeSim.run_dir`, cleared
 before every local run and read back by :meth:`BoundaryModeSim.read_results`),
 and the postprocessing index Palace reports an impedance path under
 (:meth:`BoundaryModeSim.add_impedance_path`).
+
+It also owns what a local run that ends badly means. Palace 0.17 corrupts
+its heap while shutting a boundary-mode solve down, *after* writing the
+answer, so :meth:`BoundaryModeSim.run_local` reads a complete table back
+rather than throwing the run away; a binary that died before writing
+anything is reported as the runtime failure it is
+(:func:`gsim.palace.runtime.local_abort_report`).
 """
 
 from __future__ import annotations
 
 import shutil
+import subprocess
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -29,8 +38,10 @@ from gsim.palace.models import (
     NumericalConfig,
 )
 from gsim.palace.models.results import ValidationResult
+from gsim.palace.runtime import local_abort_report
 
 if TYPE_CHECKING:
+    from gsim.common.modes import Extent
     from gsim.palace.mode_fields import BoundaryModeField
     from gsim.palace.results import PalaceTextResults
 
@@ -39,6 +50,23 @@ __all__ = ["BoundaryModeSim", "ModePath"]
 #: Where a local Palace run writes its tables, under the simulation's
 #: output directory.
 RUN_SUBDIR = Path("output") / "palace"
+
+
+def _binary_that_ran(
+    err: subprocess.CalledProcessError, requested: str | Path | None
+) -> str | Path:
+    """The Palace executable an aborted run used.
+
+    The caller names it when it resolved one itself; otherwise the
+    command the failed run carries does, since the mixin resolves the
+    binary on its own and the report is about which one died.
+    """
+    if requested is not None:
+        return requested
+    cmd = err.cmd
+    if isinstance(cmd, (list, tuple)) and cmd:
+        return str(cmd[0])
+    return str(cmd)
 
 
 class ModePath(BaseModel):
@@ -353,6 +381,29 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     # -------------------------------------------------------------------------
 
     @property
+    def mesh_extent(self) -> Extent:
+        """The rectangle this simulation's 2D mesh covers.
+
+        Read off the mesh itself rather than off the geometry that asked
+        for it, so it is what the solver will actually see — which is
+        what a postprocessing path sampled on the domain has to stay
+        inside.
+
+        Returns:
+            ``((h_min, h_max), (v_min, v_max))`` in the mesh's own
+            cross-section coordinates (um).
+
+        Raises:
+            ValueError: When the simulation has not been meshed.
+        """
+        import meshio
+
+        points = meshio.read(str(self.mesh_path)).points
+        h = points[:, 0]
+        v = points[:, 1]
+        return ((float(h.min()), float(h.max())), (float(v.min()), float(v.max())))
+
+    @property
     def run_dir(self) -> Path:
         """Where a local run's Palace tables land.
 
@@ -414,14 +465,64 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             raise ValueError("Output directory not set. Call set_output_dir() first.")
         return load_boundary_mode_field(Path(self._output_dir), mode_id=mode_id)
 
-    def run_local(self, **kwargs: Any) -> PalaceTextResults:  # type: ignore[override]
+    def _salvage_mode_table(self, err: Exception) -> PalaceTextResults | None:
+        """Read a crashed run's mode table back, if it is complete.
+
+        Palace 0.17 intermittently corrupts its heap while shutting down
+        a ``BoundaryMode`` solve (``free(): corrupted unsorted chunks``),
+        after the solve itself has finished and its results are on disk.
+        The crash is non-deterministic on an identical mesh and config,
+        so a run that exits abnormally may still have answered the
+        question it was asked — and the answer on disk is used rather
+        than thrown away, which is what lets a gate depend on a live
+        solve at all. The run directory is cleared before each run, so
+        what is read back is this run's.
+
+        Args:
+            err: What the run raised, named in the warning.
+
+        Returns:
+            The parsed text results when the table is complete, else
+            ``None`` so the caller re-raises.
+        """
+        try:
+            text = self.read_results()
+        except Exception:
+            return None
+        num_modes = self.boundary_mode.num_modes
+        if text is None or len(getattr(text, "modes", {})) < num_modes:
+            return None
+        warnings.warn(
+            f"Palace exited abnormally at f = {self.boundary_mode.freq:g} Hz but "
+            f"its complete mode table was on disk, so the run's answer is used "
+            f"({err}). Palace 0.17 is known to corrupt its heap on shutdown of "
+            "a boundary-mode solve.",
+            stacklevel=3,
+        )
+        return text
+
+    def run_local(
+        self, *, salvage: bool = True, remedy: str | None = None, **kwargs: Any
+    ) -> PalaceTextResults:
         """Run Palace locally and hand back this run's text results.
 
         The run directory is cleared first, so a table an earlier run left
         cannot shadow this one's, and what :meth:`read_results` returns
         afterwards — on success or after a crash — is this run's.
 
+        A run that ends abnormally is asked whether it answered anyway
+        before it is reported as a failure, because on Palace 0.17 it
+        often did (:meth:`_salvage_mode_table`). One that did not, and
+        whose binary died rather than exited, is reported as the runtime
+        failure it is rather than as a raw exit status.
+
         Args:
+            salvage: Take a complete mode table left by an abnormal exit
+                as the run's answer, warning that it happened. ``False``
+                re-raises instead, which is also what a caller running
+                with warnings as errors gets.
+            remedy: A second way out, named at the end of the abort
+                report beyond pointing ``PALACE_BIN`` somewhere else.
             **kwargs: What :meth:`gsim.palace.base.PalaceSimMixin.run_local`
                 takes (``palace_executable``, ``verbose``, ...).
 
@@ -429,10 +530,34 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             The parsed mode tables.
 
         Raises:
-            RuntimeError: When Palace ran but left no parseable results.
+            RuntimeError: When Palace ran but left no parseable results,
+                or when its binary aborted with nothing to salvage.
+
+        Warns:
+            UserWarning: When an abnormal exit's mode table is salvaged.
         """
         shutil.rmtree(self.run_dir, ignore_errors=True)
-        super().run_local(**kwargs)
+        try:
+            super().run_local(**kwargs)
+        except subprocess.CalledProcessError as err:
+            salvaged = self._salvage_mode_table(err) if salvage else None
+            if salvaged is not None:
+                return salvaged
+            raise RuntimeError(
+                local_abort_report(
+                    err,
+                    binary=_binary_that_ran(err, kwargs.get("palace_executable")),
+                    output_dir=self.output_dir,
+                    wrote_output=bool(self.last_run_files),
+                    during=f"at f = {self.boundary_mode.freq:g} Hz",
+                    remedy=remedy,
+                )
+            ) from err
+        except RuntimeError as err:
+            salvaged = self._salvage_mode_table(err) if salvage else None
+            if salvaged is None:
+                raise
+            return salvaged
         results = self.read_results()
         if results is None:
             raise RuntimeError(f"Palace produced no text results under {self.run_dir}.")

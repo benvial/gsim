@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- Palace runtime knowledge lives in `gsim.palace`, not in the Palace Route. About 400 lines leave
+  `gsim.modulator.palace_route`, and nothing under `gsim.palace` imports `gsim.modulator` to take them: every type the
+  moved code needs — `Conductor`, `Extent`, `LineReading` — was already in `gsim.common.modes`.
+
+  - New `gsim.palace.line_impedance` holds the whole impedance story as one unit: `ImpedancePaths`,
+    `line_impedance_paths`, `PATH_CLEARANCE_FRACTION`, `IMPEDANCE_PORT`, `declare_impedance_paths`,
+    `native_line_impedance`, `MIN_VOLTAGE_POWER_RATIO`, `field_line_impedance` and the tables-then-fields policy
+    `palace_line_impedance`. It is not re-exported from `gsim.palace`, for the reason `mode_fields` gives about its
+    integrals: the four functions are one policy and are meant to be read together. Splitting the table reader into
+    `results.py` and the field reader into `mode_fields.py` would have pushed line-mode vocabulary — signal against
+    return conductor, the gap voltage, the wall Mode — into two modules that know only tables and only fields, and left
+    the policy with no home. The functions take a Mode as its `mode_id` and `n_eff` rather than as a `PalaceMode`, which
+    is what keeps the new module free of the Route.
+  - `BoundaryModeSim.mesh_extent` is a property returning `gsim.common.modes.Extent`: it is a meshio read of the
+    simulation's own mesh, so it belongs on the simulation rather than in a module.
+  - `gsim.palace.mode_fields.check_field_is_the_mode` is public, beside `field_index_ratio` and carrying
+    `FIELD_INDEX_RTOL`, with the old `stage_name` argument generalised to `context`. Asking a saved field whether it is
+    the Mode it was fetched for is a statement about the field alone. `field_line_impedance` still calls it outside its
+    own `try`, so a caller running with warnings as errors sees the wrong-Mode diagnostic rather than an unreadable-file
+    report.
+  - `gsim.palace.runtime.local_abort_report` turns a dead Palace binary's exit status into something actionable — a
+    signal death with no solver output means the runtime, typically its bundled MPI, not the model. It is named
+    `local_abort_report` because it reads a `subprocess.CalledProcessError` and a local run directory, which makes it
+    visible that a future cloud path is not covered. The one Route-shaped token, "re-solve on the default route with
+    `route='femwell'`", is a caller-supplied `remedy`, optional because a Backend caller with no second way out should
+    not have to invent one. What was being run is named by `during`, not `context`, which in `line_impedance` and
+    `mode_fields` means who is asking.
+  - `BoundaryModeSim.run_local` owns what a bad local run means: it salvages a complete mode table left by an abnormal
+    exit (Palace 0.17 corrupts its heap on shutdown of a boundary-mode solve, *after* answering) behind `salvage=True`,
+    and reports an aborted binary through `local_abort_report`. The salvage default sits on the Backend because the bug
+    is a Palace fact, and `salvage=False` keeps the raise reachable. The report is wired into `BoundaryModeSim` only;
+    wiring `PalaceSimMixin` would change the exception type on `DrivenSim`, `EigenSim` and `ElectrostaticSim` and is a
+    behaviour change rather than a lift.
+
+  `gsim.modulator.palace_route` keeps what names a Stage, a Window or a Staircase: `PalaceMode`, `PalaceSolve`,
+  `solve_palace_modes`, `PalaceRoute`, `containment_unmeasurable`, `conductor_clearance` and `require_palace_binary`,
+  and its `__all__` narrows to them. `solve_palace_modes` no longer wraps the run in crash handling; it hands its
+  femwell remedy down instead.
+
 - gmsh physical groups are read in one place: `gsim.common.mesh_regions` holds `group_tags` / `group_names` (the two
   directions of the `field_data` lookup, over an explicit `dim`), `cell_blocks` (the block-concatenation loop) and the
   triangle conveniences `element_regions`, `node_regions` and `region_elements` on top. The join between a group's name

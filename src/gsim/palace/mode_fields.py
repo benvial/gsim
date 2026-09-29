@@ -35,10 +35,18 @@ re-exported from :mod:`gsim.palace`; the three integrals are not, because
 they share a unit contract — um coordinates against SI fields, which
 cancels only in the ratio :func:`z0_power_current` takes — and are meant
 to be read together with it.
+
+:func:`check_field_is_the_mode` sits here rather than beside whoever
+reads a Mode back, because asking a saved field whether it is the Mode
+it was fetched for is a statement about the field alone: it is the same
+question for a boundary Mode's impedance and for any later eigen-field
+read.
 """
 
 from __future__ import annotations
 
+import math
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -52,7 +60,9 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_PERIMETER_TOL_UM",
+    "FIELD_INDEX_RTOL",
     "BoundaryModeField",
+    "check_field_is_the_mode",
     "contour_current",
     "field_index_ratio",
     "load_boundary_mode_field",
@@ -160,8 +170,7 @@ def load_boundary_mode_field(
     Args:
         source: What ``run_local`` returned, or the simulation
             directory.
-        mode_id: Palace's own mode number, 1-based — the ``mode_id`` of
-            a :class:`~gsim.modulator.route.PalaceMode`.
+        mode_id: Palace's own mode number, 1-based.
 
     Returns:
         The Mode's fields on the meshed Cross-section.
@@ -440,3 +449,45 @@ def field_index_ratio(field: BoundaryModeField) -> float:
     if e_rms <= 0.0:
         return float("nan")
     return float(np.sqrt(MU0 / EPS0) * h_rms / e_rms)
+
+
+#: How far the index a saved Mode's fields imply may sit from the index
+#: its mode table reports before the two are called different Modes.
+#: Loose on purpose: the relation behind :func:`field_index_ratio` is
+#: exact only for a TEM Mode, so this catches a wrong file rather than a
+#: quasi-TEM Mode's own departure from it.
+FIELD_INDEX_RTOL: float = 2.0
+
+
+def check_field_is_the_mode(
+    field: BoundaryModeField, *, mode_id: int, n_eff: complex, context: str
+) -> None:
+    """Warn when the fields read back are not the Mode they were fetched for.
+
+    Which ParaView cycle holds which Mode is a convention — Palace
+    writes them in mode order, so cycle ``m`` is Mode ``m`` — and a
+    convention is the kind of thing that changes without an error. The
+    fields carry their own index (:func:`field_index_ratio`), so they
+    can be asked whether they are the Mode they were fetched for.
+
+    Args:
+        field: The fields that were read back.
+        mode_id: Palace's own mode number they were fetched under.
+        n_eff: The effective index that Mode's table reports.
+        context: Who is asking, opening the warning.
+    """
+    implied = field_index_ratio(field)
+    expected = abs(n_eff)
+    if not math.isfinite(implied) or expected <= 0.0:
+        return
+    if 1.0 / (1.0 + FIELD_INDEX_RTOL) <= implied / expected <= 1.0 + FIELD_INDEX_RTOL:
+        return
+    warnings.warn(
+        f"{context} read back fields for palace mode {mode_id} whose own "
+        f"effective index is about {implied:.3g}, against the {expected:.3g} "
+        "its mode table reports: these are most likely a different mode's "
+        "fields, and the characteristic impedance taken from them belongs to "
+        "that one. Palace writes one paraview cycle per saved mode in mode "
+        "order; check that it still does.",
+        stacklevel=2,
+    )
