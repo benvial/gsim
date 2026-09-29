@@ -63,6 +63,7 @@ from pydantic import Field, PrivateAttr, field_validator
 from scipy.constants import epsilon_0 as EPS0  # noqa: N812
 
 from gsim.common.modes import LineModeRule
+from gsim.common.sweep import BIAS_TOL_V
 from gsim.modulator.em import EMStage
 from gsim.modulator.staircase import (
     DEFAULT_ELECTRODES,
@@ -70,7 +71,6 @@ from gsim.modulator.staircase import (
     ElectrodeSpec,
     RFStripMaterial,
 )
-from gsim.tcad.results import BIAS_TOL_V
 
 if TYPE_CHECKING:
     from pathlib import Path

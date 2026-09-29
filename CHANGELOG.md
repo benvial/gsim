@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A sweep of points over one scalar key has one base. `gsim.common.sweep.ScalarSweep[PointT]` holds the key array and
+  the tolerant `point_at` lookup that `CarrierResponseSweep` and `BiasSweepResult` each wrote out, with a `_key(point)`
+  hook naming the swept axis; everything else about the two stays where it was, and `BiasSweepResult` keeps `voltages`
+  as the named alias of `keys` so its surface is unchanged. `BIAS_TOL_V` moves there with it, which closes a layering
+  edge: `gsim.modulator` imported a tolerance constant upward out of the tcad Backend. The bare `* 1e2` in
+  `gsim.tcad.results` is now `PER_CM_TO_PER_M` — a DEVSIM 2D device is one cm deep, and per-cm to per-m is the one thing
+  that factor was ever doing.
+
 - Two spec-validation rules are written once. `gsim.common.validation.AscendingInterval` is the annotated pydantic type
   behind every `(min, max)` window: `tcad.doping`'s five hand-written `_validate_interval` calls and the identical loop
   inside Palace's `CrossSectionPlaneConfig` validator are gone, and the rule now travels with the field declaration

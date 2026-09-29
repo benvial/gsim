@@ -13,13 +13,17 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field
 
+from gsim.common.sweep import ScalarSweep
+
 if TYPE_CHECKING:
     from gsim.common.transmission_line import JunctionBranch
 
 __all__ = ["BiasPoint", "BiasSweepResult", "CarrierMap"]
 
-#: Biases this far apart (V) count as the same Bias point.
-BIAS_TOL_V: float = 1e-9
+#: A DEVSIM 2D device is one cm deep, so its extensive quantities come
+#: back per cm of that depth; this is the conversion to per meter of
+#: device length the rest of gsim works in.
+PER_CM_TO_PER_M: float = 1e2
 
 
 class CarrierMap(BaseModel):
@@ -87,12 +91,12 @@ class BiasPoint(BaseModel):
     @property
     def capacitance_f_per_m(self) -> float:
         """Small-signal capacitance per meter of device length (F/m)."""
-        return self.capacitance_f_per_cm * 1e2
+        return self.capacitance_f_per_cm * PER_CM_TO_PER_M
 
     @property
     def admittance_s_per_m(self) -> complex:
         """Small-signal admittance per meter of device length (S/m)."""
-        return self.admittance_s_per_cm * 1e2
+        return self.admittance_s_per_cm * PER_CM_TO_PER_M
 
     def junction_branch(self) -> JunctionBranch:
         """Fit the series-RC junction branch to this point's admittance.
@@ -126,18 +130,22 @@ class BiasPoint(BaseModel):
         return JunctionBranch(r_s_ohm_m=float(r_s), c_j_f_per_m=float(c_j))
 
 
-class BiasSweepResult(BaseModel):
+class BiasSweepResult(ScalarSweep[BiasPoint]):
     """Ordered collection of solved bias points from a voltage sweep."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    sweep_noun = "bias sweep"
+    key_unit = "V"
 
     contact: str
-    points: list[BiasPoint] = Field(default_factory=list)
+
+    def _key(self, point: BiasPoint) -> float:
+        """A Bias point is keyed on the bias it was solved at."""
+        return point.bias_v
 
     @property
     def voltages(self) -> NDArray[np.float64]:
         """Applied biases (V) in sweep order."""
-        return np.asarray([p.bias_v for p in self.points], dtype=np.float64)
+        return self.keys
 
     @property
     def capacitance_f_per_cm(self) -> NDArray[np.float64]:
@@ -149,36 +157,13 @@ class BiasSweepResult(BaseModel):
     @property
     def capacitance_f_per_m(self) -> NDArray[np.float64]:
         """Small-signal C(V) per meter of device length in sweep order."""
-        return np.asarray(self.capacitance_f_per_cm * 1e2, dtype=np.float64)
+        return np.asarray(self.capacitance_f_per_cm * PER_CM_TO_PER_M, dtype=np.float64)
 
     @property
     def admittance_s_per_cm(self) -> NDArray[np.complex128]:
         """Small-signal terminal admittance per cm of depth in sweep order."""
         return np.asarray(
             [p.admittance_s_per_cm for p in self.points], dtype=np.complex128
-        )
-
-    def point_at(self, bias_v: float, *, tol: float = BIAS_TOL_V) -> BiasPoint:
-        """The solved point at one bias.
-
-        Args:
-            bias_v: Bias to look up (V).
-            tol: How far apart two biases may sit and still count as the
-                same Bias point (V).
-
-        Returns:
-            The matching point.
-
-        Raises:
-            ValueError: When the sweep visited no such bias, naming the
-                biases it did visit.
-        """
-        for point in self.points:
-            if abs(point.bias_v - bias_v) <= tol:
-                return point
-        visited = ", ".join(f"{point.bias_v:g}" for point in self.points)
-        raise ValueError(
-            f"The bias sweep has no point at V = {bias_v:g}; it visited {visited} V."
         )
 
     def junction_branch(self) -> JunctionBranch:

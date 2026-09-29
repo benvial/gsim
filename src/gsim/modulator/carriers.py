@@ -35,8 +35,9 @@ from gsim.common.carriers import (
     carrier_conductivity,
     carrier_index_shift,
 )
+from gsim.common.sweep import ScalarSweep
 from gsim.modulator.stage import Stage
-from gsim.tcad.results import BIAS_TOL_V, CarrierMap
+from gsim.tcad.results import CarrierMap
 
 if TYPE_CHECKING:
     from gsim.tcad.results import BiasSweepResult
@@ -105,7 +106,7 @@ class CarrierResponse(MaterialResponse):
         return self
 
 
-class CarrierResponseSweep(BaseModel):
+class CarrierResponseSweep(ScalarSweep[CarrierResponse]):
     """The material response of every Bias point of a sweep.
 
     Attributes:
@@ -113,38 +114,19 @@ class CarrierResponseSweep(BaseModel):
         points: One response per Bias point, in sweep order.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    sweep_noun = "bias sweep"
+    key_unit = "V"
 
     contact: str
-    points: list[CarrierResponse] = Field(default_factory=list)
+
+    def _key(self, point: CarrierResponse) -> float:
+        """A response is keyed on the bias its Bias point was solved at."""
+        return point.bias_v
 
     @property
     def voltages(self) -> NDArray[np.float64]:
         """Applied biases (V) in sweep order."""
-        return np.asarray([p.bias_v for p in self.points], dtype=np.float64)
-
-    def point_at(self, bias_v: float, *, tol: float = BIAS_TOL_V) -> CarrierResponse:
-        """The response at one bias.
-
-        Args:
-            bias_v: Bias to look up (V).
-            tol: How far apart two biases may sit and still count as the
-                same Bias point (V).
-
-        Returns:
-            The matching point's response.
-
-        Raises:
-            ValueError: When the sweep visited no such bias, naming the
-                biases it did visit.
-        """
-        for point in self.points:
-            if abs(point.bias_v - bias_v) <= tol:
-                return point
-        visited = ", ".join(f"{point.bias_v:g}" for point in self.points)
-        raise ValueError(
-            f"The bias sweep has no point at V = {bias_v:g}; it visited {visited} V."
-        )
+        return self.keys
 
 
 class CarriersStage(Stage):
