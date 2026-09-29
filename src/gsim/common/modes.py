@@ -21,6 +21,13 @@ bound that is a bound at all; a caller who knows the answer is a
 transmission line rather than a waveguide Mode should tighten it, since
 a discretization's spurious Modes cluster just inside it.
 
+The selection itself is on the effective index alone, so it serves any
+guided Mode and not only a line's — an optical Stage selects its
+waveguide Mode through :func:`select_line_mode` with nothing but the
+guided-index floor. What is a transmission line's own rule is the loss
+bound above and the candidate rule that carries it; the name follows
+the caller that has them.
+
 Modes are read duck-typed: anything with an ``n_eff`` attribute (femwell
 ``Mode``), a mapping with an ``"n_eff"`` key (the Palace result rows), or
 a bare complex number works.
@@ -50,6 +57,7 @@ __all__ = [
     "MAX_COMMON_MODE_FRACTION",
     "MAX_GAIN_RATIO",
     "Conductor",
+    "Extent",
     "LineModeRule",
     "LineReading",
     "NoLineModeError",
@@ -58,7 +66,6 @@ __all__ = [
     "propagating_modes",
     "select_line_mode",
     "wall_mode_from_currents",
-    "wall_mode_hint",
 ]
 
 #: ``((h_min, h_max), (v_min, v_max))`` of a rectangle on the Cross-section (um).
@@ -196,27 +203,6 @@ def wall_mode_from_currents(
     return False, (
         f"whose two electrodes carry currents {fraction:.0%} in common: equal "
         "and opposite, the line mode between them"
-    )
-
-
-def wall_mode_hint(stage_name: str) -> str:
-    """The ways out of a selection that landed on the wall Mode.
-
-    Shared by both Routes' diagnostics, so that whichever measurement
-    caught it — the electrode currents or the gap voltage — the user is
-    told the same thing.
-
-    Args:
-        stage_name: Stage whose settings the hint names.
-
-    Returns:
-        One sentence, first the most likely cause.
-    """
-    return (
-        "The loaded line mode is most often outside max_loss_ratio at an "
-        f"undepleted bias; solve at a depleted one with study.{stage_name}"
-        "(bias_v=...), move n_guess toward the loaded line's index, widen "
-        "max_loss_ratio, or pass a rule= selecting the mode yourself."
     )
 
 

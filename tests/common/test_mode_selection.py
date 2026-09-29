@@ -16,7 +16,6 @@ from gsim.common.modes import (
     propagating_modes,
     select_line_mode,
     wall_mode_from_currents,
-    wall_mode_hint,
 )
 
 
@@ -196,13 +195,6 @@ class TestCommonModeFraction:
 
     def test_the_default_bound_sits_between_the_two_modes(self):
         assert 0.0 < MAX_COMMON_MODE_FRACTION < 1.0
-
-    def test_the_way_out_names_the_stage_and_its_settings(self):
-        hint = wall_mode_hint("rf")
-        assert "study.rf(bias_v=...)" in hint
-        assert "n_guess" in hint
-        assert "max_loss_ratio" in hint
-        assert "rule=" in hint
 
 
 class TestWallModeFromCurrents:

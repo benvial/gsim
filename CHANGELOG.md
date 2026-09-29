@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `gsim.common.modes` gives up its modulator vocabulary: `wall_mode_hint` is gone from the module and from `__all__`,
+  and the sentence it returned is now `RFStage._wall_mode_hint`, beside the `window_hint` it reads like. It named a
+  Stage and its settings, which `gsim.common` must not know about, and the RF Stage was its only caller. `Extent` — the
+  `((h_min, h_max), (v_min, v_max))` rectangle the module already returns — joins `gsim.common.modes.__all__`, where it
+  had been public in all but name.
+
 - The Staircase is `gsim.modulator.staircase`, not `gsim.common.stack.staircase`, and `gsim.common.stack` no longer
   re-exports `staircase_profile` / `strip_averages_from_nodes`, so `import gsim.common` stops loading the Staircase at
   all. No Backend imported it: every consumer already sat under `gsim.modulator`, and what femwell, Palace and tcad mesh

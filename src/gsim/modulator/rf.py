@@ -448,6 +448,20 @@ class RFStage(EMStage):
             "or move the electrodes further apart."
         )
 
+    def _wall_mode_hint(self) -> str:
+        """The ways out of a selection that landed on the wall Mode.
+
+        One hint for both Routes, so that whichever measurement caught
+        it — the electrode currents or the gap voltage — the user is
+        told the same thing.
+        """
+        return (
+            "The loaded line mode is most often outside max_loss_ratio at an "
+            f"undepleted bias; solve at a depleted one with study.{self.stage_name}"
+            "(bias_v=...), move n_guess toward the loaded line's index, widen "
+            "max_loss_ratio, or pass a rule= selecting the mode yourself."
+        )
+
     def _check_wall_mode(self, reading: LineReading, freq_hz: float) -> None:
         """Warn when the selected Mode is the wall Mode, not the line Mode.
 
@@ -470,14 +484,12 @@ class RFStage(EMStage):
             UserWarning: When the reading says the Mode is the wall Mode.
                 A reading that could not tell (``None``) does not warn.
         """
-        from gsim.common.modes import wall_mode_hint
-
         if not reading.wall_mode:
             return
         warnings.warn(
             f"The {self.stage_name} stage's {self.route} route selected a mode "
             f"at f = {freq_hz / 1e9:g} GHz (n_eff = {reading.n_eff:.6g}) "
-            f"{reading.diagnostic}. " + wall_mode_hint(self.stage_name),
+            f"{reading.diagnostic}. " + self._wall_mode_hint(),
             stacklevel=3,
         )
 

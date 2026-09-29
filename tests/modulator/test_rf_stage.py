@@ -669,3 +669,14 @@ class TestWallModeWarning:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             run_rf(biased, fake_route, modes_at=[2.0 + 0j])
+
+    def test_the_way_out_names_the_stage_and_its_settings(self, biased, fake_route):
+        """Every way out the warning offers names a setting of this Stage."""
+        fake_route.reading = self._reading(True, "whose two electrodes agree")
+        with pytest.warns(UserWarning, match="selected a mode") as record:
+            run_rf(biased, fake_route, modes_at=[2.0262 - 6.6e-7j])
+        message = str(record[0].message)
+        assert "study.rf(bias_v=...)" in message
+        assert "n_guess" in message
+        assert "max_loss_ratio" in message
+        assert "rule=" in message
