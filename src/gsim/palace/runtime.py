@@ -21,6 +21,10 @@ The auto-download is only attempted when ``PALACETOOLKIT_AUTO_DOWNLOAD_BINARY``
 is not disabled, and only on Linux x86_64 (the platform the prebuilt Palace CPU
 wheel is provided for).
 
+A caller that cannot proceed without one asks through
+:func:`require_palace_binary`, which turns "nothing found" into the error a
+user can act on instead of a ``None`` to check.
+
 A resolved binary is not a working one, so the other half of this module is
 :func:`local_abort_report`: what a caller can say to a user when the binary it
 found died. That diagnosis belongs beside the resolution because it is about
@@ -49,6 +53,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "install_palace_runtime",
     "local_abort_report",
+    "require_palace_binary",
     "resolve_palace_binary",
     "resolve_palace_library_dir",
 ]
@@ -349,6 +354,42 @@ def resolve_palace_binary(
                 return candidate.resolve()
 
     return None
+
+
+def require_palace_binary(*, hint: str | None = None) -> Path:
+    """Locate a Palace binary, or fail saying how to provide one.
+
+    :func:`resolve_palace_binary` returns ``None`` when it finds
+    nothing, which is the right answer for a caller with a fallback.
+    This is the answer for one without: the same resolution, raising
+    with what a user can do about it.
+
+    It raises ``RuntimeError`` rather than ``ImportError`` and takes no
+    packaging extra, because what is missing is an executable and no
+    ``pip install`` produces it — which is why it lives here and not
+    beside :func:`gsim.common.optional.require_module`.
+
+    Args:
+        hint: The whole message to raise instead of the default one,
+            for a caller that knows a way out of needing Palace at all.
+
+    Returns:
+        Path to a runnable Palace executable.
+
+    Raises:
+        RuntimeError: When no binary is available, naming the ways to
+            provide one.
+    """
+    message = hint or (
+        "No Palace binary was found. Point PALACE_BIN at one, or put 'palace' on PATH."
+    )
+    try:
+        binary = resolve_palace_binary()
+    except Exception as err:  # pragma: no cover - resolver is environment bound
+        raise RuntimeError(message) from err
+    if binary is None:
+        raise RuntimeError(message)
+    return binary
 
 
 def resolve_palace_library_dir() -> Path | None:

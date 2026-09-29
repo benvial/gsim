@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Optional dependencies are guarded in one shape. `gsim.common.optional.require_module(name, extra=..., hint=...)` holds
+  the import, the message naming the packaging extra and the chained cause that `require_devsim`,
+  `import_simple_physics`, `require_femwell` and `require_skfem` each wrote out. The per-backend guards keep their names
+  and their messages: `require_devsim` still swallows DEVSIM's BLAS/UMFPACK banner, and the femwell pair is in
+  `gsim.femwell.__all__`. `gsim.palace.runtime.require_palace_binary(hint=...)` is the same idea for an executable — it
+  raises `RuntimeError`, not `ImportError`, and no `pip install` produces what it is missing, so it stays in the Palace
+  package rather than joining `require_module`. It replaces the Palace Route's own wrapper; the Route keeps only the
+  hint text naming the Stage that asked and the way back to `route='femwell'`, and
+  `gsim.modulator.palace_route.require_palace_binary` is gone.
+
 - One power-current impedance definition serves both Routes. `gsim.common.modes.z0_power_current(power, current)` owns
   `Z_0 = 2 P / |I|^2`, the zero-current refusal and the sign flip a Mode saved travelling against the plane normal
   needs; `gsim.palace.mode_fields.z0_power_current` and `gsim.femwell.adapter.z0_power_current` keep their names and

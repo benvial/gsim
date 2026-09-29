@@ -52,7 +52,6 @@ __all__ = [
     "PalaceSolve",
     "conductor_clearance",
     "containment_unmeasurable",
-    "require_palace_binary",
     "solve_palace_modes",
 ]
 
@@ -100,7 +99,12 @@ class PalaceSolve:
 
 
 def _palace_hint(stage_name: str) -> str:
-    """The error a user selecting the Palace Route without Palace gets."""
+    """The error a user selecting the Palace Route without Palace gets.
+
+    What the Route knows that :func:`gsim.palace.runtime.require_palace_binary`
+    does not: which Stage asked, and that there is another Route to ask
+    instead.
+    """
     return (
         f"The {stage_name} stage is routed to Palace, but no Palace binary "
         "was found. Point PALACE_BIN at one, put 'palace' on PATH, or go "
@@ -113,30 +117,6 @@ def _palace_hint(stage_name: str) -> str:
 #: nothing about Routes, so the one modulator-shaped sentence in it is
 #: handed down from here.
 _FEMWELL_REMEDY: str = "re-solve on the default route with route='femwell'"
-
-
-def require_palace_binary(*, stage_name: str) -> Path:
-    """Locate the Palace binary the Palace Route runs.
-
-    Args:
-        stage_name: Stage asking, named in the error.
-
-    Returns:
-        Path to a runnable Palace executable.
-
-    Raises:
-        RuntimeError: When no binary is available, naming the ways to
-            provide one and the way back to the femwell Route.
-    """
-    from gsim.palace.runtime import resolve_palace_binary
-
-    try:
-        binary = resolve_palace_binary()
-    except Exception as err:  # pragma: no cover - resolver is environment bound
-        raise RuntimeError(_palace_hint(stage_name)) from err
-    if binary is None:
-        raise RuntimeError(_palace_hint(stage_name))
-    return binary
 
 
 def solve_palace_modes(
@@ -163,7 +143,8 @@ def solve_palace_modes(
         num_modes: Number of Modes to compute.
         target: Effective-index target centring the shift-and-invert
             search; ``0.0`` leaves it to Palace.
-        binary: Palace executable, from :func:`require_palace_binary`.
+        binary: Palace executable, from
+            :func:`gsim.palace.runtime.require_palace_binary`.
         save: Number of Modes whose fields are written to ParaView, in
             mode order. A Stage reading fields back — the RF Stage, when
             no impedance path could be declared — asks for every Mode it
@@ -312,12 +293,16 @@ class PalaceRoute(Route):
         Raises:
             RuntimeError: When no binary is available.
         """
-        self._binary = require_palace_binary(stage_name=stage_name)
+        from gsim.palace.runtime import require_palace_binary
+
+        self._binary = require_palace_binary(hint=_palace_hint(stage_name))
 
     def _executable(self, stage_name: str) -> Path:
         """The resolved binary, resolving it if :meth:`require` never ran."""
+        from gsim.palace.runtime import require_palace_binary
+
         if self._binary is None:
-            self._binary = require_palace_binary(stage_name=stage_name)
+            self._binary = require_palace_binary(hint=_palace_hint(stage_name))
         return self._binary
 
     def check_staircase(

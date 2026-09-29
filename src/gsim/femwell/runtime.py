@@ -7,8 +7,9 @@ them; only the solve path calls :func:`require_femwell`.
 
 from __future__ import annotations
 
-import importlib
 from types import ModuleType
+
+from gsim.common.optional import require_module
 
 _INSTALL_HINT = (
     "femwell/scikit-fem are required for the femwell mode-solving route "
@@ -24,10 +25,7 @@ def require_femwell() -> ModuleType:
         ImportError: When femwell is not installed, with a message naming
             the ``femwell`` packaging extra.
     """
-    try:
-        return importlib.import_module("femwell")
-    except ImportError as err:
-        raise ImportError(_INSTALL_HINT) from err
+    return require_module("femwell", extra="femwell", hint=_INSTALL_HINT)
 
 
 def require_skfem() -> ModuleType:
@@ -37,10 +35,7 @@ def require_skfem() -> ModuleType:
         ImportError: When scikit-fem is not installed, with a message
             naming the ``femwell`` packaging extra.
     """
-    try:
-        return importlib.import_module("skfem")
-    except ImportError as err:
-        raise ImportError(_INSTALL_HINT) from err
+    return require_module("skfem", extra="femwell", hint=_INSTALL_HINT)
 
 
 __all__ = ["require_femwell", "require_skfem"]

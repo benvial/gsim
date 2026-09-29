@@ -12,10 +12,11 @@ unless asked to stream.
 from __future__ import annotations
 
 import contextlib
-import importlib
 import io
 from collections.abc import Iterator
 from types import ModuleType
+
+from gsim.common.optional import require_module
 
 _INSTALL_HINT = (
     "DEVSIM is required for the charge-transport solve but is not "
@@ -31,12 +32,9 @@ def require_devsim() -> ModuleType:
         ImportError: When DEVSIM is not installed, with a message naming
             the ``tcad`` packaging extra.
     """
-    try:
-        # The first import prints the BLAS/UMFPACK discovery banner.
-        with contextlib.redirect_stdout(io.StringIO()):
-            return importlib.import_module("devsim")
-    except ImportError as err:
-        raise ImportError(_INSTALL_HINT) from err
+    # The first import prints the BLAS/UMFPACK discovery banner.
+    with contextlib.redirect_stdout(io.StringIO()):
+        return require_module("devsim", extra="tcad", hint=_INSTALL_HINT)
 
 
 def import_simple_physics() -> ModuleType:
@@ -46,10 +44,9 @@ def import_simple_physics() -> ModuleType:
         ImportError: When DEVSIM is not installed, with a message naming
             the ``tcad`` packaging extra.
     """
-    try:
-        return importlib.import_module("devsim.python_packages.simple_physics")
-    except ImportError as err:
-        raise ImportError(_INSTALL_HINT) from err
+    return require_module(
+        "devsim.python_packages.simple_physics", extra="tcad", hint=_INSTALL_HINT
+    )
 
 
 @contextlib.contextmanager

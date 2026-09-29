@@ -339,8 +339,9 @@ NATIVE_Z0_RTOL = 0.05
 @pytest.fixture(scope="module")
 def native_solve(tmp_path_factory):
     """The ticket-17 cross-section solved once, both impedance readings kept."""
-    from gsim.modulator.palace_route import require_palace_binary, solve_palace_modes
+    from gsim.modulator.palace_route import _palace_hint, solve_palace_modes
     from gsim.palace.line_impedance import field_line_impedance, native_line_impedance
+    from gsim.palace.runtime import require_palace_binary
 
     study = rf_gate_study(tmp_path_factory.mktemp("native_z0"))
     study.rf(
@@ -363,7 +364,7 @@ def native_solve(tmp_path_factory):
         sim,
         freq_hz=10e9,
         num_modes=4,
-        binary=require_palace_binary(stage_name="rf"),
+        binary=require_palace_binary(hint=_palace_hint("rf")),
         target=RF_GATE_N_GUESS,
         save=4,
     )

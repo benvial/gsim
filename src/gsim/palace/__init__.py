@@ -150,6 +150,7 @@ from gsim.palace.results import (
 from gsim.palace.runtime import (
     install_palace_runtime,
     local_abort_report,
+    require_palace_binary,
     resolve_palace_binary,
     resolve_palace_library_dir,
 )
@@ -248,6 +249,7 @@ __all__ = [
     "print_job_summary",
     "print_stack",
     "print_stack_table",
+    "require_palace_binary",
     "resolve_boundary_type_attributes",
     "resolve_entity_attributes",
     "resolve_palace_binary",
