@@ -2,8 +2,8 @@
 
 `gsim.common` itself is a narrow façade: it re-exports the geometry and
 stack names of the two sections below and nothing else. Everything else in
-the package — `modes`, `circuit`, `carriers`, `transmission_line` and the
-rest — is imported by its submodule path, as
+the package — `modes`, `circuit`, `carriers`, `transmission_line`,
+`interpolate`, `mesh_regions` — is imported by its submodule path, as
 `from gsim.common.transmission_line import RFLineParams`, so importing
 `gsim.common` never pulls a backend's dependencies in with it.
 

@@ -259,17 +259,7 @@ def solve_modes(
     # explicit construction keeps the meshio triangle order == skfem element
     # order (which the per-element epsilon path relies on).
     mio = meshio.read(str(msh_path))
-    tri_blocks = [
-        (block.data, np.asarray(phys))
-        for block, phys in zip(
-            mio.cells, mio.cell_data.get("gmsh:physical", []), strict=False
-        )
-        if block.type == "triangle"
-    ]
-    if not tri_blocks:
-        raise ValueError("Mesh has no triangle elements.")
-    tris = np.vstack([data for data, _phys in tri_blocks])
-    phys_tags = np.concatenate([phys for _data, phys in tri_blocks])
+    tris, phys_tags = cell_blocks(mio, "triangle")
 
     # Drop points no triangle references (e.g. nodes only line/contact
     # groups use): they would become zero rows in the eigenproblem and make
@@ -297,7 +287,7 @@ def solve_modes(
             if region not in tags_by_name:
                 raise ValueError(
                     f"Region '{region}' not found on the mesh. "
-                    f"Available subdomains: {sorted(tags_by_name)}"
+                    f"Available Regions: {sorted(tags_by_name)}"
                 )
             # ElementTriP0: one dof per element, in element order.
             eps[phys_tags == tags_by_name[region]] = value

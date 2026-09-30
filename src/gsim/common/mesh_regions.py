@@ -191,7 +191,7 @@ def region_elements(mesh: meshio.Mesh | str | Path, region: str) -> NDArray[np.i
     if region not in tags_by_name:
         raise ValueError(
             f"Region '{region}' not found on the mesh. "
-            f"Available subdomains: {sorted(tags_by_name)}"
+            f"Available Regions: {sorted(tags_by_name)}"
         )
     _tris, tags = cell_blocks(mesh, "triangle")
     return np.asarray(np.flatnonzero(tags == tags_by_name[region]), dtype=np.int64)
