@@ -27,11 +27,16 @@ from gsim.palace.models import (
     MeshConfig,
     NumericalConfig,
     PortConfig,
+    RefinementConfig,
     TerminalConfig,
     TwoTerminalPortConfig,
     WavePortConfig,
 )
-from gsim.palace.models.results import SimulationResult, ValidationResult
+from gsim.palace.models.results import (
+    SimulationResult,
+    ValidationResult,
+    format_mesh_distortion,
+)
 
 if TYPE_CHECKING:
     from gdsfactory.component import Component
@@ -311,6 +316,7 @@ class PalaceSimMixin:
         - stack: LayerStack | None
         - materials: dict[str, MaterialConfig]
         - numerical: NumericalConfig
+        - refinement: RefinementConfig
         - _output_dir: Path | None (private)
         - _stack_kwargs: dict[str, Any] (private)
     """
@@ -320,6 +326,7 @@ class PalaceSimMixin:
     stack: LayerStack | None
     materials: dict[str, MaterialConfig]
     numerical: NumericalConfig
+    refinement: RefinementConfig
     driven: DrivenConfig
     eigenmode: EigenmodeConfig
     simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
@@ -547,11 +554,10 @@ class PalaceSimMixin:
         if not material or not isinstance(material, str):
             raise ValueError("material must be a non-empty string")
 
-        # Keep mesh margin controls in sync for domain/port extents.
-        mesh_config = getattr(self, "mesh_config", None)
-        if mesh_config is not None:
-            mesh_config.margin_x = mx
-            mesh_config.margin_y = my
+        # Deliberately not synced into ``mesh_config.margin_x``/``margin_y``:
+        # the airbox config below is the single source of the lateral margin, and
+        # writing it to both made it possible to apply it twice. See
+        # ``_resolve_domain_margins``.
 
         # Store explicit airbox expansion for generator plumbing.
         self._airbox_config = {
@@ -561,6 +567,24 @@ class PalaceSimMixin:
             "z_below": zb,
             "material": material,
         }
+
+    def _resolve_domain_margins(self, mesh_config) -> tuple[float, float]:
+        """Lateral margins for the mesh domain, excluding the airbox expansion.
+
+        ``set_airbox()`` owns the lateral margin whenever it has been called: the
+        requested value travels to the mesher as ``airbox_margin_x`` /
+        ``airbox_margin_y`` and is applied there, so it must not be applied a
+        second time as the domain margin. Passing it in both places padded the
+        air volume twice, so ``set_airbox(margin_x=N)`` produced ``2 * N`` um of
+        air.
+
+        ``mesh_config`` is only the fallback, for a simulation that never called
+        ``set_airbox()`` and sizes its domain through the mesh config alone.
+        """
+        airbox_cfg = self._airbox_config or {}
+        margin_x = 0.0 if "margin_x" in airbox_cfg else mesh_config.effective_margin_x
+        margin_y = 0.0 if "margin_y" in airbox_cfg else mesh_config.effective_margin_y
+        return margin_x, margin_y
 
     def _apply_airbox_overrides(
         self,
@@ -799,6 +823,55 @@ class PalaceSimMixin:
             solver_type=solver_type,
             preconditioner=preconditioner,
             device=device,
+        )
+
+    def set_refinement(
+        self,
+        *,
+        max_its: int = 0,
+        tol: float = 1e-2,
+        uniform_levels: int = 0,
+        max_dofs: int | None = None,
+        update_fraction: float | None = None,
+        nonconformal: bool | None = None,
+        max_nc_levels: int | None = None,
+        save_adapt_iterations: bool | None = None,
+        save_adapt_mesh: bool | None = None,
+    ) -> None:
+        """Configure Palace's adaptive mesh refinement (AMR).
+
+        Palace refines the elements that carry most of its estimated error and
+        re-solves, until the error norm falls below ``tol``, ``max_its``
+        passes have run, or the problem reaches ``max_dofs`` degrees of
+        freedom. See :class:`~gsim.palace.models.RefinementConfig`.
+
+        Args:
+            max_its: Maximum number of AMR passes. 0 disables AMR.
+            tol: Stop refining when the estimated error norm falls below this.
+            uniform_levels: Uniform refinement levels applied to the input
+                mesh before solving.
+            max_dofs: Maximum degrees of freedom. None means no limit.
+            update_fraction: Dörfler marking fraction, between 0 and 1.
+            nonconformal: Refine with hanging nodes instead of conformally.
+            max_nc_levels: Maximum nonconformal refinement levels; 0 means
+                no limit.
+            save_adapt_iterations: Keep the output of every pass in an
+                ``iterationX`` subdirectory.
+            save_adapt_mesh: Save the final adapted mesh.
+
+        Example:
+            >>> sim.set_refinement(max_its=5, tol=1e-3, max_dofs=2_000_000)
+        """
+        self.refinement = RefinementConfig(
+            max_its=max_its,
+            tol=tol,
+            uniform_levels=uniform_levels,
+            max_dofs=max_dofs,
+            update_fraction=update_fraction,
+            nonconformal=nonconformal,
+            max_nc_levels=max_nc_levels,
+            save_adapt_iterations=save_adapt_iterations,
+            save_adapt_mesh=save_adapt_mesh,
         )
 
     # -------------------------------------------------------------------------
@@ -1437,15 +1510,10 @@ class PalaceSimMixin:
         # Resolve stack
         stack = self._resolve_stack()
         airbox_cfg = self._airbox_config or {}
-        domain_margin_x = airbox_cfg.get("margin_x", mesh_config.effective_margin_x)
-        domain_margin_y = airbox_cfg.get("margin_y", mesh_config.effective_margin_y)
+        domain_margin_x, domain_margin_y = self._resolve_domain_margins(mesh_config)
 
         if verbose:
             logger.info("Generating mesh in %s", output_dir)
-
-        airbox_cfg = getattr(self, "_airbox_config", {})
-        domain_margin_x = airbox_cfg.get("margin_x", mesh_config.effective_margin_x)
-        domain_margin_y = airbox_cfg.get("margin_y", mesh_config.effective_margin_y)
 
         mesh_result = generate_mesh(
             component=component,
@@ -1532,6 +1600,8 @@ class PalaceSimMixin:
         print(f"  Elements:  {elements:,}")  # noqa: T201
         if tets:
             print(f"  Tetrahedra: {tets:,}")  # noqa: T201
+        if distortion := format_mesh_distortion(stats):
+            print(f"  {distortion}")  # noqa: T201
 
         dom_volumes = groups.get("volumes", {})
         bdr_conductors = groups.get("conductor_surfaces", {})
@@ -1539,6 +1609,22 @@ class PalaceSimMixin:
         print(f"  Domain groups:     {len(dom_volumes)}")  # noqa: T201
         print(f"  Conductor surfaces:{len(bdr_conductors)}")  # noqa: T201
         print(f"  Interface surfaces:{len(bdr_interfaces)}")  # noqa: T201
+
+        # The domain regions hold the volume elements in 3D and the surface
+        # elements in 2D meshes, where there are no volume groups.
+        physical = stats.get("groups", {})
+        regions = [g for g in physical.get("volumes", []) if g.get("elements")] or [
+            g for g in physical.get("surfaces", []) if g.get("elements")
+        ]
+        region_total = sum(g["elements"] for g in regions)
+        if region_total:
+            print("  Elements by region:")  # noqa: T201
+            for g in sorted(regions, key=lambda g: g["elements"], reverse=True):
+                share = 100 * g["elements"] / region_total
+                line = f"    {g['name']:<24}{g['elements']:>12,}  {share:5.1f}%"
+                if edges := g.get("edge_length"):
+                    line += f"  edges {edges['min']:.3g}-{edges['max']:.3g} um"
+                print(line)  # noqa: T201
 
         if elements and not tets:
             p = 2
@@ -1670,13 +1756,9 @@ class PalaceSimMixin:
         ports = self._get_ports_for_preview(stack)
 
         airbox_cfg = self._airbox_config or {}
-        domain_margin_x = airbox_cfg.get("margin_x", mesh_config.effective_margin_x)
-        domain_margin_y = airbox_cfg.get("margin_y", mesh_config.effective_margin_y)
+        domain_margin_x, domain_margin_y = self._resolve_domain_margins(mesh_config)
 
         # Generate mesh in temp directory
-        airbox_cfg = getattr(self, "_airbox_config", {})
-        domain_margin_x = airbox_cfg.get("margin_x", mesh_config.effective_margin_x)
-        domain_margin_y = airbox_cfg.get("margin_y", mesh_config.effective_margin_y)
         with tempfile.TemporaryDirectory() as tmpdir:
             generate_mesh(
                 component=component,
@@ -1918,6 +2000,8 @@ class PalaceSimMixin:
         stats = result.mesh_stats or {}
         node_count = stats.get("nodes")
         tet_count = stats.get("tetrahedra")
+        if distortion := format_mesh_distortion(stats):
+            logger.info("%s", distortion)
         if node_count is not None and tet_count is not None:
             logger.info(
                 "Mesh: %s nodes \u00b7 %s tets \u00b7 refined=%.3g \u00b5m \u00b7 "
@@ -2008,6 +2092,7 @@ class PalaceSimMixin:
             eigenmode_config=self.eigenmode,
             driven_config=self.driven,
             numerical_config=self.numerical,
+            refinement_config=self.refinement,
             boundary_mode_config=getattr(self, "boundary_mode", None),
             absorbing_boundary=self.absorbing_boundary,
             hints=hints,

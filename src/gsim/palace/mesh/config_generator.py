@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import gmsh
+import numpy as np
 
+from gsim.palace.mesh.quality import tetrahedron_distortion
 from gsim.palace.ports.config import PortType
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
         EigenmodeConfig,
         ElectrostaticConfig,
         NumericalConfig,
+        RefinementConfig,
     )
     from gsim.palace.models.ports import TerminalConfig
     from gsim.palace.ports.config import PalacePort
@@ -135,6 +138,7 @@ def generate_palace_config(
     hints: dict[str, Any] | None = None,
     electrostatic_config: ElectrostaticConfig | None = None,
     terminals: list[TerminalConfig] | None = None,
+    refinement_config: RefinementConfig | None = None,
 ) -> Path:
     """Generate Palace config.json file.
 
@@ -153,11 +157,17 @@ def generate_palace_config(
         absorbing_boundary: Whether to add absorbing (PML) boundary
         periodic_axis: Optional periodic axis identifier
         hints: Additional config hints merged into the JSON
+        refinement_config: Optional RefinementConfig for adaptive mesh
+            refinement. Defaults to AMR off.
 
     Returns:
         Path to the generated config.json
     """
+    from gsim.palace.models import RefinementConfig
     from gsim.palace.ports.config import PortGeometry
+
+    if refinement_config is None:
+        refinement_config = RefinementConfig()
 
     if simulation_type not in (
         "driven",
@@ -260,11 +270,7 @@ def generate_palace_config(
         "Model": {
             "Mesh": f"{model_name}.msh",
             "L0": model_l0,  # um
-            "Refinement": {
-                "UniformLevels": 0,
-                "Tol": 1e-2,
-                "MaxIts": 0,
-            },
+            "Refinement": refinement_config.to_palace_config(),
         },
         "Solver": solver_conf,
     }
@@ -772,6 +778,7 @@ def collect_mesh_stats() -> dict:
         - tetrahedra: Tet count
         - quality: Shape quality metrics (gamma)
         - sicn: Signed Inverse Condition Number
+        - kappa: Worst tet-center distortion (Palace/MFEM convention)
         - edge_length: Min/max edge lengths
         - groups: Physical group info
     """
@@ -792,29 +799,46 @@ def collect_mesh_stats() -> dict:
         pass
 
     # Get node count
+    node_tags = coordinates = None
     try:
-        node_tags, _, _ = gmsh.model.mesh.getNodes()
+        node_tags, coordinates, _ = gmsh.model.mesh.getNodes()
         stats["nodes"] = len(node_tags)
     except Exception:
         pass
 
     # Get element counts and collect tet tags for quality
     tet_tags = []
+    tet_blocks = []
     try:
-        element_types, element_tags, _ = gmsh.model.mesh.getElements()
+        element_types, element_tags, element_nodes = gmsh.model.mesh.getElements()
         total_elements = sum(len(tags) for tags in element_tags)
         stats["elements"] = total_elements
 
-        # Count tetrahedra (type 4) and save tags
-        for etype, tags in zip(element_types, element_tags, strict=False):
-            if etype == 4:  # 4-node tetrahedron
-                stats["tetrahedra"] = len(tags)
-                tet_tags = list(tags)
+        # Include both linear and higher-order tetrahedra.
+        for etype, tags, nodes in zip(
+            element_types, element_tags, element_nodes, strict=True
+        ):
+            _, dim, _, _, _, primary_nodes = gmsh.model.mesh.getElementProperties(
+                int(etype)
+            )
+            if dim == 3 and primary_nodes == 4 and len(tags):
+                tet_tags.extend(tags)
+                tet_blocks.append((int(etype), tags, nodes))
+        if tet_tags:
+            stats["tetrahedra"] = len(tet_tags)
     except Exception:
         pass
 
     # Get mesh quality for tetrahedra
     if tet_tags:
+        if node_tags is not None and coordinates is not None:
+            try:
+                stats["kappa"] = tetrahedron_distortion(
+                    tet_blocks, node_tags, coordinates
+                )
+            except Exception:
+                logger.debug("Unable to compute tetrahedron distortion", exc_info=True)
+
         # Gamma: inscribed/circumscribed radius ratio (shape quality)
         try:
             qualities = gmsh.model.mesh.getElementQualities(tet_tags, "gamma")
@@ -853,12 +877,29 @@ def collect_mesh_stats() -> dict:
         except Exception:
             pass
 
-    # Get physical groups with tags
+    # Get physical groups with tags and the elements each one holds
     try:
         groups = {"volumes": [], "surfaces": []}
         for dim, tag in gmsh.model.getPhysicalGroups():
             name = gmsh.model.getPhysicalName(dim, tag)
-            entry = {"name": name, "tag": tag}
+            group_tags = np.concatenate(
+                [
+                    tags
+                    for entity in gmsh.model.getEntitiesForPhysicalGroup(dim, tag)
+                    for tags in gmsh.model.mesh.getElements(dim, entity)[1]
+                ]
+                or [np.empty(0, dtype=np.uint64)]
+            )
+            entry = {"name": name, "tag": tag, "elements": len(group_tags)}
+            if len(group_tags):
+                entry["edge_length"] = {
+                    "min": float(
+                        min(gmsh.model.mesh.getElementQualities(group_tags, "minEdge"))
+                    ),
+                    "max": float(
+                        max(gmsh.model.mesh.getElementQualities(group_tags, "maxEdge"))
+                    ),
+                }
             if dim == 3:
                 groups["volumes"].append(entry)
             elif dim == 2:
@@ -883,6 +924,7 @@ def write_config(
     hints: dict[str, Any] | None = None,
     electrostatic_config: ElectrostaticConfig | None = None,
     terminals: list[TerminalConfig] | None = None,
+    refinement_config: RefinementConfig | None = None,
 ) -> Path:
     """Write Palace config.json from a MeshResult.
 
@@ -932,6 +974,7 @@ def write_config(
         hints=hints,
         electrostatic_config=electrostatic_config,
         terminals=terminals,
+        refinement_config=refinement_config,
     )
 
     # Update the mesh_result with the config path

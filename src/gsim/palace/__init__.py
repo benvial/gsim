@@ -93,6 +93,7 @@ from gsim.palace.mesh import (
     MeshResult,
     generate_mesh,
 )
+from gsim.palace.mesh.validation import check_lumped_port_contact
 
 # Saved boundary-mode fields, and the line parameters they carry
 from gsim.palace.mode_fields import (
@@ -136,6 +137,7 @@ from gsim.palace.ports import (
     configure_via_port,
     extract_ports,
 )
+from gsim.palace.postprocessing import add_domain_energy_postprocessing
 
 # Results utilities
 from gsim.palace.results import (
@@ -206,7 +208,9 @@ __all__ = [
     "VolumeFieldData",
     "WavePortConfig",
     "activate_vector_component",
+    "add_domain_energy_postprocessing",
     "build_selector_context",
+    "check_lumped_port_contact",
     "close_interactive_view",
     "close_interactive_views",
     "configure_cpw_port",

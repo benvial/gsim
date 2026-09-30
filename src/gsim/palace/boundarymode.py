@@ -36,6 +36,7 @@ from gsim.palace.models import (
     MaterialConfig,
     MeshConfig,
     NumericalConfig,
+    RefinementConfig,
 )
 from gsim.palace.models.results import ValidationResult
 
@@ -133,6 +134,7 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     mesh_config: MeshConfig = Field(default_factory=MeshConfig.default)
     materials: dict[str, MaterialConfig] = Field(default_factory=dict)
     numerical: NumericalConfig = Field(default_factory=NumericalConfig)
+    refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     absorbing_boundary: bool = False
     #: Put a perfect-conductor condition on the outer wall of the meshed
     #: domain, making the mode solve a shielded one. Off, Palace's own

@@ -22,7 +22,7 @@ from gsim.palace.models.cross_section import (
 )
 from gsim.palace.models.geometry import GeometryConfig
 from gsim.palace.models.mesh import MeshConfig
-from gsim.palace.models.numerical import NumericalConfig
+from gsim.palace.models.numerical import NumericalConfig, RefinementConfig
 from gsim.palace.models.pec import PECBlockConfig
 from gsim.palace.models.ports import (
     CPWPortConfig,
@@ -60,6 +60,7 @@ __all__ = [
     "NumericalConfig",
     "PECBlockConfig",
     "PortConfig",
+    "RefinementConfig",
     "SimulationResult",
     "TerminalConfig",
     "TransientConfig",
