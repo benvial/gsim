@@ -12,10 +12,11 @@ import pytest
 from gsim.common.stack.pn_junction import PNJunctionConfig
 from gsim.tcad import ChargeTransportSim, StepDoping
 from gsim.tcad.validation import compare_capacitance, estimate_depletion_width_um
+from tests._helpers import skip_without_devsim
 
 from .conftest import build_padded_diode
 
-pytest.importorskip("devsim")
+skip_without_devsim()
 
 pytestmark = pytest.mark.tcad_local
 

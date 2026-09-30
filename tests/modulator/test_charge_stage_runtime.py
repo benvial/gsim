@@ -11,6 +11,7 @@ import pytest
 
 from gsim.modulator import Device, Study, pn_phase_shifter, rib_phase_shifter
 from gsim.tcad.results import BiasSweepResult
+from tests._helpers import skip_without_devsim
 
 from .conftest import build_demo
 
@@ -63,7 +64,7 @@ class TestDerivedNamesReachTheMesh:
 @pytest.mark.tcad_local
 class TestSolve:
     def test_the_study_solves_the_bias_sweep(self, tmp_path):
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         demo = build_demo()
         component, stack = demo.component, demo.stack
         study = Study(
@@ -88,7 +89,7 @@ class TestSolve:
 
     def test_re_running_after_a_change_solves_again(self, tmp_path):
         """DEVSIM's global device/mesh/circuit namespace survives a re-run."""
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         demo = build_demo()
         component, stack = demo.component, demo.stack
         study = Study(
@@ -119,7 +120,7 @@ class TestJunctionBranch:
         ohm*mm range (1e-5..1e-1 ohm*m), and reverse bias widens the
         depletion region so C_j falls.
         """
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         demo = build_demo()
         component, stack = demo.component, demo.stack
         study = Study(
@@ -157,7 +158,7 @@ class TestAGradedJunction:
         """Ticket: compensation thins the doping either side of the Junction,
         so the depletion region is wider and its capacitance lower, and
         reverse bias still widens it."""
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         biases = [0.0, 1.0, 2.0]
         sweeps = {}
         for label, straggle_um in (("abrupt", 0.0), ("graded", 0.03)):
@@ -206,7 +207,7 @@ class TestTheCapacitanceConvergesWithTheMesh:
         Contact or an Interface, an error that scales with the element
         size: measured, 417.1 against 415.5 pF/m at 10 and 5 nm.
         """
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         default = self._capacitance_pf_per_m(tmp_path / "default")
         halved = self._capacitance_pf_per_m(tmp_path / "halved", refined_mesh_size=0.01)
 
@@ -214,7 +215,7 @@ class TestTheCapacitanceConvergesWithTheMesh:
 
     def test_refining_the_lines_alone_does_not_get_there(self, tmp_path):
         """What the box is for: 452.6 pF/m without it against 417.1 with."""
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         boxed = self._capacitance_pf_per_m(tmp_path / "boxed")
         lines_only = self._capacitance_pf_per_m(tmp_path / "lines", refinement_boxes=[])
 
@@ -225,7 +226,7 @@ class TestTheCapacitanceConvergesWithTheMesh:
 class TestJunctionModelExport:
     def test_the_demo_sweep_round_trips_through_the_model_file(self, tmp_path):
         """Ticket: the exported file reconstructs the sweep's fit exactly."""
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         from gsim.common.circuit import read_junction_model
 
         demo = build_demo()
@@ -257,7 +258,7 @@ class TestJunctionModelExport:
 @pytest.fixture(scope="module")
 def sweeps(tmp_path_factory):
     """The demo device's Bias sweep, silicon alone and with its oxide."""
-    pytest.importorskip("devsim")
+    skip_without_devsim()
     solved = {}
     for oxide in (False, True):
         demo = build_demo()
