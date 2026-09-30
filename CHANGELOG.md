@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `PalaceTextResults.mode_voltage` reads `mode-V.csv` again. It was dropped as an unread parse — nothing in `src/` or
+  `tests/` called it — but `nbs/palace_cpw_deembedding.ipynb` does, to pick the CPW mode out of the mode table by
+  comparing the two signal-to-ground voltages and to reject the slotline-like mode whose gap voltages disagree in sign.
+  `BoundaryModeSim.mode_postprocessing()` never stopped emitting the `Voltage` block, so Palace went on writing the file
+  with nothing able to read it.
+
 - **Behaviour change:** every Palace simulation now diagnoses a binary that died on a signal, not only
   `BoundaryModeSim`, and on both local paths — the streaming `verbose=True` default as well as the quiet one, which used
   to report a bare exit status. `PalaceSimMixin.run_local` wires `gsim.palace.runtime.local_abort_report` and takes a
