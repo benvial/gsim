@@ -552,6 +552,7 @@ class TestMixinMethods:
                 config_path=None,
                 port_info=[],
                 mesh_stats={},
+                metadata={},
                 groups={},
             )
 
@@ -597,6 +598,7 @@ class TestMixinMethods:
                 config_path=None,
                 port_info=[],
                 mesh_stats={},
+                metadata={},
                 groups={},
             )
 
@@ -615,6 +617,7 @@ class TestMixinMethods:
             curve_fit_min_points=12,
             curve_fit_corner_angle_deg=30.0,
         )
+        sim.set_numerical(order=3)
 
         sim._generate_mesh_internal(
             output_dir=tmp_path / "sim",
@@ -635,6 +638,7 @@ class TestMixinMethods:
         assert captured["curve_fit_corner_angle_deg"] == 30.0
         assert captured["decimate_tolerance"] == 0.005
         assert captured["verbosity"] == 7
+        assert captured["numerical_config"] is sim.numerical
 
     def test_set_material(self):
         """Test set_material works on all sim classes."""

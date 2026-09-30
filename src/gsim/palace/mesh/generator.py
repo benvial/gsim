@@ -31,6 +31,7 @@ from .geometry import (
     resolve_mesh_domain_bounds,
 )
 from .groups import assign_physical_groups
+from .metadata import write_metadata
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -157,6 +158,7 @@ class MeshResult:
     config_path: Path | None = None
     port_info: list = field(default_factory=list)
     mesh_stats: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
     # Data needed for deferred config generation
     groups: dict = field(default_factory=dict)
     output_dir: Path | None = None
@@ -1394,7 +1396,10 @@ def generate_mesh(
                     with contextlib.suppress(Exception):
                         gmsh.model.mesh.optimize("HighOrder")
 
-            mesh_stats = collect_mesh_stats()
+            mesh_stats = collect_mesh_stats(
+                field_order=numerical_config.order if numerical_config else 2,
+                problem_type=simulation_type,
+            )
 
             gmsh.option.setNumber("Mesh.Binary", 0)
             gmsh.option.setNumber("Mesh.SaveAll", 0)
@@ -1424,6 +1429,7 @@ def generate_mesh(
                 config_path=config_path,
                 port_info=[],
                 mesh_stats=mesh_stats,
+                metadata=write_metadata(mesh_stats, output_dir, config_path),
                 groups=groups,
                 output_dir=output_dir,
                 model_name=model_name,
@@ -1637,7 +1643,10 @@ def generate_mesh(
                     )
 
         # Collect mesh statistics
-        mesh_stats = collect_mesh_stats()
+        mesh_stats = collect_mesh_stats(
+            field_order=numerical_config.order if numerical_config else 2,
+            problem_type=simulation_type,
+        )
 
         # Save mesh
         gmsh.option.setNumber("Mesh.Binary", 0)
@@ -1678,6 +1687,7 @@ def generate_mesh(
         config_path=config_path,
         port_info=port_info,
         mesh_stats=mesh_stats,
+        metadata=write_metadata(mesh_stats, output_dir, config_path),
         groups=groups,
         output_dir=output_dir,
         model_name=model_name,
