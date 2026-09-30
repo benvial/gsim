@@ -16,6 +16,22 @@ FINE = 0.05
 COARSE = 0.1
 
 
+def _initialize_gmsh() -> None:
+    """Start gmsh with the mesh-size options these tests rely on.
+
+    ``MeshSizeFromPoints`` and ``MeshSizeExtendFromBoundary`` are both gmsh
+    defaults, and are set explicitly because a developer's ``~/.gmsh-options``
+    can turn them off. With ``MeshSizeFromPoints`` at 0 the ``setSize`` calls
+    below are ignored outright, every box meshes to the same default size, and
+    the element-count assertions fail on a 1:1 ratio for a reason that has
+    nothing to do with the code under test.
+    """
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1)
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
+
+
 @pytest.fixture(scope="module")
 def two_box_mesh() -> dict:
     """Two equal, disjoint unit boxes meshed with element sizes in a 1:2 ratio.
@@ -24,8 +40,7 @@ def two_box_mesh() -> dict:
     pre-asymptotic regime where a box only a few elements wide cannot follow
     the volumetric scaling.
     """
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)
+    _initialize_gmsh()
     try:
         gmsh.model.add("two_boxes")
         fine = gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
@@ -158,8 +173,7 @@ def test_print_mesh_stats_skips_the_region_table_when_no_group_has_elements(
 
 def test_empty_group_does_not_hide_the_others() -> None:
     """A group with no elements reports 0 and the other groups still appear."""
-    gmsh.initialize()
-    gmsh.option.setNumber("General.Terminal", 0)
+    _initialize_gmsh()
     try:
         meshed = gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
         gmsh.model.occ.synchronize()
