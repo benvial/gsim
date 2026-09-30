@@ -60,6 +60,10 @@ def coax_mode(tmp_path_factory):
         gmsh.model.setPhysicalName(2, pg_core, "conductor")
         pg_diel = gmsh.model.addPhysicalGroup(2, [tag for _a, tag in by_area[1:]])
         gmsh.model.setPhysicalName(2, pg_diel, "dielectric")
+        # Pin the size sources so the mesh does not depend on a
+        # developer ~/.gmsh-options; gsim's own mesh paths pin these.
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         # Resolve the ~0.2 um skin depth at the conductor surface.
         gmsh.option.setNumber("Mesh.MeshSizeMax", 0.35)
         field = gmsh.model.mesh.field
@@ -154,6 +158,10 @@ def pec_coax_mode(tmp_path_factory):
         occ.synchronize()
         pg = gmsh.model.addPhysicalGroup(2, [tag for _dim, tag in annulus])
         gmsh.model.setPhysicalName(2, pg, "dielectric")
+        # Pin the size sources so the mesh does not depend on a
+        # developer ~/.gmsh-options; gsim's own mesh paths pin these.
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeMax", 0.12)
         gmsh.model.mesh.generate(2)
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)

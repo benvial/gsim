@@ -50,6 +50,10 @@ def doped_strip_mesh(tmp_path_factory):
         gmsh.model.setPhysicalName(2, pg_core, "si")
         pg_clad = gmsh.model.addPhysicalGroup(2, [tag for _a, tag in by_area[1:]])
         gmsh.model.setPhysicalName(2, pg_clad, "oxide")
+        # Pin the size sources so the mesh does not depend on a
+        # developer ~/.gmsh-options; gsim's own mesh paths pin these.
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeMax", 0.35)
         gmsh.model.mesh.generate(2)
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)

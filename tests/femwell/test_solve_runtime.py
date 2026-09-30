@@ -38,6 +38,10 @@ def build_strip_mesh(path, *, clad_width=3.0, clad_height=2.22):
         gmsh.model.setPhysicalName(2, pg_core, "core")
         pg_clad = gmsh.model.addPhysicalGroup(2, clad_tags)
         gmsh.model.setPhysicalName(2, pg_clad, "clad")
+        # Pin the size sources so the mesh does not depend on a
+        # developer ~/.gmsh-options; gsim's own mesh paths pin these.
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeMax", 0.08)
         gmsh.model.mesh.generate(2)
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
