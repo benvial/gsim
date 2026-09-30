@@ -632,7 +632,16 @@ def terminated_response(
     b = z_r.real * ((1.0 + s11) * (1.0 + s22) - s12 * s21) / (2.0 * s21)
     c = ((1.0 - s11) * (1.0 - s22) - s12 * s21) / (z_r.real * 2.0 * s21)
     d = ((1.0 - s11) * (1.0 + s22) + s12 * s21) / (2.0 * s21)
-    return _abcd_response(a, b, c, d, z_gen_ohm=z_gen_ohm, z_load_ohm=z_load_ohm)
+    # The float literals above widen the element type away from complex128
+    # without changing a value; restate it for the ABCD signature.
+    return _abcd_response(
+        np.asarray(a, dtype=np.complex128),
+        np.asarray(b, dtype=np.complex128),
+        np.asarray(c, dtype=np.complex128),
+        np.asarray(d, dtype=np.complex128),
+        z_gen_ohm=z_gen_ohm,
+        z_load_ohm=z_load_ohm,
+    )
 
 
 def line_driven_response(
