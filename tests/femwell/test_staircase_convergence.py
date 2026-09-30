@@ -63,6 +63,13 @@ def strip_mesh(tmp_path_factory):
         gmsh.model.setPhysicalName(2, pg_core, "core")
         pg_clad = gmsh.model.addPhysicalGroup(2, [tag for _a, tag in by_area[1:]])
         gmsh.model.setPhysicalName(2, pg_clad, "clad")
+        # Pin the size sources rather than inherit them: a developer
+        # ~/.gmsh-options can otherwise drive element size from geometry
+        # points and extend it from the boundary, which grades the core
+        # and costs the staircase its convergence. gsim's own mesh paths
+        # pin the same two options.
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         gmsh.option.setNumber("Mesh.MeshSizeMax", 0.06)
         gmsh.model.mesh.generate(2)
         gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
