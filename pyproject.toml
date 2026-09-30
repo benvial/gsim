@@ -350,3 +350,13 @@ unresolved-import = "ignore"
 
 [tool.ty.src]
 include = ["src"]
+
+[tool.uv]
+# `cadquery-ocp` below 7.9 bundles its own VTK bindings, which shadow the `vtk`
+# distribution that pyvista reads: `import gsim` then dies on "VTK version must
+# be 9.3.1 or greater", and on macOS the mixed VTK segfaults the interpreter.
+# 7.9 depends on `vtk==9.6.2` instead, so resolving `vtk` any higher makes the
+# resolver fall back to the bundled one. cadquery arrives through
+# femwell -> meshwell -> cadquery, so this bites wherever the femwell or
+# modulator extra is installed, CI's `uv sync --all-extras` included.
+constraint-dependencies = ["vtk<9.7"]
