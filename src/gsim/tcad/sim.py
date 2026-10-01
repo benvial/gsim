@@ -19,6 +19,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import sys
 import warnings
 from contextlib import suppress
 from pathlib import Path
@@ -298,18 +299,18 @@ class ChargeTransportSim(MeshSourceMixin, BaseModel):
         """Best-effort removal of this sim's DEVSIM device and mesh."""
         if self._device is None:
             return
-        try:
-            import importlib
-
-            devsim: Any = importlib.import_module("devsim")
-        except ImportError:  # pragma: no cover - nothing to release
-            return
-        with suppress(Exception):
-            devsim.delete_device(device=self._device)
-        _LIVE_DEVICES.discard(self._device)
-        if self._devsim_mesh_name is not None:
+        # Read the module already in sys.modules rather than importing it:
+        # a device only exists because DEVSIM was imported to create it,
+        # and a second import in a process that has dropped the module
+        # re-runs DEVSIM's one-shot initialisation, which then raises.
+        devsim: Any = sys.modules.get("devsim")
+        if devsim is not None:
             with suppress(Exception):
-                devsim.delete_mesh(mesh=self._devsim_mesh_name)
+                devsim.delete_device(device=self._device)
+            if self._devsim_mesh_name is not None:
+                with suppress(Exception):
+                    devsim.delete_mesh(mesh=self._devsim_mesh_name)
+        _LIVE_DEVICES.discard(self._device)
 
     def reset_device(self) -> None:
         """Forget the DEVSIM device; setup runs again on the next solve."""

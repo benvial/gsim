@@ -6,6 +6,8 @@ configuration in, DEVSIM setup calls and generated artifacts out.
 
 from __future__ import annotations
 
+import sys
+
 import meshio
 import numpy as np
 import pytest
@@ -18,7 +20,7 @@ from gsim.tcad import (
 )
 from gsim.tcad.mesh import UM_TO_CM
 
-from .conftest import build_pn_device
+from .conftest import FakeDevsim, build_pn_device
 
 
 def _make_meshed_sim(tmp_path):
@@ -48,9 +50,15 @@ def meshed_sim(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_device(request):
+def _fresh_device(request, monkeypatch):
     """Solver-side state must not leak between tests sharing the mesh."""
-    if "meshed_sim" in request.fixturenames:
+    if "meshed_sim" not in request.fixturenames:
+        return
+    # The release goes to a stand-in of its own: the real DEVSIM is never
+    # imported for it, and the recorder the test asks for does not see the
+    # device an earlier test left on the module-scoped sim.
+    with monkeypatch.context() as release:
+        release.setitem(sys.modules, "devsim", FakeDevsim())
         request.getfixturevalue("meshed_sim").reset_device()
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import sys
 
 import pytest
@@ -42,3 +43,30 @@ def test_tcad_extra_declared_in_packaging():
     }
     assert "tcad" in extras
     assert any("devsim" in req for req in requires)
+
+
+def test_reset_device_does_not_reimport_devsim(monkeypatch):
+    """A DEVSIM whose import fails must not be imported again to release.
+
+    DEVSIM declares its default derivatives in a one-shot C initialiser.
+    An install without the math libraries raises ``RuntimeError`` partway
+    through that initialiser and leaves no ``sys.modules`` entry, so a
+    second import redeclares what the first declared and raises again —
+    out of a release path that only means to clean up.
+    """
+    from gsim.tcad import ChargeTransportSim
+
+    monkeypatch.delitem(sys.modules, "devsim", raising=False)
+    real_import = builtins.__import__
+
+    def _devsim_fails_to_initialise(name, *args, **kwargs):
+        if name == "devsim" or name.startswith("devsim."):
+            raise RuntimeError("Issues initializing DEVSIM.")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _devsim_fails_to_initialise)
+
+    sim = ChargeTransportSim()
+    sim._device = "gsim_tcad_device_0"
+    sim.reset_device()
+    assert sim._device is None

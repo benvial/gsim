@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `ChargeTransportSim.reset_device()` releases its DEVSIM device through the module already in `sys.modules` instead of
+  importing `devsim` again. A DEVSIM installed without its BLAS/LAPACK libraries raises
+  `RuntimeError: Issues initializing DEVSIM.` partway through a one-shot C initialiser that has already declared its
+  default derivatives, and leaves no `sys.modules` entry behind, so the next import redeclares them and raises the same
+  error — out of a best-effort release path that only means to clean up, and that `except ImportError` never caught.
+  With no DEVSIM module in the process there is nothing to delete, so the release is a no-op and the sim's solver state
+  is forgotten as before.
+
 - `PalaceTextResults.mode_voltage` reads `mode-V.csv` again. It was dropped as an unread parse — nothing in `src/` or
   `tests/` called it — but `nbs/palace_cpw_deembedding.ipynb` does, to pick the CPW mode out of the mode table by
   comparing the two signal-to-ground voltages and to reject the slotline-like mode whose gap voltages disagree in sign.
