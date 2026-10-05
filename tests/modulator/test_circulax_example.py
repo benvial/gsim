@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import skrf
 
 from gsim.common.circuit import line_smatrix, write_junction_model, write_touchstone
 
@@ -63,8 +64,8 @@ class TestExampleReassembly:
         from gsim.common.circuit import line_driven_response
 
         rf, length_m, touchstone, _ = artifacts
-        freq, s, z_ref = example.read_touchstone(touchstone)
-        reassembled = example.driven_response(s, z_ref, z_gen_ohm=50.0, z_load_ohm=45.0)
+        network = skrf.Network(str(touchstone))
+        reassembled = example.driven_response(network, z_gen_ohm=50.0, z_load_ohm=45.0)
 
         expected = line_driven_response(
             rf.gamma_per_m,
@@ -73,7 +74,7 @@ class TestExampleReassembly:
             z_gen_ohm=50.0,
             z_load_ohm=45.0,
         )
-        np.testing.assert_allclose(freq, rf.freq_hz, rtol=1e-12)
+        np.testing.assert_allclose(network.f, rf.freq_hz, rtol=1e-12)
         np.testing.assert_allclose(reassembled, expected, rtol=1e-8)
 
     def test_the_example_reads_the_junction_model_exactly(self, example, artifacts):

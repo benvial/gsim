@@ -153,8 +153,9 @@ class TestTouchstone:
             comments=["length_m = 0.003"],
         )
 
-        header = path.read_text().splitlines()
-        assert "! length_m = 0.003" in header
+        from gsim.common.circuit import read_touchstone
+
+        assert "length_m = 0.003" in read_touchstone(path).comments
 
 
 class TestSaxLineModel:
@@ -329,13 +330,25 @@ class TestTouchstoneReader:
         assert two_port.z_ref_ohm == Z_REF
         assert "length_m = 0.003" in two_port.comments
 
-    def test_other_touchstone_flavors_are_refused(self, tmp_path):
+    def test_other_touchstone_flavors_read_as_the_same_network(self, tmp_path):
         from gsim.common.circuit import read_touchstone
 
         path = tmp_path / "ghz.s2p"
-        path.write_text("# GHz S MA R 50\n1.0 1 0 0 0 0 0 1 0\n")
+        path.write_text("# GHz S MA R 75\n1.0 0.5 0 1 -90 1 -90 0.5 0\n")
 
-        with pytest.raises(ValueError, match="Hz S RI"):
+        two_port = read_touchstone(path)
+
+        np.testing.assert_allclose(two_port.freq_hz, [1e9])
+        np.testing.assert_allclose(two_port.s[0], [[0.5, -1j], [-1j, 0.5]], atol=1e-12)
+        assert two_port.z_ref_ohm == 75.0
+
+    def test_a_one_port_is_refused(self, tmp_path):
+        from gsim.common.circuit import read_touchstone
+
+        path = tmp_path / "load.s1p"
+        path.write_text("# Hz S RI R 50\n1e9 0.1 0\n")
+
+        with pytest.raises(ValueError, match="two-port"):
             read_touchstone(path)
 
     def test_a_malformed_row_is_refused(self, tmp_path):
@@ -344,7 +357,7 @@ class TestTouchstoneReader:
         path = tmp_path / "short.s2p"
         path.write_text("# Hz S RI R 50\n1e9 1 0 0\n")
 
-        with pytest.raises(ValueError, match="columns"):
+        with pytest.raises(ValueError, match="not a readable Touchstone"):
             read_touchstone(path)
 
 

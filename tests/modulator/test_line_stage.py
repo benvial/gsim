@@ -736,7 +736,7 @@ class TestTwoPortExport:
     """The solved line leaves the Study as a circuit-simulator two-port."""
 
     def test_the_touchstone_file_carries_the_solved_line(self, solved, tmp_path):
-        from gsim.common.circuit import line_smatrix
+        from gsim.common.circuit import line_smatrix, read_touchstone
 
         path = solved.line.export_touchstone(tmp_path / "electrode.s2p")
 
@@ -744,14 +744,10 @@ class TestTwoPortExport:
         expected = line_smatrix(
             rf.gamma_per_m, rf.z0_ohm, length_m=solved.line.length_m
         )
-        lines = path.read_text().splitlines()
-        header = next(line for line in lines if line.startswith("#"))
-        first = lines[lines.index(header) + 1]
-        assert header == "# Hz S RI R 50"
-        values = np.asarray(first.split(), dtype=np.float64)
-        assert values[0] == pytest.approx(RF_FREQS[0])
-        assert values[1] + 1j * values[2] == pytest.approx(expected[0, 0, 0])
-        assert values[3] + 1j * values[4] == pytest.approx(expected[0, 1, 0])
+        two_port = read_touchstone(path)
+        assert two_port.z_ref_ohm == 50.0
+        np.testing.assert_allclose(two_port.freq_hz, RF_FREQS)
+        np.testing.assert_allclose(two_port.s, expected, rtol=1e-10, atol=1e-15)
 
     def test_without_a_path_it_lands_in_the_line_stage_directory(self, solved):
         path = solved.line.export_touchstone()
@@ -784,21 +780,25 @@ class TestTwoPortExport:
         np.testing.assert_allclose(sdict[("o1", "o1")], expected[:, 0, 0])
 
     def test_the_export_reports_the_solved_length(self, solved, tmp_path):
+        from gsim.common.circuit import read_touchstone
+
         solved.line(length_um=5000.0)
 
         path = solved.line.export_touchstone(tmp_path / "line.s2p")
 
-        assert "! length_m = 0.005" in path.read_text().splitlines()
+        assert "length_m = 0.005" in read_touchstone(path).comments
 
     def test_the_export_records_the_bias_and_contact_off_the_rf_result(
         self, solved, tmp_path
     ):
         """The provenance is the record's, not the RF Stage's private state."""
+        from gsim.common.circuit import read_touchstone
+
         path = solved.line.export_touchstone(tmp_path / "line.s2p")
 
-        lines = path.read_text().splitlines()
-        assert f"! signal contact: {RF_SIGNAL_CONTACT}" in lines
-        assert f"! bias_v = {RF_BIAS_V:g}" in lines
+        comments = read_touchstone(path).comments
+        assert f"signal contact: {RF_SIGNAL_CONTACT}" in comments
+        assert f"bias_v = {RF_BIAS_V:g}" in comments
 
     def test_a_result_without_provenance_records_none(
         self, study, monkeypatch, tmp_path

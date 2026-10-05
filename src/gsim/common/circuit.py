@@ -14,9 +14,11 @@ The junction's compact model travels the same road: the series-RC shunt
 branch fitted per bias point is written to a tabular JSON file
 (:func:`write_junction_model`, whose docstring is the format reference)
 and read back with nothing but the stdlib and numpy
-(:func:`read_junction_model`). Round-trip validation of both artifacts
-uses the minimal Touchstone reader (:func:`read_touchstone`) and the
-driven-line responses (:func:`terminated_response` from an S-matrix,
+(:func:`read_junction_model`). Touchstone files are written and read
+through scikit-rf (:func:`write_touchstone`, :func:`read_touchstone`),
+which handles every unit, format and option-line variant of the
+standard. Round-trip validation of both artifacts uses those readers
+and the driven-line responses (:func:`terminated_response` from an S-matrix,
 :func:`line_driven_response` from the solved line parameters).
 
 The S-matrix referenced to a real ``Z_ref`` follows the standard
@@ -36,7 +38,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -181,10 +183,9 @@ def write_touchstone(
 ) -> Path:
     """Write a two-port S-matrix as a Touchstone v1 ``.s2p`` file.
 
-    The file says ``# Hz S RI R <z_ref>`` and carries one row per
-    frequency in the Touchstone two-port order (S11, S21, S12, S22),
-    real and imaginary columns — what scikit-rf, ADS or any Touchstone
-    consumer reads back without conversion.
+    scikit-rf writes the file: a ``# Hz S RI R <z_ref>`` option line and
+    one row per frequency in real and imaginary columns, which ADS,
+    scikit-rf or any Touchstone consumer reads back without conversion.
 
     Args:
         path: Output file; the ``.s2p`` suffix is added when missing.
@@ -225,19 +226,19 @@ def write_touchstone(
         # must not lose its last segment.
         target = target.with_name(target.name + ".s2p")
 
-    lines = [f"! {comment}" for comment in ("gsim line two-port", *(comments or []))]
-    lines.append(f"# Hz S RI R {z_r.real:g}")
-    for row, entries in zip(freq, matrix, strict=True):
-        # Touchstone two-port order: S11, S21, S12, S22.
-        ordered = (
-            entries[0, 0],
-            entries[1, 0],
-            entries[0, 1],
-            entries[1, 1],
-        )
-        values = " ".join(f"{v.real:.12e} {v.imag:.12e}" for v in ordered)
-        lines.append(f"{row:.12e} {values}")
-    target.write_text("\n".join(lines) + "\n")
+    import skrf
+
+    network = skrf.Network(
+        frequency=skrf.Frequency.from_f(freq, unit="Hz"),
+        s=matrix,
+        z0=z_r.real,
+        name=target.stem,
+        comments="\n".join(("gsim line two-port", *(comments or []))),
+    )
+    # Rendered to a string and written here so the path is exactly the
+    # target, whatever scikit-rf would derive from the network's name.
+    text = network.write_touchstone(return_string=True, form="ri", skrf_comment=False)
+    target.write_text(cast("str", text))
     return target
 
 
@@ -498,12 +499,10 @@ class TwoPort(NamedTuple):
 
 
 def read_touchstone(path: str | Path) -> TwoPort:
-    """Read a two-port Touchstone v1 ``.s2p`` file.
+    """Read a two-port Touchstone ``.s2p`` file through scikit-rf.
 
-    A minimal stdlib/numpy reader for what :func:`write_touchstone`
-    writes — the ``# Hz S RI R <z_ref>`` flavor with one row per
-    frequency in the Touchstone two-port order (S11, S21, S12, S22).
-    Other units or formats are refused rather than misread.
+    Any unit (Hz to GHz) and format (RI, MA, DB) the standard allows is
+    read, so the file need not come from :func:`write_touchstone`.
 
     Args:
         path: The ``.s2p`` file.
@@ -512,56 +511,33 @@ def read_touchstone(path: str | Path) -> TwoPort:
         The two-port.
 
     Raises:
-        ValueError: When the option line declares units or a format this
-            reader does not handle, or a data row is malformed.
+        ValueError: When the file cannot be parsed, is not a two-port,
+            or its ports do not share one real reference impedance.
     """
-    comments: list[str] = []
-    z_ref = 50.0
-    rows: list[list[float]] = []
-    saw_options = False
-    for raw in Path(path).read_text().splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("!"):
-            comments.append(line[1:].strip())
-            continue
-        if line.startswith("#"):
-            if saw_options:
-                # Touchstone v1 gives significance only to the first
-                # option line; a repeated or trailing one must not
-                # override the reference impedance.
-                continue
-            tokens = line[1:].upper().split()
-            if tokens[:3] != ["HZ", "S", "RI"] or (
-                len(tokens) > 3 and tokens[3] != "R"
-            ):
-                raise ValueError(
-                    f"{path} declares '{line}'; this reader handles the "
-                    "'# Hz S RI R <z_ref>' flavor gsim writes."
-                )
-            if len(tokens) > 4:
-                z_ref = float(tokens[4])
-            saw_options = True
-            continue
-        values = [float(token) for token in line.split()]
-        if len(values) != 9:
-            raise ValueError(
-                f"{path} has a data row of {len(values)} columns; a two-port "
-                "row is frequency plus four complex S-entries (9 columns)."
-            )
-        rows.append(values)
-    if not saw_options or not rows:
-        raise ValueError(f"{path} has no option line or no data rows.")
+    import skrf
 
-    data = np.asarray(rows, dtype=np.float64)
-    s = np.empty((data.shape[0], 2, 2), dtype=np.complex128)
-    # Touchstone two-port order: S11, S21, S12, S22.
-    s[:, 0, 0] = data[:, 1] + 1j * data[:, 2]
-    s[:, 1, 0] = data[:, 3] + 1j * data[:, 4]
-    s[:, 0, 1] = data[:, 5] + 1j * data[:, 6]
-    s[:, 1, 1] = data[:, 7] + 1j * data[:, 8]
-    return TwoPort(freq_hz=data[:, 0], s=s, z_ref_ohm=z_ref, comments=comments)
+    try:
+        network = skrf.Network(str(path))
+    except (ValueError, IndexError) as error:
+        raise ValueError(
+            f"{path} is not a readable Touchstone file: {error}"
+        ) from error
+    if network.nports != 2:
+        raise ValueError(f"{path} holds a {network.nports}-port; expected a two-port.")
+    z0 = np.asarray(network.z0)
+    if np.any(z0.imag != 0.0) or np.any(z0 != z0.flat[0]):
+        raise ValueError(
+            f"{path} references its ports to {np.unique(z0)}; a two-port with "
+            "one real reference impedance is expected."
+        )
+    return TwoPort(
+        freq_hz=np.asarray(network.f, dtype=np.float64),
+        s=np.asarray(network.s, dtype=np.complex128),
+        z_ref_ohm=float(z0.flat[0].real),
+        comments=[
+            line.strip() for line in network.comments.splitlines() if line.strip()
+        ],
+    )
 
 
 def _abcd_response(
@@ -618,27 +594,20 @@ def terminated_response(
         raise ValueError(
             f"z_ref_ohm must be a positive real reference impedance; got {z_r}."
         )
-    s11 = matrix[..., 0, 0]
-    s12 = matrix[..., 0, 1]
-    s21 = matrix[..., 1, 0]
-    s22 = matrix[..., 1, 1]
-    if np.any(s21 == 0.0):
+    if np.any(matrix[..., 1, 0] == 0.0):
         raise ValueError(
             "The two-port has S21 = 0 at some frequency; a zero-transmission "
             "network has no ABCD form, so its terminated response is undefined."
         )
-    # Standard S-to-ABCD conversion at a real reference (Pozar, ch. 4).
-    a = ((1.0 + s11) * (1.0 - s22) + s12 * s21) / (2.0 * s21)
-    b = z_r.real * ((1.0 + s11) * (1.0 + s22) - s12 * s21) / (2.0 * s21)
-    c = ((1.0 - s11) * (1.0 - s22) - s12 * s21) / (z_r.real * 2.0 * s21)
-    d = ((1.0 - s11) * (1.0 + s22) + s12 * s21) / (2.0 * s21)
-    # The float literals above widen the element type away from complex128
-    # without changing a value; restate it for the ABCD signature.
+    from skrf.network import s2a
+
+    # scikit-rf converts a stack of matrices; flatten any leading axes.
+    abcd = s2a(matrix.reshape(-1, 2, 2), np.asarray(z_r.real)).reshape(matrix.shape)
     return _abcd_response(
-        np.asarray(a, dtype=np.complex128),
-        np.asarray(b, dtype=np.complex128),
-        np.asarray(c, dtype=np.complex128),
-        np.asarray(d, dtype=np.complex128),
+        abcd[..., 0, 0],
+        abcd[..., 0, 1],
+        abcd[..., 1, 0],
+        abcd[..., 1, 1],
         z_gen_ohm=z_gen_ohm,
         z_load_ohm=z_load_ohm,
     )

@@ -21,6 +21,8 @@ dependencies = [
   "pdk-schema==0.0.2",
   "plotly",
   "pyvista>=0.43.0",
+  # Touchstone I/O and network conversions (gsim.common.circuit).
+  "scikit-rf>=1.0",
   "trame",
   "trame-vtk",
   "trame-vuetify",
@@ -208,6 +210,10 @@ module = "palacetoolkit_palace_cpu"
 [[tool.mypy.overrides]]
 ignore_missing_imports = true
 module = "palacetoolkit_palace_cpu.*"
+
+[[tool.mypy.overrides]]
+ignore_missing_imports = true
+module = "skrf.*"
 
 [tool.pylsp-mypy]
 enabled = true
