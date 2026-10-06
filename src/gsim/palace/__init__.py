@@ -55,6 +55,9 @@ from gsim.gcloud import run_simulation as _run_simulation
 
 # New simulation classes (composition, no inheritance)
 from gsim.palace.boundarymode import BoundaryModeSim
+
+# Capacitance matrices of electrostatic runs
+from gsim.palace.capacitance import CapacitanceMatrices, load_capacitance
 from gsim.palace.driven import DrivenSim
 from gsim.palace.eigenmode import EigenmodeSim
 from gsim.palace.electrostatic import ElectrostaticSim
@@ -93,6 +96,7 @@ from gsim.palace.mesh import (
     MeshResult,
     generate_mesh,
 )
+from gsim.palace.mesh.nets import Net, Nets, extract_nets
 from gsim.palace.mesh.validation import check_lumped_port_contact
 
 # Saved boundary-mode fields, and the line parameters they carry
@@ -175,6 +179,7 @@ __all__ = [
     "BoundaryModeField",
     "BoundaryModeSim",
     "CPWPortConfig",
+    "CapacitanceMatrices",
     "CrossSectionPlaneConfig",
     "DrivenConfig",
     "DrivenSim",
@@ -191,6 +196,8 @@ __all__ = [
     "MaterialProperties",
     "MeshConfig",
     "MeshResult",
+    "Net",
+    "Nets",
     "NumericalConfig",
     "PECBlockConfig",
     "PalacePort",
@@ -225,6 +232,7 @@ __all__ = [
     "extract_boundary_cells",
     "extract_from_pdk",
     "extract_layer_stack",
+    "extract_nets",
     "extract_plane_slice",
     "extract_ports",
     "extract_slice_contours",
@@ -237,6 +245,7 @@ __all__ = [
     "interactive_mode",
     "load_boundary_field_data",
     "load_boundary_mode_field",
+    "load_capacitance",
     "load_field_context",
     "load_fields",
     "load_refinement_history",

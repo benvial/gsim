@@ -28,6 +28,15 @@ class MeshConfig(BaseModel):
             element size, each ``(h_min, h_max, z_min, z_max, size)`` in um.
             Refinement lines size the elements on them only, and the size
             grows at once with the distance; a box holds it over an area
+        algorithm_3d: Gmsh 3D meshing algorithm, "delaunay" or "hxt". In the
+            800 um CPW tests behind gsim#283 HXT gave a different mesh and was
+            slower than Delaunay at every thread count.
+        threads: Threads for 3D meshing. With Delaunay and ``surface_threads=1``
+            the mesh does not depend on it, and it did not speed meshing up in
+            those tests either. With HXT the mesh depends on the thread count.
+        surface_threads: Threads for 1D and 2D (surface) meshing. Values above 1
+            are faster but gave a different mesh on every run, so keep 1 when
+            the mesh must be reproducible.
         show_gui: Show gmsh GUI during meshing
         preview_only: Generate preview only, don't save mesh
     """
@@ -68,6 +77,9 @@ class MeshConfig(BaseModel):
             "on the cross-section (um) inside which elements keep to size."
         ),
     )
+    algorithm_3d: Literal["delaunay", "hxt"] = "delaunay"
+    threads: int = Field(default=1, ge=1)
+    surface_threads: int = Field(default=1, ge=1)
     show_gui: bool = False
     preview_only: bool = False
 
