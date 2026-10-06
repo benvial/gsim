@@ -37,6 +37,7 @@ import pytest
 
 from gsim.modulator import Device, Study
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
+from tests._helpers import skip_without_devsim
 
 from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_demo
 
@@ -238,7 +239,7 @@ def solved(request, tmp_path_factory):
     continuous Route and the Staircase read the same Carrier maps, so the
     gap between them is the representation and nothing else.
     """
-    pytest.importorskip("devsim")
+    skip_without_devsim()
     oxide, band = request.param
     study = study_at(tmp_path_factory.mktemp(f"solved-oxide-{oxide}"))
     study.charge(biases=list(BIASES), oxide=oxide)

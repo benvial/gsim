@@ -44,12 +44,17 @@ femwell = [
 # Full TW-MZM modulator workflow (charge transport + femwell modes).
 modulator = [
   "devsim>=2.6.0",
+  "devsim-openblas>=0.1.0",
   "femwell>=0.1.11",
   "scikit-fem>=8.0.0",
 ]
-# DEVSIM charge-transport backend (gsim.tcad).
+# DEVSIM charge-transport backend (gsim.tcad). devsim-openblas gives DEVSIM
+# the OpenBLAS from scipy-openblas32: DEVSIM cannot use that wheel's
+# scipy_-prefixed symbols directly (devsim/devsim#167), and without it a plain
+# pip install has no BLAS/LAPACK DEVSIM can load on macOS or Windows.
 tcad = [
   "devsim>=2.6.0",
+  "devsim-openblas>=0.1.0",
 ]
 # Interactive 3-D visualization (PyVista + trame server rendering) with the
 # extra packages needed for reliable headless and notebook use.

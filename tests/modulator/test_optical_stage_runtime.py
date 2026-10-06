@@ -16,7 +16,7 @@ import pytest
 
 from gsim.modulator import Device, OpticalSweep, Study
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
-from tests._helpers import longest_edge_in_box
+from tests._helpers import longest_edge_in_box, skip_without_devsim
 
 from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, RIB_HEIGHT, build_demo
 
@@ -231,7 +231,7 @@ class TestRegionsOffTheWindow:
 @pytest.mark.tcad_local
 class TestEndToEnd:
     def test_a_real_charge_solve_reaches_the_optical_mode(self, tmp_path):
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         study = build_study(tmp_path)
         study.charge(biases=[0.0, 2.0])
 

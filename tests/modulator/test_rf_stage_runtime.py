@@ -29,6 +29,7 @@ import pytest
 from gsim.common.modes import Conductor, NoLineModeError
 from gsim.common.transmission_line import RFLineParams
 from gsim.modulator import Device, Study, pn_phase_shifter
+from tests._helpers import skip_without_devsim
 
 from .conftest import (
     CENTER_Y,
@@ -420,7 +421,7 @@ class TestModeSelection:
 @pytest.mark.tcad_local
 class TestEndToEnd:
     def test_a_real_charge_solve_reaches_the_line_parameters(self, tmp_path):
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         demo = build_demo()
         component, stack = demo.component, demo.stack
         study = Study(
@@ -448,7 +449,7 @@ class TestEndToEnd:
         default bound, so the wall Mode (n_eff ~ 2.2, Z0 ~ 170 ohm) is not
         what the rule falls back to at any frequency of the band.
         """
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         demo = build_demo()
         study = pn_phase_shifter(
             component=demo.component,
@@ -579,7 +580,7 @@ class TestCrosscheck:
     """
 
     def test_the_routes_agree_within_the_gates_tolerance(self, tmp_path):
-        pytest.importorskip("devsim")
+        skip_without_devsim()
         demo = build_demo()
         component, stack = demo.component, demo.stack
         study = Study(

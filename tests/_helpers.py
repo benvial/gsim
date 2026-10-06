@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,17 +12,17 @@ from numpy.typing import ArrayLike, NDArray
 def skip_without_devsim() -> None:
     """Skip the caller when DEVSIM cannot be imported.
 
-    ``pytest.importorskip("devsim")`` is not enough: DEVSIM loads its
-    BLAS/LAPACK library on import and raises ``RuntimeError`` when it
-    finds none, which fails collection rather than skipping. CI installs
-    the package without the math libraries, and the tests behind this
-    guard are deselected there anyway (``-m tcad_local``).
+    Goes through :func:`gsim.tcad.runtime.require_devsim` rather than a
+    bare import, so the first import picks up devsim-openblas the way a
+    user's does: DEVSIM loads its BLAS/LAPACK library only on that first
+    import, and cannot initialise again in the same process after a
+    failure. ``pytest.importorskip("devsim")`` would bypass both.
     """
+    from gsim.tcad.runtime import require_devsim
+
     try:
-        # The first import prints the BLAS/UMFPACK discovery banner.
-        with contextlib.redirect_stdout(io.StringIO()):
-            import devsim  # noqa: F401
-    except Exception as err:
+        require_devsim()
+    except ImportError as err:
         pytest.skip(f"DEVSIM is unavailable: {err}", allow_module_level=True)
 
 

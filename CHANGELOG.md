@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `pip install 'gsim[tcad]'` and `'gsim[modulator]'` now give a DEVSIM that runs on Linux, macOS arm64 and Windows with
+  no system BLAS/LAPACK and no Intel MKL. Both extras depend on `devsim-openblas`, which hands DEVSIM the OpenBLAS from
+  `scipy-openblas32`, whose `scipy_`-prefixed symbols DEVSIM cannot load itself (proposed upstream as
+  devsim/devsim#167). `require_devsim()` and `import_simple_physics()` configure it before DEVSIM's first import — the
+  only moment DEVSIM reads `DEVSIM_MATH_LIBS` — unless `DEVSIM_MATH_LIBS` is already set, so a user who chose MKL or
+  their own OpenBLAS keeps it. **Behaviour change:** a DEVSIM that still finds no BLAS/LAPACK now raises `ImportError`
+  naming both remedies, chained to DEVSIM's `RuntimeError: Issues initializing DEVSIM.`, where the raw `RuntimeError`
+  used to escape. The test guard `skip_without_devsim()` goes through `require_devsim()`, and the modulator end-to-end
+  tests use it instead of `pytest.importorskip("devsim")`, which bypassed both.
+
 - `ChargeTransportSim.reset_device()` releases its DEVSIM device through the module already in `sys.modules` instead of
   importing `devsim` again. A DEVSIM installed without its BLAS/LAPACK libraries raises
   `RuntimeError: Issues initializing DEVSIM.` partway through a one-shot C initialiser that has already declared its
