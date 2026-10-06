@@ -460,6 +460,24 @@ def _binary_is_runnable(
     return True  # fallback: just being executable is enough
 
 
+# Return codes carry POSIX signal numbers, even on a Windows host whose own
+# ``signal`` module numbers them differently (SIGABRT is 22 there). These are
+# the ones a dying solver usually reports, numbered alike on Linux and macOS.
+_POSIX_SIGNALS = {
+    1: "SIGHUP",
+    2: "SIGINT",
+    3: "SIGQUIT",
+    4: "SIGILL",
+    6: "SIGABRT",
+    8: "SIGFPE",
+    9: "SIGKILL",
+    11: "SIGSEGV",
+    13: "SIGPIPE",
+    14: "SIGALRM",
+    15: "SIGTERM",
+}
+
+
 def _death_signal(returncode: int) -> int | None:
     """The signal a process died on, if its return code says it did.
 
@@ -545,10 +563,11 @@ def local_abort_report(
     signum = _death_signal(code)
     signal_note = ""
     if signum is not None:
-        try:
-            signal_note = f" ({signal.Signals(signum).name})"
-        except ValueError:
-            signal_note = f" (signal {signum})"
+        name = _POSIX_SIGNALS.get(signum)
+        if name is None and os.name != "nt":
+            with suppress(ValueError):
+                name = signal.Signals(signum).name
+        signal_note = f" ({name})" if name else f" (signal {signum})"
 
     # MPI closes its error blocks with a line of dashes, so the last
     # *worded* line is the one that says anything.

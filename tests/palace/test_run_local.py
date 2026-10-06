@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -471,7 +472,7 @@ class TestAbortedBinaryIsReported:
         elsewhere.write_text("#!/bin/sh\nexit 0\n")
         elsewhere.chmod(0o755)
 
-        with pytest.raises(RuntimeError, match=str(elsewhere)):
+        with pytest.raises(RuntimeError, match=re.escape(str(elsewhere))):
             self._boundary_mode_run(tmp_path, palace_executable=str(elsewhere))
 
     @pytest.mark.usefixtures("aborting_palace")
