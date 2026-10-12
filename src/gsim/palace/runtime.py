@@ -463,6 +463,18 @@ def _binary_is_runnable(
 # Return codes carry POSIX signal numbers, even on a Windows host whose own
 # ``signal`` module numbers them differently (SIGABRT is 22 there). These are
 # the ones a dying solver usually reports, numbered alike on Linux and macOS.
+# A Windows process that dies on an exception exits with the NTSTATUS of the
+# exception rather than with a signal; these are the ones a dying solver
+# usually reports.
+_WINDOWS_STATUS = {
+    0xC0000005: "STATUS_ACCESS_VIOLATION",
+    0xC000001D: "STATUS_ILLEGAL_INSTRUCTION",
+    0xC0000094: "STATUS_INTEGER_DIVIDE_BY_ZERO",
+    0xC00000FD: "STATUS_STACK_OVERFLOW",
+    0xC0000374: "STATUS_HEAP_CORRUPTION",
+    0xC0000409: "STATUS_STACK_BUFFER_OVERRUN",
+}
+
 _POSIX_SIGNALS = {
     1: "SIGHUP",
     2: "SIGINT",
@@ -502,11 +514,14 @@ def _death_signal(returncode: int) -> int | None:
             shell in between reported it.
 
     Returns:
-        The signal number, or ``None`` for a plain exit code.
+        The signal number, or ``None`` for a plain exit code — which a
+        code above the shell's ``128 + signum`` range is too: a Windows
+        process that died on an exception exits with that exception's
+        NTSTATUS (``0xC0000005`` for an access violation), not a signal.
     """
     if returncode < 0:
         return -returncode
-    if returncode > 128:
+    if 128 < returncode < 128 + signal.NSIG:
         return returncode - 128
     return None
 
@@ -589,6 +604,9 @@ def local_abort_report(
             with suppress(ValueError):
                 name = signal.Signals(signum).name
         signal_note = f" ({name})" if name else f" (signal {signum})"
+    elif (status := _WINDOWS_STATUS.get(code)) is not None:
+        signal_note = f" ({status})"
+    killed = signum is not None or signal_note != ""
 
     # MPI closes its error blocks with a line of dashes, so the last
     # *worded* line is the one that says anything.
@@ -614,7 +632,7 @@ def local_abort_report(
             f"{output_dir}), so the runtime did start; the solve itself "
             "died before finishing."
         )
-    elif signum is not None:
+    elif killed:
         diagnosis = (
             "It was killed before writing any solver output, which means "
             "the Palace runtime — typically its bundled MPI — failed "

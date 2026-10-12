@@ -451,6 +451,28 @@ class TestAbortedBinaryIsReported:
         assert "runtime" in message
         assert "PALACE_BIN" in message
 
+    def test_a_windows_exception_status_is_not_read_as_a_signal(
+        self, tmp_path, aborting_palace
+    ):
+        """``0xC0000005`` is an access violation's NTSTATUS, not signal 3221225349."""
+        aborting_palace["returncode"] = 0xC0000005
+        with pytest.raises(RuntimeError) as excinfo:
+            self._boundary_mode_run(tmp_path)
+        message = str(excinfo.value)
+        assert "exit status 3221225477 (STATUS_ACCESS_VIOLATION)" in message
+        assert "signal" not in message
+        # A crash with nothing written is the runtime's, on Windows too.
+        assert "any solver output" in message
+
+    @pytest.mark.parametrize(
+        ("returncode", "signum"),
+        [(-11, 11), (134, 6), (139, 11), (1, None), (255, None), (0xC0000005, None)],
+    )
+    def test_which_exit_codes_are_signal_deaths(self, returncode, signum):
+        from gsim.palace.runtime import _death_signal
+
+        assert _death_signal(returncode) == signum
+
     @pytest.mark.usefixtures("aborting_palace")
     def test_a_driven_solve_is_diagnosed_the_same_way(self, tmp_path):
         """Not only the boundary-mode path: the report is on the mixin."""

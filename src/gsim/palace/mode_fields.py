@@ -184,6 +184,8 @@ def load_boundary_mode_field(
             ones, or the mesh is not the second-order triangulation a
             boundary-mode solve writes.
     """
+    from vtkmodules.util.numpy_support import vtk_to_numpy
+
     from gsim.palace.results import load_fields
 
     grid = load_fields(source, cycle=int(mode_id))
@@ -191,8 +193,10 @@ def load_boundary_mode_field(
     # 22 is VTK_QUADRATIC_TRIANGLE, 69 its Lagrange spelling; both carry
     # three corner nodes then three midside ones. The Lagrange spelling
     # has no fixed node count of its own, so the connectivity is read
-    # through the offsets rather than through pyvista's cells_dict.
-    counts = np.diff(np.asarray(grid.offset, dtype=np.int64))
+    # through the offsets rather than through pyvista's cells_dict — and
+    # off VTK's own offsets array, since pyvista's ``offset`` is deprecated.
+    offsets = vtk_to_numpy(grid.GetCells().GetOffsetsArray())
+    counts = np.diff(np.asarray(offsets, dtype=np.int64))
     if cell_types.size != 1 or int(cell_types[0]) not in (22, 69):
         raise ValueError(
             f"The saved mode's mesh has cell types {cell_types.tolist()}, not the "

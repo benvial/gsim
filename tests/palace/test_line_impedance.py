@@ -32,6 +32,8 @@ DOMAIN = ((-25.0, -15.0), (-3.0, 2.0))
 
 #: The signal electrode above, as a current integral names it.
 SIGNAL_CONDUCTOR = Conductor(name="electrode_low", extent=SIGNAL, model="pec")
+#: The same electrode meshed as a region of lossy metal.
+LOSSY_SIGNAL_CONDUCTOR = Conductor(name="electrode_low", extent=SIGNAL, model="volume")
 
 #: ``mode -> (Z_PV, Z_VI)`` of the canned ``mode-Z.csv``.
 NATIVE_TABLE = {1: (100.0, 80.0), 2: (200.0, 120.0)}
@@ -276,6 +278,89 @@ class TestNativeImpedance:
             native_line_impedance(impedance_tables(), index=1, mode_id=3, n_eff=2.0)
             is None
         )
+
+
+class TestLossyConductorsReadTheFields:
+    """The tables' magnitudes are not a lossy line's impedance.
+
+    Measured on a 10/6 um aluminium CPW at 10 GHz: 85.3 ohm off the
+    tables against 74.6 - 8.3j ohm off the fields, so a lossy conductor
+    reads the fields and keeps the tables for the wall-Mode diagnostic.
+    """
+
+    @staticmethod
+    def _fields_say(monkeypatch, z0):
+        monkeypatch.setattr(
+            "gsim.palace.line_impedance.field_line_impedance",
+            lambda *_args, **_kwargs: z0,
+        )
+
+    def test_a_lossy_conductor_reads_the_fields_and_keeps_the_diagnostic(
+        self, monkeypatch, tmp_path
+    ):
+        self._fields_say(monkeypatch, 74.6 - 8.3j)
+
+        reading = palace_line_impedance(
+            FieldlessSim(tmp_path),
+            impedance_tables(),
+            index=1,
+            mode_id=1,
+            n_eff=2.0 - 1e-3j,
+            signal=LOSSY_SIGNAL_CONDUCTOR,
+            context="The rf stage's palace route",
+        )
+
+        assert reading.z0_ohm == 74.6 - 8.3j
+        assert reading.wall_mode is False
+        assert "saved fields" in reading.diagnostic
+        assert "line mode between the electrodes" in reading.diagnostic
+
+    def test_a_lossy_wall_mode_is_still_told_by_the_tables(self, monkeypatch, tmp_path):
+        self._fields_say(monkeypatch, 1.0 - 0.1j)
+
+        reading = palace_line_impedance(
+            FieldlessSim(tmp_path),
+            impedance_tables({1: (2.5e-8, 2.1e-3)}),
+            index=1,
+            mode_id=1,
+            n_eff=2.0,
+            signal=LOSSY_SIGNAL_CONDUCTOR,
+            context="The rf stage's palace route",
+        )
+
+        assert reading.wall_mode is True
+        assert reading.z0_ohm == 1.0 - 0.1j
+
+    def test_a_lossy_conductor_without_fields_is_nan_not_the_table(self, tmp_path):
+        """The 14.5%-off table value is not handed out as a fallback."""
+        with pytest.warns(UserWarning, match="could not read mode 1's saved fields"):
+            reading = palace_line_impedance(
+                FieldlessSim(tmp_path),
+                impedance_tables(),
+                index=1,
+                mode_id=1,
+                n_eff=2.0,
+                signal=LOSSY_SIGNAL_CONDUCTOR,
+                context="The rf stage's palace route",
+            )
+
+        assert np.isnan(reading.z0_ohm.real)
+        assert reading.wall_mode is False
+
+    def test_a_perfect_conductor_still_takes_the_table(self, monkeypatch, tmp_path):
+        self._fields_say(monkeypatch, 74.6 - 8.3j)
+
+        reading = palace_line_impedance(
+            FieldlessSim(tmp_path),
+            impedance_tables(),
+            index=1,
+            mode_id=1,
+            n_eff=2.0,
+            signal=SIGNAL_CONDUCTOR,
+            context="The rf stage's palace route",
+        )
+
+        assert reading.z0_ohm == pytest.approx(80.0**2 / 100.0)
 
 
 class TestTablesFirstFieldsAfter:

@@ -84,6 +84,18 @@
   its results; the run directory is cleared before each run so what is read back is that run's, the salvage warns, and
   `salvage=False` keeps the raise reachable. A run that died short of any of it is the failure it looks like.
 
+- `palace_line_impedance` reads a lossy conductor's impedance off the saved fields. Palace's `mode-Z.csv` holds
+  magnitudes, and with finite conductivity `Z_VI² / Z_PV` is not the power-current impedance: 85.3 Ω off the tables
+  against 74.6 − 8.3j Ω off the fields on a 10/6 µm aluminium CPW at 10 GHz, 14.5 % off, where PEC electrodes put all
+  three readings within 4 %. A `"pec"` signal conductor still reads the tables; a `"volume"` one integrates the saved
+  fields and keeps the tables for the wall-Mode diagnostic alone, and comes back NaN with a warning rather than the
+  table value when the fields are not there.
+
+- A Palace process that died on a Windows exception is reported by its NTSTATUS (`0xC0000005` as
+  `STATUS_ACCESS_VIOLATION`) and blamed on the runtime like a signal death, instead of as "signal 3221225349";
+  `_death_signal` reads `128 + signum` only within the shell's signal range. `load_boundary_mode_field` reads cell
+  offsets off VTK's own array rather than pyvista's deprecated `offset`.
+
 - `ModePath` refuses a path that repeats a point and opens a current loop handed in closed. Palace joins the last corner
   of a `CurrentPath` back to the first itself and aborts the whole run on a zero-length segment, so a loop written
   `[a, b, c, d, a]` crashed it at start-up with no log; it is now written as four corners, and `[a, b, b, c]` or
