@@ -344,6 +344,18 @@ def select_line_mode[ModeT](
 ) -> ModeT:
     """Select the physical line Mode from a set of solved Modes.
 
+    The default rule's pick, the slowest propagating Mode, is the line
+    Mode of a line with one signal conductor. A line with two gaps, a
+    CPW or a shielded pair, carries a second propagating Mode the index
+    alone does not separate from it, the slotline-like one of a CPW or
+    the wall-return one of a shielded pair, and which of the two travels
+    slower is the geometry's to decide: the degeneracy warning below
+    fires only when they sit close. Where the order is not known, tell
+    them apart on a field quantity and pass ``rule=``. The CPW Mode has
+    its two gap voltages in phase and the slotline-like one in antiphase
+    (``PalaceTextResults.mode_voltage`` reads them off a declared path),
+    and :func:`wall_mode_from_currents` separates a shielded pair's.
+
     Args:
         modes: Every Mode the solve returned.
         rule: Candidate rule replacing the default

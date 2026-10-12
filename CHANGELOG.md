@@ -77,10 +77,19 @@
   as such, with the install hint. `binary_that_ran`, `local_abort_report` and `require_palace_binary(hint=...)` live in
   `gsim.palace.runtime`.
 
-- `BoundaryModeSim.run_local(salvage=True)` uses a crashed run's mode table when the table is complete. Palace 0.17
-  intermittently corrupts its heap while shutting down a `BoundaryMode` solve (`free(): corrupted unsorted chunks`),
-  after the solve has finished and written its results; the run directory is cleared before each run so what is read
-  back is that run's, the salvage warns, and `salvage=False` keeps the raise reachable.
+- `BoundaryModeSim.run_local(salvage=True)` uses what a crashed run left on disk when it is everything the run was asked
+  for: every Mode in `mode-kn.csv`, a `mode-V.csv` and `mode-Z.csv` row for each of them under every declared path's
+  index, and a saved ParaView cycle for each Mode `save` asked for. Palace (0.17) intermittently corrupts its heap while
+  shutting down a `BoundaryMode` solve (`free(): corrupted unsorted chunks`), after the solve has finished and written
+  its results; the run directory is cleared before each run so what is read back is that run's, the salvage warns, and
+  `salvage=False` keeps the raise reachable. A run that died short of any of it is the failure it looks like.
+
+- `ModePath` refuses a path that repeats a point and opens a current loop handed in closed. Palace joins the last corner
+  of a `CurrentPath` back to the first itself and aborts the whole run on a zero-length segment, so a loop written
+  `[a, b, c, d, a]` crashed it at start-up with no log; it is now written as four corners, and `[a, b, b, c]` or
+  `[a, b, a]` raise `ValueError`. The `current` docstring says why the loop should hug the conductor: it encloses the
+  gap's displacement current along with the metal's own, so a loop standing off reads less current and a higher `Z_VI`;
+  the generated `line_impedance_paths` loop agrees with the field-based power-current impedance.
 
 - `PalaceTextResults.mode_voltage` reads `mode-V.csv` again. It was dropped as an unread parse — nothing in `src/` or
   `tests/` called it — but `nbs/palace_cpw_deembedding.ipynb` does, to pick the CPW mode out of the mode table by

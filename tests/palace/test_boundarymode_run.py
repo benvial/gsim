@@ -2,10 +2,11 @@
 
 Where Palace's tables land, that the previous run's are gone before the
 next one, that what is read back is this run's — and what a run that
-ends badly means: Palace 0.17 crashes on shutdown *after* answering, so
-a complete table left behind is the answer, while a binary that died
-before writing anything is a broken runtime and is reported as one. None
-of it is something a caller should have to spell.
+ends badly means: Palace (0.17) crashes on shutdown *after* answering,
+so a run that left everything it was asked for behind is the answer,
+while a binary that died before writing it all is a broken runtime and
+is reported as one. None of it is something a caller should have to
+spell.
 """
 
 from __future__ import annotations
@@ -35,6 +36,20 @@ def mode_table_text(n_modes: int) -> str:
         f"{m}, {4.2e7 + m:.6e}, -1.0e2, {2.0 + 0.1 * m:.6e}, -1.0e-5\n"
         for m in range(1, n_modes + 1)
     )
+    return header + rows
+
+
+def impedance_table_text(n_modes: int, *, index: int = 1) -> str:
+    """A ``mode-Z.csv`` carrying *n_modes* Modes under postprocessing *index*."""
+    header = f"m, Z_PV[{index}] (Ohm), Z_VI[{index}] (Ohm)\n"
+    rows = "".join(f"{m}, {50.0 + m}, {48.0 + m}\n" for m in range(1, n_modes + 1))
+    return header + rows
+
+
+def voltage_table_text(n_modes: int, *, index: int = 1) -> str:
+    """A ``mode-V.csv`` carrying *n_modes* Modes under postprocessing *index*."""
+    header = f"m, Re{{V[{index}]}} (V), Im{{V[{index}]}} (V)\n"
+    rows = "".join(f"{m}, 1.0, 0.0\n" for m in range(1, n_modes + 1))
     return header + rows
 
 
@@ -163,12 +178,20 @@ class TestCrashedRunSalvage:
         """A Palace that writes *modes* Modes and then dies."""
         script: dict[str, Any] = {
             "modes": 0,
+            "tables": {},
+            "files": (),
             "raises": RuntimeError("free(): corrupted chunks"),
         }
 
         def fake_run_local(self, **_kwargs):
             if script["modes"]:
                 write_table(self.run_dir, text=mode_table_text(script["modes"]))
+            for name, text in script["tables"].items():
+                write_table(self.run_dir, name=name, text=text)
+            for relative in script["files"]:
+                path = self.run_dir / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
             raise script["raises"]
 
         monkeypatch.setattr(PalaceSimMixin, "run_local", fake_run_local)
@@ -218,6 +241,72 @@ class TestCrashedRunSalvage:
 
         with pytest.raises(RuntimeError, match="corrupted chunks"):
             sim.run_local(verbose=False)
+
+    def test_a_declared_path_without_its_rows_is_not_an_answer(
+        self, tmp_path, crashing_palace
+    ):
+        """The mode table alone does not answer a run that asked for a path."""
+        crashing_palace["modes"] = 4
+        sim = self._asking_for(tmp_path, 4)
+        sim.add_impedance_path("line", voltage=[[0.0, 0.0], [1.0, 0.0]])
+
+        with pytest.raises(RuntimeError, match="corrupted chunks"):
+            sim.run_local(verbose=False)
+
+    def test_a_declared_path_with_its_rows_is_salvaged(self, tmp_path, crashing_palace):
+        crashing_palace["modes"] = 4
+        crashing_palace["tables"] = {
+            "mode-Z.csv": impedance_table_text(4),
+            "mode-V.csv": voltage_table_text(4),
+        }
+        sim = self._asking_for(tmp_path, 4)
+        sim.add_impedance_path("line", voltage=[[0.0, 0.0], [1.0, 0.0]])
+
+        with pytest.warns(UserWarning, match="exited abnormally"):
+            results = sim.run_local(verbose=False)
+
+        assert results.characteristic_impedance(index=1, mode=4) == 54.0
+
+    def test_a_path_whose_rows_stop_short_is_not_an_answer(
+        self, tmp_path, crashing_palace
+    ):
+        """Every declared index needs a row for every Mode asked for."""
+        crashing_palace["modes"] = 4
+        crashing_palace["tables"] = {
+            "mode-Z.csv": impedance_table_text(4) + impedance_table_text(2, index=2),
+            "mode-V.csv": voltage_table_text(4) + voltage_table_text(4, index=2),
+        }
+        sim = self._asking_for(tmp_path, 4)
+        sim.add_impedance_path("line", voltage=[[0.0, 0.0], [1.0, 0.0]])
+        sim.add_impedance_path("gap", voltage=[[0.0, 1.0], [1.0, 1.0]])
+
+        with pytest.raises(RuntimeError, match="corrupted chunks"):
+            sim.run_local(verbose=False)
+
+    def test_fields_asked_for_and_not_saved_are_not_an_answer(
+        self, tmp_path, crashing_palace
+    ):
+        crashing_palace["modes"] = 4
+        crashing_palace["files"] = ("paraview/boundarymode/Cycle000001/data.pvtu",)
+        sim = sim_at(tmp_path)
+        sim.set_boundary_mode(freq=10e9, num_modes=4, save=2)
+
+        with pytest.raises(RuntimeError, match="corrupted chunks"):
+            sim.run_local(verbose=False)
+
+    def test_saved_fields_complete_the_answer(self, tmp_path, crashing_palace):
+        crashing_palace["modes"] = 4
+        crashing_palace["files"] = (
+            "paraview/boundarymode/Cycle000001/data.pvtu",
+            "paraview/boundarymode/Cycle000002/data.pvtu",
+        )
+        sim = sim_at(tmp_path)
+        sim.set_boundary_mode(freq=10e9, num_modes=4, save=2)
+
+        with pytest.warns(UserWarning, match="exited abnormally"):
+            results = sim.run_local(verbose=False)
+
+        assert len(results.modes) == 4
 
     def test_salvage_can_be_turned_off(self, tmp_path, crashing_palace):
         """A caller who wants the raise back keeps it reachable."""
