@@ -21,7 +21,7 @@ import contextlib
 import io
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from types import ModuleType
 
 from gsim.common.optional import require_module
@@ -92,7 +92,7 @@ def import_simple_physics() -> ModuleType:
 
 
 @contextlib.contextmanager
-def devsim_output(verbose: bool) -> Iterator[None]:
+def devsim_output(verbose: bool) -> Generator[None]:
     """Stream DEVSIM's solver output when *verbose*, discard it otherwise.
 
     Args:

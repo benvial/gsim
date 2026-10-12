@@ -329,11 +329,33 @@ class TestStripsTooNarrowForTheMode:
         assert not [w for w in caught if "strip extent" in str(w.message)]
 
 
-def _material_index(name: str, wavelength_um: float) -> float:
-    """Index of a database material at one wavelength."""
-    from gsim.common.stack.materials import resolve_material_at_wavelength
+def _silicon_sellmeier():
+    """Silicon's Sellmeier model from the database, the slab's core material.
 
-    resolved = resolve_material_at_wavelength(name, wavelength_um)
+    The database silicon resolves to its Li (1980) model at these
+    wavelengths, 2e-3 below the Sellmeier index at 1.55 um; the slab is
+    built on the Sellmeier model, so its closed form has to read the same.
+    """
+    from gsim.common.stack.materials import MATERIALS_DB
+
+    return next(
+        model
+        for model in MATERIALS_DB["silicon"].dispersion_models
+        if model.type == "sellmeier"
+    )
+
+
+def _material_index(name: str, wavelength_um: float) -> float:
+    """Index of a database material at one wavelength, silicon on its Sellmeier."""
+    from gsim.common.stack.materials import (
+        MaterialProperties,
+        resolve_material_at_wavelength,
+    )
+
+    overrides = {
+        "silicon": MaterialProperties(dispersion_models=[_silicon_sellmeier()])
+    }
+    resolved = resolve_material_at_wavelength(name, wavelength_um, overrides=overrides)
     assert resolved is not None
     assert resolved.permittivity_scalar is not None
     return float(np.sqrt(resolved.permittivity_scalar))
@@ -382,21 +404,20 @@ def build_slab_study(output_dir):
     rib sees a uniform silicon layer in oxide, and its metallic side
     walls are what the TE slab Mode — uniform along them, its field
     normal to them — satisfies exactly. The doped silicon is given
-    silicon's own Sellmeier model in place of the demo's constant, and
-    the carriers are intrinsic, so nothing perturbs the slab. A Mode
+    silicon's own Sellmeier model in place of the demo's constant, the
+    undoped slab between them keeps that Sellmeier rather than the
+    database's Li (1980) model, so the core is one material, and the
+    carriers are intrinsic, so nothing perturbs the slab. A Mode
     uniform along the side walls peaks on them, which is the one thing
     the Window-containment check is switched off for here.
     """
-    from gsim.common.stack.materials import MATERIALS_DB, MaterialProperties
+    from gsim.common.stack.materials import MaterialProperties
 
     demo = build_demo()
     stack = demo.stack.model_copy(deep=True)
-    sellmeier = next(
-        model
-        for model in MATERIALS_DB["silicon"].dispersion_models
-        if model.type == "sellmeier"
-    )
-    for name in demo.device.doped_regions:
+    sellmeier = _silicon_sellmeier()
+    slab_material = stack.layers["slab90"].material
+    for name in (*demo.device.doped_regions, slab_material):
         stack.materials[name] = MaterialProperties(
             dispersion_models=[sellmeier]
         ).to_dict()

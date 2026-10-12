@@ -30,15 +30,16 @@ from gsim.common import Geometry, LayerStack
 from gsim.palace.base import PalaceSimMixin
 from gsim.palace.models import (
     BoundaryModeConfig,
+    BoundaryModeSolverConfig,
     ContactSpec,
     CrossSectionPlaneConfig,
     InterfaceSpec,
     MaterialConfig,
     MeshConfig,
-    NumericalConfig,
     RefinementConfig,
 )
 from gsim.palace.models.results import ValidationResult
+from gsim.palace.models.solver import warn_legacy_solver_setting
 
 if TYPE_CHECKING:
     from gsim.common.modes import Extent
@@ -118,7 +119,6 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     stack: LayerStack | None = None
 
     # Boundary mode config
-    boundary_mode: BoundaryModeConfig = Field(default_factory=BoundaryModeConfig)
     cross_section: CrossSectionPlaneConfig | None = None
     contact_specs: list[ContactSpec] = Field(default_factory=list)
     interface_specs: list[InterfaceSpec] = Field(default_factory=list)
@@ -127,13 +127,11 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     mode_paths: list[ModePath] = Field(default_factory=list)
 
     # Unused in boundary mode (kept for mixin compatibility)
-    driven: None = None
-    eigenmode: None = None
 
     # Mesh and solver config
     mesh_config: MeshConfig = Field(default_factory=MeshConfig.default)
     materials: dict[str, MaterialConfig] = Field(default_factory=dict)
-    numerical: NumericalConfig = Field(default_factory=NumericalConfig)
+    solver: BoundaryModeSolverConfig = Field(default_factory=BoundaryModeSolverConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     absorbing_boundary: bool = False
     #: Put a perfect-conductor condition on the outer wall of the meshed
@@ -155,6 +153,18 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
 
     # Cloud job state
     _job_id: str | None = PrivateAttr(default=None)
+
+    @property
+    def boundary_mode(self) -> BoundaryModeConfig:
+        """Deprecated alias for solver.boundary_mode, retaining the original type."""
+        warn_legacy_solver_setting("sim.boundary_mode", "sim.solver.boundary_mode")
+        return self.solver.boundary_mode
+
+    @boundary_mode.setter
+    def boundary_mode(self, value: BoundaryModeConfig | dict[str, Any]) -> None:
+        """Replace boundary_mode settings through their deprecated top-level name."""
+        warn_legacy_solver_setting("sim.boundary_mode", "sim.solver.boundary_mode")
+        self._set_problem_settings("boundary_mode", value)
 
     def set_boundary_mode(
         self,
@@ -178,7 +188,7 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             max_size: Eigensolver max subspace size.
             solver_type: Palace eigensolver type.
         """
-        self.boundary_mode = BoundaryModeConfig(
+        self.solver.boundary_mode = BoundaryModeConfig(
             freq=freq,
             num_modes=num_modes,
             save=save,
@@ -473,11 +483,12 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             text = self.read_results()
         except Exception:
             return None
-        num_modes = self.boundary_mode.num_modes
+        num_modes = self.solver.boundary_mode.num_modes
         if text is None or len(getattr(text, "modes", {})) < num_modes:
             return None
+        freq = self.solver.boundary_mode.freq
         warnings.warn(
-            f"Palace exited abnormally at f = {self.boundary_mode.freq:g} Hz but "
+            f"Palace exited abnormally at f = {freq:g} Hz but "
             f"its complete mode table was on disk, so the run's answer is used "
             f"({err}). Palace 0.17 is known to corrupt its heap on shutdown of "
             "a boundary-mode solve.",
@@ -487,7 +498,7 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
 
     def _run_context(self) -> str:
         """A boundary-mode solve is named by the frequency it ran at."""
-        return f"at f = {self.boundary_mode.freq:g} Hz"
+        return f"at f = {self.solver.boundary_mode.freq:g} Hz"
 
     def run_local(
         self, *, salvage: bool = True, remedy: str | None = None, **kwargs: Any

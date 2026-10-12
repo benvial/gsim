@@ -59,7 +59,7 @@ __all__ = [
     "resolve_palace_library_dir",
 ]
 
-_DEFAULT_BINARY_TAG = "0.17.0"
+_DEFAULT_BINARY_TAG = "0.18.0"
 _AUTO_DOWNLOAD_ENV = "PALACETOOLKIT_AUTO_DOWNLOAD_BINARY"
 _TAG_ENV = "PALACETOOLKIT_PALACE_CPU_TAG"
 _CACHE_ENV = "PALACETOOLKIT_RUNTIME_DIR"
@@ -478,6 +478,21 @@ _POSIX_SIGNALS = {
 }
 
 
+# Printed by Palace's ``palace`` launcher script when its MPI launcher (``mpirun``
+# unless ``--launcher`` is given) is not on PATH.
+_MPI_LAUNCHER_MISSING = "Could not locate MPI launcher"
+_FAILURE_OUTPUT_TAIL_LINES = 200
+
+
+def _captured_lines(*streams: object) -> list[str]:
+    """Split captured process output into lines, skipping empty streams."""
+    lines: list[str] = []
+    for stream in streams:
+        if isinstance(stream, str) and stream:
+            lines.extend(stream.splitlines())
+    return lines
+
+
 def _death_signal(returncode: int) -> int | None:
     """The signal a process died on, if its return code says it did.
 
@@ -539,7 +554,13 @@ def local_abort_report(
     not the model, and the fix is a different binary rather than a
     different problem. A plain nonzero exit is Palace refusing the run on
     its own terms, so that one is left to say why through its stderr
-    rather than blamed on the runtime.
+    rather than blamed on the runtime. One refusal is named outright:
+    the ``palace`` launcher script reporting that it found no ``mpirun``,
+    which the prebuilt runtime gsim installs does not ship.
+
+    The report ends with the last 200 lines of the captured output, when
+    there are any, so a run that was not streamed still shows where it
+    died.
 
     This reads a ``CalledProcessError`` and a local run directory, which
     is why it says ``local``: a run submitted to the cloud fails in its
@@ -578,7 +599,16 @@ def local_abort_report(
     ]:
         stderr_note = f" Its last stderr line: {lines[-1].strip()!r}."
 
-    if wrote_output:
+    output_lines = _captured_lines(err.output, err.stderr)
+    if any(_MPI_LAUNCHER_MISSING in line for line in output_lines):
+        diagnosis = (
+            "Its launcher script could not find `mpirun`. Install an MPI "
+            "runtime that provides it (for example `sudo apt install "
+            "openmpi-bin` on Ubuntu), or run with use_apptainer=True; the "
+            "prebuilt Palace runtime that gsim installs includes the MPI "
+            "libraries but not `mpirun`."
+        )
+    elif wrote_output:
         diagnosis = (
             f"It got far enough to write partial solver output (in "
             f"{output_dir}), so the runtime did start; the solve itself "
@@ -597,7 +627,11 @@ def local_abort_report(
         )
     way_out = "Point PALACE_BIN at a Palace whose runtime works here"
     way_out = f"{way_out}, or {remedy}." if remedy else f"{way_out}."
-    return (
+    report = (
         f"Palace aborted {during} with exit status {code}{signal_note}. "
         f"The binary that ran is {binary}. {diagnosis}{stderr_note} {way_out}"
     )
+    tail = "\n".join(output_lines[-_FAILURE_OUTPUT_TAIL_LINES:])
+    if tail.strip():
+        report += f"\n\nOutput (tail):\n{tail}"
+    return report

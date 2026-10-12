@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass, field
 from numbers import Integral
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import gmsh
 
@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         DrivenConfig,
         EigenmodeConfig,
         NumericalConfig,
+        SolverConfig,
     )
     from gsim.palace.models.cross_section import _LayerPairSpec
     from gsim.palace.models.pec import PECBlockConfig
@@ -165,6 +166,7 @@ class MeshResult:
     model_name: str = "palace"
     fmax: float = 100e9
     periodic_axis: str | None = None
+    periodic_translation: tuple[float, float, float] | None = None
 
 
 def _extract_native_boundarymode_rectangles(
@@ -1207,7 +1209,7 @@ def generate_mesh(
     simulation_type: str = "driven",
     driven_config: DrivenConfig | None = None,
     eigenmode_config: EigenmodeConfig | None = None,
-    numerical_config: NumericalConfig | None = None,
+    numerical_config: SolverConfig | NumericalConfig | None = None,
     boundary_mode_config: BoundaryModeConfig | None = None,
     cross_section: CrossSectionPlaneConfig | None = None,
     contact_specs: list[_LayerPairSpec] | None = None,
@@ -1258,7 +1260,8 @@ def generate_mesh(
         simulation_type: Type of simulation (driven, eigenmode or electrostatics)
         driven_config: Optional DrivenConfig for frequency sweep settings
         eigenmode_config: Optional EigenmodeConfig for eigenmode problems
-        numerical_config: Optional NumericalConfig for solver settings
+        numerical_config: Optional SolverConfig (or legacy NumericalConfig)
+            for solver settings
         boundary_mode_config: Optional BoundaryModeConfig for 2D mode problems
         cross_section: Explicit x/y cross-section plane for native BoundaryMode
         contact_specs: Named contact layer pairs whose shared interface curves
@@ -1310,8 +1313,8 @@ def generate_mesh(
             "refinement_boxes apply to native-2D cross-section meshes only."
         )
 
-    # Initialize gmsh
-    gmsh.initialize()
+    # The mesh must depend only on gsim's settings, not on the user's Gmsh options file
+    gmsh.initialize(readConfigFiles=False)
     gmsh.option.setNumber("General.Verbosity", verbosity)
     apply_mesher_options(
         algorithm_3d=algorithm_3d, threads=threads, surface_threads=surface_threads
@@ -1499,11 +1502,21 @@ def generate_mesh(
             )
 
         periodic_info: dict[str, object] | None = None
+        periodic_translation: tuple[float, float, float] | None = None
 
         # Add geometry
         logger.info("Adding metals...")
         metal_tags = add_metals(
-            kernel, geometry, stack, planar_conductors, merge_via_distance
+            kernel,
+            geometry,
+            stack,
+            planar_conductors,
+            merge_via_distance,
+            curve_fit_mode=curve_fit_mode,
+            curve_fit_layers=curve_fit_layers,
+            curve_fit_tolerance_um=curve_fit_tolerance_um,
+            curve_fit_min_points=curve_fit_min_points,
+            curve_fit_corner_angle_deg=curve_fit_corner_angle_deg,
         )
 
         # Add PEC blocks if configured
@@ -1585,6 +1598,9 @@ def generate_mesh(
 
         if periodic_axis in {"x", "y"}:
             periodic_info = gmsh_utils.set_periodic_mesh(pg_map, periodic_axis)
+            translation = periodic_info.get("translation")
+            if isinstance(translation, tuple):
+                periodic_translation = cast(tuple[float, float, float], translation)
 
         # Assign physical groups
         logger.info("Assigning physical groups...")
@@ -1736,6 +1752,7 @@ def generate_mesh(
                 boundary_mode_config,
                 absorbing_boundary,
                 periodic_axis,
+                periodic_translation=periodic_translation,
             )
 
     finally:
@@ -1754,6 +1771,7 @@ def generate_mesh(
         model_name=model_name,
         fmax=fmax,
         periodic_axis=periodic_axis,
+        periodic_translation=periodic_translation,
     )
 
     return result

@@ -23,6 +23,12 @@ from pathlib import Path
 import gdsfactory as gf
 import yaml
 
+from gsim.common.stack.emx import (
+    EmxImportWarning,
+    load_emx_proc,
+    load_portable_stackup_json,
+    parse_emx_proc,
+)
 from gsim.common.stack.extractor import (
     Layer,
     LayerStack,
@@ -174,6 +180,7 @@ __all__ = [
     "MATERIALS_DB",
     "NI_SI_300K_CM3",
     "DispersionModel",
+    "EmxImportWarning",
     "Layer",
     "LayerStack",
     "LorentzianTerm",
@@ -192,11 +199,16 @@ __all__ = [
     "get_material_properties",
     "get_stack",
     "junction_capacitance_per_area",
+    "junction_epsilon_profile",
+    "load_emx_proc",
     "load_overlay",
+    "load_portable_stackup_json",
     "load_stack_yaml",
     "make_doped_material",
     "make_doped_materials",
     "merge_overlay",
+    "optical_params",
+    "parse_emx_proc",
     "parse_layer_stack",
     "plot_stack",
     "print_stack",
