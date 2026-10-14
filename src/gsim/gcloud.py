@@ -812,6 +812,8 @@ def _print_status_table(
 
     def _progress(jid: str, job: Any) -> tuple[int, str]:
         percent, phase = _lifecycle_progress(jid, job)
+        # If the service reports a lower state than before (out of order or
+        # unknown), keep the highest value shown; the label still follows it.
         if shown_progress is not None:
             percent = max(percent, shown_progress.get(jid, 0))
             shown_progress[jid] = percent
