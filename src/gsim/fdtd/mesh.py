@@ -56,6 +56,9 @@ def _force_lf_line_endings(path: Path) -> None:
 
     Gmsh writes ASCII meshes in text mode, so they come out CRLF on Windows.
     The FDTD solver's MSH reader only accepts LF.
+
+    ASCII only: this relies on ``generate_mesh`` setting ``Mesh.Binary = 0``.
+    On a binary mesh it would corrupt any data bytes that happen to be CRLF.
     """
     content = path.read_bytes()
     if b"\r\n" in content:
