@@ -20,6 +20,7 @@ from gsim.common.materials.snapshots import (
     MaterialResolutionError,
     MaterialSnapshot,
     WavelengthOutOfRangeError,
+    evaluate_material_card,
     resolve_material_snapshot,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "MaterialResolutionError",
     "MaterialSnapshot",
     "WavelengthOutOfRangeError",
+    "evaluate_material_card",
     "find_material_card",
     "get_material_card",
     "get_project_material_cards",

@@ -299,6 +299,29 @@ def _evaluate_permittivity(
     )
 
 
+def evaluate_material_card(
+    card: MaterialCard,
+    wavelength_um: float,
+    material_name: str | None = None,
+) -> tuple[float, float]:
+    """Evaluate a card's refractive index and extinction at one wavelength."""
+    material_name = card.name if material_name is None else material_name
+    refractive_index, extinction_coefficient = _evaluate_permittivity(
+        card, wavelength_um
+    )
+    if not isfinite(refractive_index) or refractive_index <= 0:
+        raise MaterialModelError(
+            f"Material {material_name!r} produced invalid refractive index "
+            f"{refractive_index}."
+        )
+    if not isfinite(extinction_coefficient) or extinction_coefficient < 0:
+        raise MaterialModelError(
+            f"Material {material_name!r} produced invalid extinction coefficient "
+            f"{extinction_coefficient}."
+        )
+    return refractive_index, extinction_coefficient
+
+
 def resolve_material_snapshot(
     material_name: str,
     wavelength_um: float,
@@ -318,19 +341,9 @@ def resolve_material_snapshot(
             f"Material {material_name!r} resolves to {type(card).__name__}, "
             "not MaterialCard."
         )
-    refractive_index, extinction_coefficient = _evaluate_permittivity(
-        card, wavelength_um
+    refractive_index, extinction_coefficient = evaluate_material_card(
+        card, wavelength_um, material_name
     )
-    if not isfinite(refractive_index) or refractive_index <= 0:
-        raise MaterialModelError(
-            f"Material {material_name!r} produced invalid refractive index "
-            f"{refractive_index}."
-        )
-    if not isfinite(extinction_coefficient) or extinction_coefficient < 0:
-        raise MaterialModelError(
-            f"Material {material_name!r} produced invalid extinction coefficient "
-            f"{extinction_coefficient}."
-        )
     return MaterialSnapshot(
         material_name=material_name,
         wavelength_um=float(wavelength_um),
@@ -347,5 +360,6 @@ __all__ = [
     "MaterialResolutionError",
     "MaterialSnapshot",
     "WavelengthOutOfRangeError",
+    "evaluate_material_card",
     "resolve_material_snapshot",
 ]

@@ -54,6 +54,28 @@ hole, or edge topology, meshing safely falls back to vertical slices bounded by
 Use `write(path)` to generate `mesh.msh` and `config.json` without submitting.
 The original flat constructor keywords remain accepted for compatibility.
 
+## Material dispersion
+
+Each material reaches the solver as its PDK material card describes it over the
+source band, not only at the centre wavelength:
+
+| Material card | `config.json` material entry |
+| --- | --- |
+| Constant, lossless | `refractive_index` |
+| Sellmeier, lossless | `dispersion.sellmeier`, with `wavelength_range_nm` |
+| Anything else (tables, equations, loss) | `dispersion.table` of `n` and `k` |
+
+Tables are sampled over the source band plus a 10 % margin on each side. The
+margin is dropped where it would leave the card's validity range, and a card
+that does not cover the band itself raises `FDTDConfigError`. A
+continuous-wave or zero-span source needs only the index at its wavelength, so
+every material is written as a constant there; a lossy card then raises, since
+the solver encodes loss only in a dispersion table.
+
+`sim.materials(dispersion=False)` sends each material's index at the source
+wavelength instead and warns for every card that it flattens.
+`sim.materials(overrides={"si": 3.47})` always gives a constant material.
+
 Domain padding is specified in micrometers, using `padding` as a shared fallback
 and `padding_x`, `padding_y`, or `padding_z` to override individual axes. Each
 accepts a nonnegative scalar (equal padding on both sides) or a

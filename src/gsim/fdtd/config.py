@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, Self
 
+import numpy as np
+from pdk_schema import Sellmeier
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from gsim.common.materials import MaterialSnapshot
+from gsim.common.materials import (
+    MaterialResolutionError,
+    MaterialSnapshot,
+    WavelengthOutOfRangeError,
+    evaluate_material_card,
+)
 from gsim.fdtd.models import FDTDConfigError, MeshManifest
 
 
@@ -17,10 +25,86 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-class MaterialConfig(_StrictModel):
-    """Scalar real optical material supported by GDSFactory FDTD schema v1."""
+class IndexTableConfig(_StrictModel):
+    """Tabulated complex refractive index, with wavelengths in nanometers."""
 
-    refractive_index: float = Field(gt=0)
+    wavelength_nm: list[float] = Field(min_length=2)
+    n: list[float] = Field(min_length=2)
+    k: list[float] = Field(min_length=2)
+
+    @model_validator(mode="after")
+    def validate_samples(self) -> Self:
+        """Require physical samples on one increasing wavelength grid."""
+        if not len(self.wavelength_nm) == len(self.n) == len(self.k):
+            raise ValueError("wavelength_nm, n, and k must have equal lengths")
+        if self.wavelength_nm[0] <= 0 or any(
+            right <= left
+            for left, right in zip(
+                self.wavelength_nm, self.wavelength_nm[1:], strict=False
+            )
+        ):
+            raise ValueError("table wavelengths must be positive and increasing")
+        if any(value <= 0 for value in self.n):
+            raise ValueError("table refractive indices must be positive")
+        if any(value < 0 for value in self.k):
+            raise ValueError("table extinction coefficients cannot be negative")
+        return self
+
+
+class SellmeierConfig(_StrictModel):
+    """Sellmeier oscillator strengths and squared pole wavelengths in um^2."""
+
+    b: list[float] = Field(min_length=1)
+    c_um2: list[float] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_terms(self) -> Self:
+        """Require one pole position for every oscillator strength."""
+        if len(self.b) != len(self.c_um2):
+            raise ValueError("Sellmeier b and c_um2 must have equal lengths")
+        return self
+
+
+class DispersionConfig(_StrictModel):
+    """Wavelength-dependent material model accepted by GDSFactory FDTD."""
+
+    wavelength_range_nm: tuple[float, float] | None = None
+    table: IndexTableConfig | None = None
+    sellmeier: SellmeierConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> Self:
+        """Require exactly one model, and a fit range for closed forms."""
+        if (self.table is None) == (self.sellmeier is None):
+            raise ValueError(
+                "dispersion must contain exactly one of table or sellmeier"
+            )
+        if self.table is not None:
+            if self.wavelength_range_nm is not None:
+                raise ValueError("table dispersion cannot set wavelength_range_nm")
+            return self
+        if self.wavelength_range_nm is None:
+            raise ValueError("sellmeier dispersion needs wavelength_range_nm")
+        lower, upper = self.wavelength_range_nm
+        if not 0 < lower < upper:
+            raise ValueError("wavelength_range_nm must satisfy 0 < lower < upper")
+        return self
+
+
+class MaterialConfig(_StrictModel):
+    """Constant or dispersive optical material for GDSFactory FDTD."""
+
+    refractive_index: float | None = Field(default=None, gt=0)
+    dispersion: DispersionConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> Self:
+        """Require exactly one constant or dispersive representation."""
+        if (self.refractive_index is None) == (self.dispersion is None):
+            raise ValueError(
+                "material needs exactly one of refractive_index or dispersion"
+            )
+        return self
 
 
 class RegionConfig(_StrictModel):
@@ -252,16 +336,133 @@ class FDTDConfig(_StrictModel):
         return self
 
 
-def _material_config(snapshot: MaterialSnapshot) -> MaterialConfig:
-    """Convert one lossless scalar snapshot to the GDSFactory FDTD schema."""
+# Samples written for a tabulated card, spread over the band plus margin.
+_DISPERSION_SAMPLES = 21
+# Fraction of the band added on each side so the fit holds at the band edges.
+_BAND_MARGIN = 0.1
+
+_Samples = list[tuple[float, float, float]]
+
+
+def _sample_card(
+    snapshot: MaterialSnapshot,
+    band_nm: tuple[float, float],
+) -> tuple[tuple[float, float], _Samples]:
+    """Sample (wavelength_nm, n, k) over the band, with margin when valid."""
+    lower, upper = band_nm
+    margin = _BAND_MARGIN * (upper - lower)
+    padded = (max(lower - margin, lower / 2), upper + margin)
+    error: MaterialResolutionError | None = None
+    for fit_lower, fit_upper in (padded, band_nm):
+        try:
+            samples = [
+                (
+                    float(wavelength_nm),
+                    *evaluate_material_card(
+                        snapshot.card, wavelength_nm / 1000, snapshot.material_name
+                    ),
+                )
+                for wavelength_nm in np.linspace(
+                    fit_lower, fit_upper, _DISPERSION_SAMPLES
+                )
+            ]
+        except WavelengthOutOfRangeError as out_of_range:
+            error = out_of_range
+            continue
+        except MaterialResolutionError as model_error:
+            raise FDTDConfigError(str(model_error)) from model_error
+        return (fit_lower, fit_upper), samples
+    raise FDTDConfigError(
+        f"Material {snapshot.material_name!r} cannot be evaluated over the "
+        f"source band {lower:g} to {upper:g} nm: {error}"
+    ) from error
+
+
+def _permittivity_variation(snapshot: MaterialSnapshot, samples: _Samples) -> float:
+    """Return the largest relative permittivity change from the centre value."""
+    center = complex(snapshot.refractive_index, snapshot.extinction_coefficient) ** 2
+    return max(abs(complex(n, k) ** 2 - center) for _, n, k in samples) / abs(center)
+
+
+def _lossless_scalar(snapshot: MaterialSnapshot) -> MaterialConfig:
+    """Return the centre-wavelength index of a lossless material."""
     if snapshot.extinction_coefficient != 0:
         raise FDTDConfigError(
             f"Material {snapshot.material_name!r} has extinction coefficient "
-            f"{snapshot.extinction_coefficient}; GDSFactory FDTD schema v1 "
-            "supports only "
-            "lossless real refractive indices."
+            f"{snapshot.extinction_coefficient} at the source wavelength; "
+            "GDSFactory FDTD encodes loss only as a dispersion table, which "
+            "needs a pulsed source with a nonzero wavelength span."
         )
     return MaterialConfig(refractive_index=snapshot.refractive_index)
+
+
+def _material_config(
+    snapshot: MaterialSnapshot,
+    band_nm: tuple[float, float] | None,
+    dispersion: bool = True,
+) -> MaterialConfig:
+    """Convert a material card to a constant or dispersive FDTD material.
+
+    A single-wavelength run needs only the source-wavelength index. Otherwise
+    the card is sampled over the source band: a constant lossless card stays a
+    scalar index, a lossless Sellmeier card is passed through unchanged, and
+    any other card is written as an n, k table.
+    """
+    if band_nm is None:
+        return _lossless_scalar(snapshot)
+    if not dispersion:
+        config = _lossless_scalar(snapshot)
+        try:
+            _, samples = _sample_card(snapshot, band_nm)
+        except FDTDConfigError:
+            samples = None
+        variation = (
+            None if samples is None else _permittivity_variation(snapshot, samples)
+        )
+        if variation != 0:
+            change = (
+                "an unknown amount"
+                if variation is None
+                else f"{100 * variation:.3g} % in permittivity"
+            )
+            warnings.warn(
+                f"Material {snapshot.material_name!r} varies by {change} over "
+                f"the source band, but dispersion=False sends only its index "
+                f"{snapshot.refractive_index:.6g} at the source wavelength.",
+                UserWarning,
+                stacklevel=5,
+            )
+        return config
+    fit_band, samples = _sample_card(snapshot, band_nm)
+    lossless = all(k == 0 for _, _, k in samples)
+    if lossless and _permittivity_variation(snapshot, samples) == 0:
+        return MaterialConfig(refractive_index=snapshot.refractive_index)
+    optical = snapshot.card.optical
+    model = None if optical is None else optical.permittivity
+    if (
+        lossless
+        and isinstance(model, Sellmeier)
+        and model.offset == 0
+        and model.conductivity is None
+    ):
+        return MaterialConfig(
+            dispersion=DispersionConfig(
+                wavelength_range_nm=fit_band,
+                sellmeier=SellmeierConfig(
+                    b=[term.b for term in model.terms],
+                    c_um2=[term.c_um**2 for term in model.terms],
+                ),
+            )
+        )
+    return MaterialConfig(
+        dispersion=DispersionConfig(
+            table=IndexTableConfig(
+                wavelength_nm=[wavelength for wavelength, _, _ in samples],
+                n=[n for _, n, _ in samples],
+                k=[k for _, _, k in samples],
+            )
+        )
+    )
 
 
 def build_fdtd_config(
@@ -281,18 +482,41 @@ def build_fdtd_config(
     excitation: ExcitationConfig | None = None,
     gaussian_beam: GaussianBeamConfig | None = None,
     monitors: list[PlaneMonitorConfig] | None = None,
+    dispersion: bool = True,
 ) -> FDTDConfig:
-    """Build and cross-validate a GDSFactory FDTD config from a mesh manifest."""
+    """Build and cross-validate a GDSFactory FDTD config from a mesh manifest.
+
+    With ``dispersion`` (the default), every material whose card varies over
+    the source band is written as a dispersive model. Without it, each
+    material keeps its source-wavelength index, with a warning for every card
+    that this flattens.
+    """
     if background_material not in material_snapshots:
         raise FDTDConfigError(
             f"Background material {background_material!r} has no snapshot."
         )
+    if excitation is not None:
+        center_wavelength_nm = excitation.center_wavelength
+        wavelength_halfspan_nm = excitation.wavelength_halfspan
+    single_wavelength = wavelength_halfspan_nm == 0 or (
+        excitation is not None and excitation.waveform == "continuous_wave"
+    )
+    band_nm = (
+        None
+        if single_wavelength
+        else (
+            center_wavelength_nm - wavelength_halfspan_nm,
+            center_wavelength_nm + wavelength_halfspan_nm,
+        )
+    )
     materials = {
-        name: _material_config(snapshot)
+        name: _material_config(snapshot, band_nm, dispersion)
         for name, snapshot in material_snapshots.items()
     }
     return FDTDConfig(
-        background_refractive_index=materials[background_material].refractive_index,
+        background_refractive_index=material_snapshots[
+            background_material
+        ].refractive_index,
         materials=materials,
         geometry=GeometryConfig(
             volumes={
@@ -344,6 +568,7 @@ def build_fdtd_config(
 
 __all__ = [
     "DipoleConfig",
+    "DispersionConfig",
     "ExcitationConfig",
     "FDTDConfig",
     "FiberModeConfig",
@@ -351,11 +576,13 @@ __all__ = [
     "GeometryConfig",
     "GridConfig",
     "HeatmapConfig",
+    "IndexTableConfig",
     "LineCurrentConfig",
     "MaterialConfig",
     "PlaneMonitorConfig",
     "PortConfig",
     "RegionConfig",
     "RunConfig",
+    "SellmeierConfig",
     "build_fdtd_config",
 ]
