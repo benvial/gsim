@@ -299,6 +299,23 @@ def _evaluate_permittivity(
     )
 
 
+def tabulated_wavelengths_um(card: MaterialCard) -> list[float]:
+    """Return the sorted wavelengths of a card's tabulated n and k data."""
+    if card.optical is None or not isinstance(card.optical.permittivity, Index):
+        return []
+    model = card.optical.permittivity
+    wavelengths: set[float] = set()
+    for value in (model.n, model.k):
+        if not isinstance(value, TabulatedValue):
+            continue
+        coordinate = value.data.coords.get("wavelength")
+        if coordinate is not None:
+            wavelengths.update(
+                _wavelength_to_um(item, coordinate.unit) for item in coordinate.values
+            )
+    return sorted(wavelengths)
+
+
 def evaluate_material_card(
     card: MaterialCard,
     wavelength_um: float,
@@ -362,4 +379,5 @@ __all__ = [
     "WavelengthOutOfRangeError",
     "evaluate_material_card",
     "resolve_material_snapshot",
+    "tabulated_wavelengths_um",
 ]

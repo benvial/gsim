@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from gsim.common.materials import (
     MaterialResolutionError,
     MaterialSnapshot,
-    WavelengthOutOfRangeError,
     evaluate_material_card,
+    tabulated_wavelengths_um,
 )
 from gsim.fdtd.models import FDTDConfigError, MeshManifest
 
@@ -336,7 +336,8 @@ class FDTDConfig(_StrictModel):
         return self
 
 
-# Samples written for a tabulated card, spread over the band plus margin.
+# Evenly spaced samples written for a non-Sellmeier card; a tabulated card's
+# own knots inside the band are added to them.
 _DISPERSION_SAMPLES = 21
 # Fraction of the band added on each side so the fit holds at the band edges.
 _BAND_MARGIN = 0.1
@@ -344,38 +345,62 @@ _BAND_MARGIN = 0.1
 _Samples = list[tuple[float, float, float]]
 
 
+def _evaluate_nm(
+    snapshot: MaterialSnapshot, wavelength_nm: float
+) -> tuple[float, float]:
+    """Evaluate a snapshot's card at a wavelength in nanometers."""
+    return evaluate_material_card(
+        snapshot.card, wavelength_nm / 1000, snapshot.material_name
+    )
+
+
+def _fit_band(
+    snapshot: MaterialSnapshot,
+    band_nm: tuple[float, float],
+) -> tuple[float, float]:
+    """Widen each side of the band by the margin where the card allows it."""
+    lower, upper = band_nm
+    margin = _BAND_MARGIN * (upper - lower)
+    edges = []
+    for edge, padded in (
+        (lower, max(lower - margin, lower / 2)),
+        (upper, upper + margin),
+    ):
+        try:
+            _evaluate_nm(snapshot, padded)
+        except MaterialResolutionError:
+            edges.append(edge)
+        else:
+            edges.append(padded)
+    return edges[0], edges[1]
+
+
 def _sample_card(
     snapshot: MaterialSnapshot,
     band_nm: tuple[float, float],
 ) -> tuple[tuple[float, float], _Samples]:
-    """Sample (wavelength_nm, n, k) over the band, with margin when valid."""
-    lower, upper = band_nm
-    margin = _BAND_MARGIN * (upper - lower)
-    padded = (max(lower - margin, lower / 2), upper + margin)
-    error: MaterialResolutionError | None = None
-    for fit_lower, fit_upper in (padded, band_nm):
-        try:
-            samples = [
-                (
-                    float(wavelength_nm),
-                    *evaluate_material_card(
-                        snapshot.card, wavelength_nm / 1000, snapshot.material_name
-                    ),
-                )
-                for wavelength_nm in np.linspace(
-                    fit_lower, fit_upper, _DISPERSION_SAMPLES
-                )
-            ]
-        except WavelengthOutOfRangeError as out_of_range:
-            error = out_of_range
-            continue
-        except MaterialResolutionError as model_error:
-            raise FDTDConfigError(str(model_error)) from model_error
-        return (fit_lower, fit_upper), samples
-    raise FDTDConfigError(
-        f"Material {snapshot.material_name!r} cannot be evaluated over the "
-        f"source band {lower:g} to {upper:g} nm: {error}"
-    ) from error
+    """Sample (wavelength_nm, n, k) over the band and its margins."""
+    fit_lower, fit_upper = _fit_band(snapshot, band_nm)
+    wavelengths_nm = {
+        round(float(wavelength), 6)
+        for wavelength in np.linspace(fit_lower, fit_upper, _DISPERSION_SAMPLES)
+    }
+    wavelengths_nm.update(
+        round(1000 * wavelength, 6)
+        for wavelength in tabulated_wavelengths_um(snapshot.card)
+        if fit_lower < 1000 * wavelength < fit_upper
+    )
+    try:
+        samples = [
+            (wavelength, *_evaluate_nm(snapshot, wavelength))
+            for wavelength in sorted(wavelengths_nm)
+        ]
+    except MaterialResolutionError as error:
+        raise FDTDConfigError(
+            f"Material {snapshot.material_name!r} cannot be evaluated over the "
+            f"source band {band_nm[0]:g} to {band_nm[1]:g} nm: {error}"
+        ) from error
+    return (fit_lower, fit_upper), samples
 
 
 def _permittivity_variation(snapshot: MaterialSnapshot, samples: _Samples) -> float:
@@ -384,55 +409,41 @@ def _permittivity_variation(snapshot: MaterialSnapshot, samples: _Samples) -> fl
     return max(abs(complex(n, k) ** 2 - center) for _, n, k in samples) / abs(center)
 
 
-def _lossless_scalar(snapshot: MaterialSnapshot) -> MaterialConfig:
-    """Return the centre-wavelength index of a lossless material."""
+def _lossless_scalar(snapshot: MaterialSnapshot, remedy: str) -> MaterialConfig:
+    """Return the source-wavelength index of a lossless material."""
     if snapshot.extinction_coefficient != 0:
         raise FDTDConfigError(
             f"Material {snapshot.material_name!r} has extinction coefficient "
             f"{snapshot.extinction_coefficient} at the source wavelength; "
-            "GDSFactory FDTD encodes loss only as a dispersion table, which "
-            "needs a pulsed source with a nonzero wavelength span."
+            f"GDSFactory FDTD encodes loss only in a dispersion table, {remedy}."
         )
     return MaterialConfig(refractive_index=snapshot.refractive_index)
 
 
-def _material_config(
+def _flattened_change(
     snapshot: MaterialSnapshot,
-    band_nm: tuple[float, float] | None,
-    dispersion: bool = True,
-) -> MaterialConfig:
-    """Convert a material card to a constant or dispersive FDTD material.
+    band_nm: tuple[float, float],
+) -> str | None:
+    """Describe how much a constant index misrepresents a card over the band."""
+    try:
+        _, samples = _sample_card(snapshot, band_nm)
+    except FDTDConfigError:
+        return "not evaluable over the whole band"
+    variation = _permittivity_variation(snapshot, samples)
+    if variation == 0:
+        return None
+    return f"{100 * variation:.2g} % permittivity change"
 
-    A single-wavelength run needs only the source-wavelength index. Otherwise
-    the card is sampled over the source band: a constant lossless card stays a
-    scalar index, a lossless Sellmeier card is passed through unchanged, and
-    any other card is written as an n, k table.
+
+def _dispersive_config(
+    snapshot: MaterialSnapshot,
+    band_nm: tuple[float, float],
+) -> MaterialConfig:
+    """Write a card as a Sellmeier model, an n, k table, or a constant.
+
+    A constant lossless card stays a scalar index, a lossless Sellmeier card is
+    passed through unchanged, and any other card is written as a table.
     """
-    if band_nm is None:
-        return _lossless_scalar(snapshot)
-    if not dispersion:
-        config = _lossless_scalar(snapshot)
-        try:
-            _, samples = _sample_card(snapshot, band_nm)
-        except FDTDConfigError:
-            samples = None
-        variation = (
-            None if samples is None else _permittivity_variation(snapshot, samples)
-        )
-        if variation != 0:
-            change = (
-                "an unknown amount"
-                if variation is None
-                else f"{100 * variation:.3g} % in permittivity"
-            )
-            warnings.warn(
-                f"Material {snapshot.material_name!r} varies by {change} over "
-                f"the source band, but dispersion=False sends only its index "
-                f"{snapshot.refractive_index:.6g} at the source wavelength.",
-                UserWarning,
-                stacklevel=5,
-            )
-        return config
     fit_band, samples = _sample_card(snapshot, band_nm)
     lossless = all(k == 0 for _, _, k in samples)
     if lossless and _permittivity_variation(snapshot, samples) == 0:
@@ -465,6 +476,46 @@ def _material_config(
     )
 
 
+def _material_configs(
+    material_snapshots: Mapping[str, MaterialSnapshot],
+    band_nm: tuple[float, float] | None,
+    dispersion: bool,
+) -> dict[str, MaterialConfig]:
+    """Convert every material, warning once about cards made constant."""
+    if band_nm is None:
+        remedy = "which needs a pulsed source with a nonzero wavelength span"
+        return {
+            name: _lossless_scalar(snapshot, remedy)
+            for name, snapshot in material_snapshots.items()
+        }
+    if dispersion:
+        return {
+            name: _dispersive_config(snapshot, band_nm)
+            for name, snapshot in material_snapshots.items()
+        }
+    remedy = "which materials(dispersion=False), the default, does not write"
+    materials = {
+        name: _lossless_scalar(snapshot, remedy)
+        for name, snapshot in material_snapshots.items()
+    }
+    flattened = {
+        name: change
+        for name, snapshot in material_snapshots.items()
+        if (change := _flattened_change(snapshot, band_nm)) is not None
+    }
+    if flattened:
+        details = ", ".join(f"{name} ({change})" for name, change in flattened.items())
+        warnings.warn(
+            "Material dispersion is not sent to GDSFactory FDTD; these materials "
+            "use their index at the source wavelength across the "
+            f"{band_nm[0]:g} to {band_nm[1]:g} nm band: {details}. "
+            "materials(dispersion=True) sends dispersive models instead.",
+            UserWarning,
+            stacklevel=5,
+        )
+    return materials
+
+
 def build_fdtd_config(
     manifest: MeshManifest,
     material_snapshots: Mapping[str, MaterialSnapshot],
@@ -482,14 +533,14 @@ def build_fdtd_config(
     excitation: ExcitationConfig | None = None,
     gaussian_beam: GaussianBeamConfig | None = None,
     monitors: list[PlaneMonitorConfig] | None = None,
-    dispersion: bool = True,
+    dispersion: bool = False,
 ) -> FDTDConfig:
     """Build and cross-validate a GDSFactory FDTD config from a mesh manifest.
 
-    With ``dispersion`` (the default), every material whose card varies over
-    the source band is written as a dispersive model. Without it, each
-    material keeps its source-wavelength index, with a warning for every card
-    that this flattens.
+    By default each material is written as its index at the source
+    wavelength, with one warning naming every card that varies over the
+    source band. With ``dispersion``, such cards are written as dispersive
+    models instead.
     """
     if background_material not in material_snapshots:
         raise FDTDConfigError(
@@ -509,10 +560,7 @@ def build_fdtd_config(
             center_wavelength_nm + wavelength_halfspan_nm,
         )
     )
-    materials = {
-        name: _material_config(snapshot, band_nm, dispersion)
-        for name, snapshot in material_snapshots.items()
-    }
+    materials = _material_configs(material_snapshots, band_nm, dispersion)
     return FDTDConfig(
         background_refractive_index=material_snapshots[
             background_material

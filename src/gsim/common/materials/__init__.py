@@ -22,6 +22,7 @@ from gsim.common.materials.snapshots import (
     WavelengthOutOfRangeError,
     evaluate_material_card,
     resolve_material_snapshot,
+    tabulated_wavelengths_um,
 )
 
 __all__ = [
@@ -42,4 +43,5 @@ __all__ = [
     "get_material_card",
     "get_project_material_cards",
     "resolve_material_snapshot",
+    "tabulated_wavelengths_um",
 ]

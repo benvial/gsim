@@ -5,7 +5,15 @@ from __future__ import annotations
 import warnings
 
 import pytest
-from pdk_schema import Index, ScalarValue, Sellmeier, SellmeierTerm
+from pdk_schema import (
+    Coord,
+    Index,
+    ScalarValue,
+    Sellmeier,
+    SellmeierTerm,
+    TableData,
+    TabulatedValue,
+)
 from pydantic import ValidationError
 
 from gsim.common.materials import (
@@ -115,9 +123,9 @@ def _sellmeier(material: MaterialConfig) -> SellmeierConfig:
     return sellmeier
 
 
-def _constant_card(n: float, k: float | None = None):
+def _constant_card(n: float, k: float | None = None, *, name: str = "Si"):
     return material_card(
-        name="Si",
+        name=name,
         temperature_ref=None,
         permittivity=Index(
             validity=None,
@@ -201,38 +209,87 @@ def test_constant_cards_and_single_wavelength_runs_stay_scalar() -> None:
     assert config.materials["SiO2"].refractive_index == pytest.approx(1.4440236217)
 
 
-def test_lossy_cards_need_a_band() -> None:
+def test_lossy_cards_need_a_band_and_dispersion() -> None:
     lossy = _silica_with(_constant_card(3.47, 0.01))
 
     table = _table(_config(lossy).materials["Si"])
     assert set(table.n) == {3.47}
     assert set(table.k) == {0.01}
 
-    with pytest.raises(FDTDConfigError, match=r"extinction coefficient 0\.01"):
+    with pytest.raises(FDTDConfigError, match="needs a pulsed source"):
         _config(lossy, wavelength_halfspan_nm=0)
+    with pytest.raises(FDTDConfigError, match=r"dispersion=False\), the default"):
+        _config(lossy, dispersion=False)
+
+
+def test_table_samples_include_the_card_knots_inside_the_band() -> None:
+    # A 3 nm wide absorption line between two evenly spaced samples.
+    knots_um = [1.4, 1.553, 1.5545, 1.556, 1.7]
+    absorbing = material_card(
+        name="Si",
+        temperature_ref=None,
+        permittivity=Index(
+            validity=None,
+            variation=None,
+            conductivity=None,
+            n=ScalarValue(unit="", value=3.47),
+            k=TabulatedValue(
+                unit="",
+                data=TableData(
+                    dims=("wavelength",),
+                    coords={"wavelength": Coord(values=knots_um, unit="um")},
+                    values=[0.0, 0.0, 0.05, 0.0, 0.0],
+                    attrs={},
+                    interp="linear",
+                ),
+            ),
+        ),
+    )
+
+    table = _table(_config(_silica_with(absorbing)).materials["Si"])
+
+    assert {1553.0, 1554.5, 1556.0} <= set(table.wavelength_nm)
+    assert max(table.k) == pytest.approx(0.05)
+    assert 1400.0 not in table.wavelength_nm
 
 
 def test_card_validity_must_cover_the_source_band() -> None:
-    # The margin is dropped when it would leave the card's validity.
+    # Each side keeps its margin only while it stays inside the card's validity.
     config = _config(_silica_with(_narrow_sellmeier_card(1.5, 1.6)))
     assert _dispersion(config.materials["Si"]).wavelength_range_nm == (1500, 1600)
+    config = _config(_silica_with(_narrow_sellmeier_card(1.5, 1.65)))
+    assert _dispersion(config.materials["Si"]).wavelength_range_nm == (
+        1500,
+        pytest.approx(1610),
+    )
 
     with pytest.raises(FDTDConfigError, match="source band 1500 to 1600 nm"):
         _config(_silica_with(_narrow_sellmeier_card(1.52, 1.6)))
 
 
-def test_disabled_dispersion_warns_for_each_flattened_card() -> None:
-    with pytest.warns(UserWarning, match="varies by") as caught:
+def test_constant_indices_warn_once_about_flattened_cards() -> None:
+    with pytest.warns(UserWarning, match="dispersion is not sent") as caught:
         config = _config(dispersion=False)
-    assert {str(warning.message).split("'")[1] for warning in caught} == {
-        "Si",
-        "SiO2",
-    }
+    assert len(caught) == 1
+    message = str(caught[0].message)
+    assert "Si (0.3" in message
+    assert "SiO2 (0.1" in message
     assert config.materials["Si"].refractive_index == pytest.approx(3.4777, abs=1e-4)
+    assert config.materials["SiO2"].refractive_index == pytest.approx(1.4440236217)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        _config(_silica_with(_constant_card(3.47)))
+        constants = {
+            "Si": _constant_card(3.47),
+            "SiO2": _constant_card(1.444, name="SiO2"),
+        }
+        _config(
+            {
+                name: resolve_material_snapshot(name, 1.55, constants)
+                for name in constants
+            },
+            dispersion=False,
+        )
 
 
 def test_material_schema_requires_one_representation() -> None:

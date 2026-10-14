@@ -89,15 +89,15 @@ class Material(_MutableModel):
 class Materials(_MutableModel):
     """Background material, refractive-index overrides, and dispersion handling.
 
-    With ``dispersion`` (the default), every material whose card varies over
-    the source band reaches the solver as a dispersive model. Setting it to
-    ``False`` sends each material's index at the source wavelength instead,
-    with a warning for every card this flattens.
+    By default each material reaches the solver as its index at the source
+    wavelength, and one warning names every card that varies over the source
+    band. ``dispersion=True`` sends such cards as dispersive models instead;
+    the deployed GDSFactory FDTD solver does not accept those yet.
     """
 
     background: str = Field(default="SiO2", min_length=1)
     overrides: dict[str, Material] = Field(default_factory=dict)
-    dispersion: bool = True
+    dispersion: bool = False
 
     @field_validator("overrides", mode="before")
     @classmethod

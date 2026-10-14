@@ -69,23 +69,18 @@ def test_write_uses_project_material_then_fallback_and_valid_mesh(
     assert resolved.materials["Si"].source == "project"
     assert resolved.materials["Si"].refractive_index == pytest.approx(3.475687046)
 
-    artifacts = simulation.write(tmp_path)
+    with pytest.warns(UserWarning, match="dispersion is not sent"):
+        artifacts = simulation.write(tmp_path)
     document = json.loads(artifacts.config_path.read_text(encoding="utf8"))
     mesh = meshio.read(artifacts.mesh_path)
 
     assert document["schema_version"] == 1
     assert document["mesh_file"] == "mesh.msh"
     assert document["length_scale_meters"] == 1e-9
-    silicon_table = document["materials"]["Si"]["dispersion"]["table"]
-    assert np.interp(
-        1550, silicon_table["wavelength_nm"], silicon_table["n"]
-    ) == pytest.approx(3.475687046, abs=1e-5)
-    assert document["materials"]["SiO2"]["dispersion"]["sellmeier"]["b"] == [
-        0.6961663,
-        0.4079426,
-        0.8974794,
-    ]
-    assert document["background_refractive_index"] == pytest.approx(1.4440236217)
+    assert document["materials"]["Si"]["refractive_index"] == pytest.approx(3.475687046)
+    assert document["materials"]["SiO2"]["refractive_index"] == pytest.approx(
+        1.4440236217
+    )
     assert document["geometry"]["ports"]["o1"]["normal"] == [-1, 0, 0]
     assert document["geometry"]["ports"]["o2"]["normal"] == [1, 0, 0]
 
@@ -114,7 +109,7 @@ def test_write_uses_project_material_then_fallback_and_valid_mesh(
     assert mesh_header[mesh_header.index("$MeshFormat") + 1] == "2.2 0 8"
 
 
-def test_disabled_dispersion_writes_source_wavelength_indices(
+def test_enabled_dispersion_writes_dispersive_models(
     tmp_path,
     fdtd_pdk_module,
 ) -> None:
@@ -126,19 +121,22 @@ def test_disabled_dispersion_writes_source_wavelength_indices(
         num_wavelengths=3,
         default_port="o1",
     )
-    simulation.materials(dispersion=False)
+    simulation.materials(dispersion=True)
     simulation.geometry("straight", settings={"length": 2.0})
 
-    with pytest.warns(UserWarning, match="dispersion=False"):
-        artifacts = simulation.write(tmp_path)
+    artifacts = simulation.write(tmp_path)
     document = json.loads(artifacts.config_path.read_text(encoding="utf8"))
 
-    assert document["materials"]["Si"] == {
-        "refractive_index": pytest.approx(3.475687046)
-    }
-    assert document["materials"]["SiO2"] == {
-        "refractive_index": pytest.approx(1.4440236217)
-    }
+    silicon_table = document["materials"]["Si"]["dispersion"]["table"]
+    assert np.interp(
+        1550, silicon_table["wavelength_nm"], silicon_table["n"]
+    ) == pytest.approx(3.475687046, abs=1e-5)
+    assert document["materials"]["SiO2"]["dispersion"]["sellmeier"]["b"] == [
+        0.6961663,
+        0.4079426,
+        0.8974794,
+    ]
+    assert document["background_refractive_index"] == pytest.approx(1.4440236217)
 
 
 def test_write_requires_geometry(tmp_path) -> None:
