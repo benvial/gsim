@@ -115,9 +115,11 @@ def test_write_uses_lf_line_endings(tmp_path, fdtd_pdk_module, monkeypatch) -> N
     gmsh_write = gmsh.write
 
     def write_like_windows(path: str) -> None:
+        # Gmsh already writes CRLF on Windows; force it on every platform.
         gmsh_write(path)
         mesh_path = Path(path)
-        mesh_path.write_bytes(mesh_path.read_bytes().replace(b"\n", b"\r\n"))
+        content = mesh_path.read_bytes().replace(b"\r\n", b"\n")
+        mesh_path.write_bytes(content.replace(b"\n", b"\r\n"))
 
     monkeypatch.setattr(gmsh, "write", write_like_windows)
     simulation = fdtd.Simulation(
