@@ -680,7 +680,9 @@ class TestNumericalConfig:
         assert sample["MaxFreq"] == 10.0
         assert sample["FreqStep"] == pytest.approx(0.8)
 
-    def test_grouped_eigenmode_settings_flow_to_config(self, cpw_component, tmp_path):
+    def test_grouped_eigenmode_settings_flow_to_config(
+        self, portless_component, tmp_path
+    ):
         sim = EigenmodeSim(
             solver={
                 "order": 1,
@@ -689,7 +691,7 @@ class TestNumericalConfig:
             }
         )
         sim.set_output_dir(tmp_path / "grouped-eigenmode")
-        sim.set_geometry(cpw_component)
+        sim.set_geometry(portless_component)
         sim.set_stack(substrate_thickness=2.0)
         sim.mesh(preset="coarse")
         # Updating common controls after meshing must retain the target.
