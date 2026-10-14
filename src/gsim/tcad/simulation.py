@@ -123,7 +123,7 @@ class Simulation:
         >>> sim.contacts.add(name="anode", semiconductor="p_rib", electrode="metal_p")
         >>> sim.solver(mesh_preset="coarse", refined_mesh_size_um=0.05)
         >>> sim.mesh(output_dir="./tcad")
-        >>> sweep = sim.sweep([0.0, -1.0, -2.0], contact="cathode")
+        >>> sweep = sim.sweep([0.0, 1.0, 2.0], contact="cathode")
 
     The mesh inputs (``geometry``, ``domain``, ``contacts``,
     ``interfaces`` and the mesh fields of ``solver``) are recorded by

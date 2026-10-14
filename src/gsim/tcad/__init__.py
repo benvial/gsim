@@ -26,7 +26,7 @@ Example::
     sim.interfaces.add(name="junction", region_a="p_rib", region_b="n_rib")
     sim.solver(mesh_preset="coarse")
     sim.mesh(output_dir="./tcad")
-    result = sim.sweep([0.0, -1.0, -2.0], contact="cathode")
+    result = sim.sweep([0.0, 1.0, 2.0], contact="cathode")
 """
 
 from gsim.common.carriers import MobilityModel
