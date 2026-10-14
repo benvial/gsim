@@ -29,6 +29,7 @@ from gsim.tcad.doping import DopingProfile, acceptor_donor_concentrations
 from gsim.tcad.mesh import UM_TO_CM, line_group_points
 from gsim.tcad.results import BiasPoint, CarrierMap
 from gsim.tcad.runtime import import_simple_physics, require_devsim
+from gsim.tcad.silicon import intrinsic_density_cm3
 
 if TYPE_CHECKING:
     from gsim.tcad.api import Contact, Interface, Materials, Solver, TCADMesh
@@ -217,10 +218,29 @@ def check_layout(
             )
         interface_regions[interface.name] = (interface.region_a, interface.region_b)
 
+    # The mesh pipeline tags the curve every two touching Regions share
+    # ("interface_<a>_<b>"). Two touching doped Regions with no declared
+    # Interface would be two devices that never exchange a carrier, and
+    # the capacitance between the contacts collapses to nothing.
+    shared_curves = set(groups.get("interface_surfaces", {}))
+    declared = {frozenset(pair) for pair in interface_regions.values()}
+    for index, region_a in enumerate(regions):
+        for region_b in regions[index + 1 :]:
+            touching = {
+                f"interface_{region_a}_{region_b}",
+                f"interface_{region_b}_{region_a}",
+            } & shared_curves
+            if touching and frozenset((region_a, region_b)) not in declared:
+                raise ValueError(
+                    f"Doped regions '{region_a}' and '{region_b}' touch but no "
+                    "Interface joins them, so no carrier crosses between them. "
+                    f"Declare it: sim.interfaces.add(name=..., region_a="
+                    f"'{region_a}', region_b='{region_b}')."
+                )
+
     # The Interfaces an insulator shares with a doped Region or with
     # another insulator are the pairwise shared-curve groups the mesh
-    # pipeline tags on its own ("interface_<a>_<b>").
-    shared_curves = set(groups.get("interface_surfaces", {}))
+    # pipeline tags on its own.
     insulator_interfaces: dict[str, tuple[str, str]] = {}
     for index, insulator in enumerate(insulating):
         for other in [*regions, *insulating[:index]]:
@@ -335,13 +355,12 @@ class Device:
                 devsim.delete_circuit()
             _release_gsim_devices(devsim)
 
-        if self.solver.extended_precision:
-            # 128-bit float assembly: the 2D drift-diffusion Newton floors
-            # around 1e-5 relative error in double precision on these
-            # meshes; extended precision restores full convergence.
-            devsim.set_parameter(name="extended_solver", value=True)
-            devsim.set_parameter(name="extended_model", value=True)
-            devsim.set_parameter(name="extended_equation", value=True)
+        # 128-bit float assembly (see Solver.extended_precision). The
+        # parameters are process-wide, so they are set either way: an
+        # earlier device's choice must not carry over.
+        extended = self.solver.extended_precision
+        for name in ("extended_solver", "extended_model", "extended_equation"):
+            devsim.set_parameter(name=name, value=extended)
 
         mesh_name = _unique_devsim_name("mesh")
         self.mesh_name = mesh_name
@@ -385,6 +404,13 @@ class Device:
             for region in layout.regions:
                 self._apply_doping(devsim, device, region)
                 sp.SetSiliconParameters(device, region, self.materials.temperature_k)
+                # simple_physics keeps n_i at its 300 K value whatever the
+                # temperature; the SRH trap densities n1 = p1 = n_i follow.
+                n_i = intrinsic_density_cm3(self.materials.temperature_k)
+                for name in ("n_i", "n1", "p1"):
+                    devsim.set_parameter(
+                        device=device, region=region, name=name, value=n_i
+                    )
                 sp.CreateSiliconPotentialOnly(device, region)
             for region, permittivity in layout.insulators.items():
                 # Potential only, for good: the drift-diffusion stage never
@@ -728,6 +754,11 @@ class Device:
         self._initialize_drift_diffusion()
         devsim = require_devsim()
 
+        # The other contacts go back to 0 V first: one swept earlier would
+        # otherwise keep its bias.
+        for other in self.contacts:
+            if other.name != contact and self.current_bias.get(other.name, 0.0):
+                self._set_bias(other.name, 0.0)
         self._set_bias(contact, bias)
         carriers = self._collect_carriers(devsim)
         currents = {

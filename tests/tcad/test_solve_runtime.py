@@ -28,7 +28,7 @@ _REVERSE_BIASES = [0.0, 0.5, 1.0]
 
 
 @pytest.fixture(scope="module")
-def solved_sweep(tmp_path_factory):
+def meshed_diode(tmp_path_factory):
     comp, stack, _names = build_padded_diode(zmax=_RIB_HEIGHT_UM)
     sim = Simulation()
     sim.geometry(comp, stack=stack)
@@ -50,7 +50,13 @@ def solved_sweep(tmp_path_factory):
         )
     sim.solver(mesh_preset="coarse", refined_mesh_size_um=0.02, max_mesh_size_um=40.0)
     sim.mesh(output_dir=tmp_path_factory.mktemp("tcad-runtime"))
-    return sim.sweep(_REVERSE_BIASES, contact="cathode")
+    return sim
+
+
+@pytest.fixture(scope="module")
+def solved_sweep(meshed_diode):
+    meshed_diode.materials.temperature_k = 300.0
+    return meshed_diode.sweep(_REVERSE_BIASES, contact="cathode")
 
 
 class TestDriftDiffusionSolve:
@@ -156,3 +162,47 @@ class TestParityWithChargeTransportSim:
             assert point.carriers.x_um.size == self.N_NODES
             assert point.carriers.electrons_cm3.sum() == pytest.approx(n_sum, rel=1e-6)
             assert point.carriers.holes_cm3.sum() == pytest.approx(p_sum, rel=1e-6)
+
+
+class TestSiliconConstants:
+    def test_the_constants_are_devsims(self):
+        from gsim.tcad.runtime import import_simple_physics
+        from gsim.tcad.silicon import (
+            INTRINSIC_DENSITY_300K_CM3,
+            SILICON_RELATIVE_PERMITTIVITY,
+        )
+
+        sp = import_simple_physics()
+        assert sp.eps_si == SILICON_RELATIVE_PERMITTIVITY
+        assert sp.n_i == INTRINSIC_DENSITY_300K_CM3
+
+    def test_the_built_in_voltage_falls_with_temperature(self, meshed_diode):
+        from gsim.tcad.silicon import intrinsic_density_cm3
+
+        built_in = {}
+        try:
+            for temperature_k in (250.0, 300.0, 350.0):
+                meshed_diode.materials.temperature_k = temperature_k
+                potential = meshed_diode.solve(
+                    0.0, contact="cathode"
+                ).carriers.potential_v
+                built_in[temperature_k] = float(potential.max() - potential.min())
+                expected = PNJunctionConfig(
+                    na_cm3=_NA_CM3,
+                    nd_cm3=_ND_CM3,
+                    temperature_k=temperature_k,
+                    ni_cm3=intrinsic_density_cm3(temperature_k),
+                ).v_bi
+                assert built_in[temperature_k] == pytest.approx(expected, rel=0.01)
+        finally:
+            meshed_diode.materials.temperature_k = 300.0
+        assert built_in[350.0] < built_in[300.0] < built_in[250.0]
+
+
+class TestBiasHistory:
+    def test_a_solve_does_not_depend_on_the_contact_swept_before(self, meshed_diode):
+        meshed_diode._reset_device()
+        fresh = meshed_diode.solve(0.0, contact="anode").capacitance_f_per_cm
+        meshed_diode.solve(1.0, contact="cathode")
+        after = meshed_diode.solve(0.0, contact="anode").capacitance_f_per_cm
+        assert after == pytest.approx(fresh, rel=1e-6)

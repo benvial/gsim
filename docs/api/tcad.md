@@ -42,8 +42,9 @@ point = sim.solve(1.0, contact="cathode")  # BiasPoint
 sweep = sim.sweep([0.0, 0.5, 1.0, 2.0], contact="cathode")  # BiasSweepResult
 ```
 
-A positive bias on the n-side contact reverse-biases the junction. The other contacts stay at 0 V. Between bias points
-the swept contact is ramped in `solver.bias_step_v` steps.
+A positive bias on the n-side contact reverse-biases the junction. The other contacts are at 0 V: one swept by an
+earlier solve is ramped back first. Between bias points the swept contact is ramped in `solver.bias_step_v` steps, and
+a bias must be a finite voltage.
 
 Calling a concern applies several settings at once and validates them together; a failed call changes nothing. Single
 attributes can also be assigned, `sim.solver.relative_error = 1e-8`, and a whole concern replaced by a model or a mapping,
@@ -92,7 +93,8 @@ Every Region of the device takes one role, and the declarations state it:
   `semiconductor` is the doped Region it injects into; `electrode` is the Region on the other side, the metal or any
   Region that is neither doped nor insulating.
 - An **Interface** is where two doped Regions meet. Potential and carriers are continuous across it; it carries no bias.
-  Declare one between every pair of touching doped Regions that should form one device.
+  Declare one between every pair of touching doped Regions: two touching doped Regions without one are refused, since
+  no carrier would cross between them.
 - An **insulator** is a Region in `materials.insulators`. It joins the electrostatic solve with its own permittivity and
   holds no carriers. Without any, Poisson is solved in the doped silicon alone and its boundary is a zero-normal-field
   wall; with the oxide declared, the field may fringe around the junction through it. The interfaces an insulator shares
@@ -141,7 +143,20 @@ the branch's own RC rolloff, so `junction_branch()` reads the series resistance 
 capacitance a loaded-line RF model needs.
 
 `tcad.compare_capacitance` evaluates the depletion-approximation capacitance (Sze) at the same biases and reports the
-relative deviation; `tcad.estimate_depletion_width_um` reads the depletion width off a 1D cut of the carrier map.
+relative deviation; `tcad.estimate_depletion_width_um` reads the depletion width off a 1D cut of the carrier map. The
+comparison uses the solve's own silicon constants (below) for whatever the `PNJunctionConfig` leaves at its defaults.
+
+## Silicon constants
+
+The solve takes DEVSIM's silicon parameters, with one change: the intrinsic carrier density follows the temperature.
+
+- **Permittivity:** static relative permittivity 11.1, DEVSIM's value
+  (`gsim.tcad.silicon.SILICON_RELATIVE_PERMITTIVITY`). The RF and optical stacks use 11.9 for silicon.
+- **Intrinsic density:** `n_i(T) = n_i(300 K) (T/300)^1.5 exp(E_g(300)/2kT_300 - E_g(T)/2kT)`, with Varshni's
+  band gap and DEVSIM's `n_i(300 K) = 1e10` cm⁻³ (`gsim.tcad.silicon.intrinsic_density_cm3`). A 300 K solve is
+  DEVSIM's own; away from 300 K the built-in voltage falls with temperature as it should.
+- **Temperature:** `materials.temperature_k` sets the thermal voltage, the intrinsic density and the SRH trap densities.
+  The Masetti mobility is its 300 K fit at every temperature.
 
 ## Limits
 

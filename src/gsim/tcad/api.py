@@ -207,12 +207,13 @@ class Solver(MutableModel):
             depletion edge moves.
         absolute_error: Newton absolute error target of ``devsim.solve``.
         relative_error: Newton relative error target of ``devsim.solve``.
-            The 2D drift-diffusion Newton typically floors around 1e-8 on
-            coarse meshes.
+            With extended precision the 2D drift-diffusion Newton reaches
+            1e-12 on the test diode.
         max_iterations: Newton iteration cap.
         bias_step_v: Step (V) the swept contact is ramped in between biases.
         extended_precision: Use DEVSIM's 128-bit extended-precision
-            assembly (recommended).
+            assembly. Keep it on: in double precision the Newton on the
+            test diode does not converge even to the default 1e-6.
         small_signal_freq_hz: Frequency (Hz) of the quasi-static AC solve
             that extracts C(V).
         junction_freq_hz: Frequency (Hz) of the AC solve whose admittance

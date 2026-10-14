@@ -358,3 +358,64 @@ class TestReviewRegressions:
         )
         with pytest.raises(ValueError, match=r"changed since mesh\(\)"):
             sim.solve(0.0, contact="cathode")
+
+
+class TestReviewOfPR370:
+    def test_the_other_contacts_go_back_to_zero(self, sim, fake_devsim):
+        devsim, _sp = fake_devsim
+        sim.solve(2.0, contact="cathode")
+        assert devsim.circuit["V_cathode"] == pytest.approx(2.0)
+        sim.solve(0.0, contact="anode")
+        assert devsim.circuit["V_cathode"] == pytest.approx(0.0)
+        assert devsim.circuit["V_anode"] == pytest.approx(0.0)
+
+    def test_a_sweep_starts_from_the_other_contacts_at_zero(self, sim, fake_devsim):
+        devsim, _sp = fake_devsim
+        sim.solve(1.0, contact="anode")
+        sim.sweep([0.0, 0.5], contact="cathode")
+        assert devsim.circuit["V_anode"] == pytest.approx(0.0)
+        assert devsim.circuit["V_cathode"] == pytest.approx(0.5)
+
+    @pytest.mark.parametrize("temperature_k", [250.0, 300.0, 350.0])
+    def test_the_intrinsic_density_follows_the_temperature(
+        self, sim, fake_devsim, temperature_k
+    ):
+        from gsim.tcad.silicon import intrinsic_density_cm3
+
+        devsim, _sp = fake_devsim
+        sim.materials.temperature_k = temperature_k
+        sim._setup_device()
+        expected = intrinsic_density_cm3(temperature_k)
+        for name in ("n_i", "n1", "p1"):
+            values = {
+                c["region"]: c["value"]
+                for c in devsim.called("set_parameter")
+                if c["name"] == name
+            }
+            assert values == dict.fromkeys(DOPED, pytest.approx(expected))
+
+    @pytest.mark.parametrize("extended", [True, False])
+    def test_extended_precision_is_set_either_way(self, sim, fake_devsim, extended):
+        devsim, _sp = fake_devsim
+        sim.solver.extended_precision = extended
+        sim._setup_device()
+        for name in ("extended_solver", "extended_model", "extended_equation"):
+            assert devsim.parameters[name] is extended
+
+    def test_a_missing_interface_between_doped_regions_is_refused(self, sim):
+        original = list(sim.interfaces)
+        sim.interfaces.remove("n_link")
+        sim.mesh()
+        try:
+            with pytest.raises(ValueError, match=r"'n_pad' and 'n_rib' touch"):
+                sim._setup_device()
+        finally:
+            sim.interfaces = original
+            sim.mesh()
+
+    @pytest.mark.parametrize("bias", [float("nan"), float("inf"), -float("inf")])
+    def test_a_bias_must_be_finite(self, sim, bias):
+        with pytest.raises(ValueError, match="finite"):
+            sim.solve(bias, contact="cathode")
+        with pytest.raises(ValueError, match="finite"):
+            sim.sweep([0.0, bias], contact="cathode")

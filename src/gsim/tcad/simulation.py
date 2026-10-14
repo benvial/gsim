@@ -11,6 +11,7 @@ boundary conditions and continuity to.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Self, overload
@@ -430,6 +431,14 @@ class Simulation:
     # Solving
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _finite_bias(bias: float) -> float:
+        """The bias as a float, refusing NaN and infinities."""
+        value = float(bias)
+        if not math.isfinite(value):
+            raise ValueError(f"A bias must be a finite voltage; got {bias!r}.")
+        return value
+
     def _resolve_contact(self, contact: str | None) -> str:
         """Default to the first declared contact; reject unknown names."""
         names = [c.name for c in self.contacts]
@@ -462,10 +471,11 @@ class Simulation:
             currents, and the small-signal capacitance ``Im(I)/omega`` from
             the quasi-static AC solve.
         """
+        value = self._finite_bias(bias)
         device = self._current_device()
         contact = self._resolve_contact(contact)
         with devsim_output(verbose):
-            return device.solve_point(float(bias), contact)
+            return device.solve_point(value, contact)
 
     def sweep(
         self,
@@ -485,10 +495,11 @@ class Simulation:
         Returns:
             :class:`BiasSweepResult` with one :class:`BiasPoint` per bias.
         """
+        values = [self._finite_bias(bias) for bias in biases]
         device = self._current_device()
         contact = self._resolve_contact(contact)
         with devsim_output(verbose):
-            points = [device.solve_point(float(bias), contact) for bias in biases]
+            points = [device.solve_point(bias, contact) for bias in values]
         return BiasSweepResult(contact=contact, points=points)
 
 
