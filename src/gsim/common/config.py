@@ -21,8 +21,12 @@ class MutableModel(BaseModel):
     model_config = ConfigDict(validate_assignment=True, extra="forbid")
 
     def __call__(self, **updates: Any) -> Self:
-        """Validate and apply several settings atomically."""
-        updated = type(self).model_validate({**self.model_dump(), **updates})
+        """Validate and apply several settings atomically.
+
+        The current values are passed back as they are, not dumped, so a
+        field holding an arbitrary object (a component, a stack) survives.
+        """
+        updated = type(self).model_validate({**dict(self), **updates})
         for field_name in type(self).model_fields:
             object.__setattr__(self, field_name, getattr(updated, field_name))
         return self
