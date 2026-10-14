@@ -71,7 +71,11 @@ def test_write_uses_project_material_then_fallback_and_valid_mesh(
 
     with pytest.warns(UserWarning, match="dispersion is not sent") as caught:
         artifacts = simulation.write(tmp_path)
-    assert caught[0].filename == __file__
+    assert {
+        warning.filename
+        for warning in caught
+        if "dispersion is not sent" in str(warning.message)
+    } == {__file__}
     document = json.loads(artifacts.config_path.read_text(encoding="utf8"))
     mesh = meshio.read(artifacts.mesh_path)
 
