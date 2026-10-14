@@ -38,6 +38,9 @@ RefinementBox = tuple[float, float, float, float, float]
 
 _DOPING_PROFILE: TypeAdapter[DopingProfile] = TypeAdapter(DopingProfile)
 
+#: Marks an argument left out, where None is a value of its own.
+_UNSET: Any = object()
+
 
 class Geometry(MutableModel):
     """The component and the layer stack it is extruded with.
@@ -69,13 +72,13 @@ class Geometry(MutableModel):
         )
 
     def __call__(  # ty: ignore[invalid-method-override]
-        self, component: Any | None = None, *, stack: Any | None = None
+        self, component: Any | None = None, *, stack: Any = _UNSET
     ) -> Self:
-        """Set the component and, optionally, its stack."""
+        """Set the component and, when given, its stack (None: active PDK)."""
         updates: dict[str, Any] = {}
         if component is not None:
             updates["component"] = component
-        if stack is not None:
+        if stack is not _UNSET:
             updates["stack"] = stack
         return super().__call__(**updates)
 

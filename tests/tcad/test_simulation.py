@@ -11,8 +11,10 @@ DEVSIM is faked (see conftest).
 
 from __future__ import annotations
 
+import gdsfactory as gf
 import pytest
 
+from gsim import tcad
 from gsim.tcad import Simulation, StepDoping
 
 from .conftest import build_contacted_diode
@@ -296,3 +298,63 @@ class TestSweptContact:
     def test_an_unknown_contact_is_refused(self, sim):
         with pytest.raises(ValueError, match="gate"):
             sim.solve(0.0, contact="gate")
+
+
+class TestReviewRegressions:
+    def test_a_failed_setup_is_run_again_by_the_next_solve(self, sim, fake_devsim):
+        devsim, _sp = fake_devsim
+        state = {"fail": True}
+
+        def donors(_x, _y):
+            if state["fail"]:
+                raise RuntimeError("profile failed")
+            return 1e18
+
+        sim.doping = [
+            *(p for p in sim.doping if p.region != "n_rib"),
+            tcad.CallableDoping(region="n_rib", dopant_type="donor", function=donors),
+        ]
+        with pytest.raises(RuntimeError, match="profile failed"):
+            sim.solve(0.0, contact="cathode")
+        state["fail"] = False
+        sim.solve(0.0, contact="cathode")
+
+        first, second = _created_devices(devsim)
+        assert first != second
+        assert {"device": first} in devsim.called("delete_device")
+        assert {c["name"] for c in devsim.called("circuit_element")} == {
+            "V_cathode",
+            "V_anode",
+        }
+
+    def test_a_device_another_simulation_deleted_is_built_again(self, sim, fake_devsim):
+        from gsim.tcad import device as device_module
+
+        devsim, _sp = fake_devsim
+        sim.solve(0.0, contact="cathode")
+        device_module._LIVE_DEVICES.clear()  # what another sim's claim does
+        sim.solve(0.0, contact="cathode")
+        assert len(_created_devices(devsim)) == 2
+
+    def test_a_removed_contact_reports_the_stale_mesh(self, sim):
+        sim.contacts.remove("cathode")
+        with pytest.raises(ValueError, match=r"changed since mesh\(\)"):
+            sim.solve(0.0, contact="cathode")
+
+    def test_the_snapshot_holds_the_component_it_compares(self, sim):
+        before = sim._mesh_inputs()
+        assert sim._mesh_inputs() == before
+        sim.geometry.component = gf.Component()
+        assert sim._mesh_inputs() != before
+
+    @pytest.mark.usefixtures("fake_devsim")
+    def test_a_component_edited_in_place_makes_the_mesh_stale(self, tmp_path):
+        sim = _configured_sim()
+        sim.mesh(output_dir=tmp_path)
+        component = sim.geometry.component
+        assert component is not None
+        component.add_polygon(
+            [(-5.0, -30.0), (5.0, -30.0), (5.0, -29.0), (-5.0, -29.0)], layer=(1, 0)
+        )
+        with pytest.raises(ValueError, match=r"changed since mesh\(\)"):
+            sim.solve(0.0, contact="cathode")

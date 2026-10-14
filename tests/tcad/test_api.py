@@ -62,6 +62,15 @@ class TestBatchUpdate:
         assert geometry.component is component
         assert geometry.stack == "stack.yaml"
 
+    def test_an_explicit_none_stack_means_the_active_pdk(self):
+        geometry = Geometry()
+        geometry(gf.Component(), stack="stack.yaml")
+        geometry(stack=None)
+        assert geometry.stack is None
+        geometry(stack="stack.yaml")
+        geometry(gf.Component())
+        assert geometry.stack == "stack.yaml"
+
 
 class TestDefaults:
     """The defaults are the ones the setter-style sim had."""

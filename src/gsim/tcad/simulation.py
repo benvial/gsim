@@ -10,6 +10,7 @@ boundary conditions and continuity to.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Self, overload
@@ -88,12 +89,48 @@ _CONCERNS = (
 )
 
 
+class _Same:
+    """Snapshot of an object compared by identity.
+
+    Holds the object, so its address cannot be reused by another one that
+    would then compare equal.
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        """Hold the object."""
+        self.value = value
+
+    def __eq__(self, other: object) -> bool:
+        """The same object, not an equal one."""
+        return isinstance(other, _Same) and other.value is self.value
+
+    __hash__ = None  # ty: ignore[invalid-assignment]
+
+
+def _component_digest(component: Any) -> Any:
+    """The drawn polygons of a component, so an edit in place is seen."""
+    try:
+        polygons = component.get_polygons_points(by="tuple")
+    except Exception:
+        return None
+    digest = hashlib.sha256()
+    for layer in sorted(polygons, key=repr):
+        digest.update(repr(layer).encode())
+        for points in polygons[layer]:
+            digest.update(np.ascontiguousarray(points, dtype=np.float64).tobytes())
+    return digest.hexdigest()
+
+
 def _freeze(value: Any) -> Any:
     """A comparable snapshot of a configuration value.
 
     Models and containers are taken apart, arrays by their bytes; any
-    other object (a component, a function) by identity.
+    other object (a function) by identity.
     """
+    if isinstance(value, _Same):
+        return value
     if isinstance(value, BaseModel):
         return (type(value).__name__, _freeze(dict(value)))
     if isinstance(value, Mapping):
@@ -104,7 +141,7 @@ def _freeze(value: Any) -> Any:
         return ("ndarray", value.shape, value.dtype.str, value.tobytes())
     if value is None or isinstance(value, (str, bytes, int, float, complex, Path)):
         return value
-    return ("id", id(value))
+    return _Same(value)
 
 
 class Simulation:
@@ -176,9 +213,12 @@ class Simulation:
 
     def _mesh_inputs(self) -> Any:
         """Snapshot of everything the mesh is built from."""
+        component = self.geometry.component
         return _freeze(
             (
-                self.geometry,
+                _Same(component),
+                _component_digest(component),
+                self.geometry.stack,
                 self.domain,
                 list(self.contacts),
                 list(self.interfaces),
@@ -340,7 +380,11 @@ class Simulation:
         """The device for the current configuration, built when needed."""
         mesh = self._current_mesh()
         fingerprint = self._device_inputs()
-        if self._device is not None and fingerprint == self._device_fingerprint:
+        if (
+            self._device is not None
+            and not self._device.deleted
+            and fingerprint == self._device_fingerprint
+        ):
             return self._device
         self._reset_device()
         doping = list(self.doping)
@@ -418,8 +462,8 @@ class Simulation:
             currents, and the small-signal capacitance ``Im(I)/omega`` from
             the quasi-static AC solve.
         """
-        contact = self._resolve_contact(contact)
         device = self._current_device()
+        contact = self._resolve_contact(contact)
         with devsim_output(verbose):
             return device.solve_point(float(bias), contact)
 
@@ -441,8 +485,8 @@ class Simulation:
         Returns:
             :class:`BiasSweepResult` with one :class:`BiasPoint` per bias.
         """
-        contact = self._resolve_contact(contact)
         device = self._current_device()
+        contact = self._resolve_contact(contact)
         with devsim_output(verbose):
             points = [device.solve_point(float(bias), contact) for bias in biases]
         return BiasSweepResult(contact=contact, points=points)

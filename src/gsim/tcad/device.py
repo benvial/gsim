@@ -270,6 +270,14 @@ class Device:
     # Setup and release
     # ------------------------------------------------------------------
 
+    @property
+    def deleted(self) -> bool:
+        """Whether the device was set up and has since left DEVSIM.
+
+        Another simulation claiming DEVSIM's namespace deletes it.
+        """
+        return self.name is not None and self.name not in _LIVE_DEVICES
+
     def release(self) -> None:
         """Best-effort removal of this device and its DEVSIM mesh."""
         if self.name is None:
@@ -372,41 +380,45 @@ class Device:
         devsim.create_device(mesh=mesh_name, device=device)
         self.name = device
         _LIVE_DEVICES.add(device)
-
-        bound = self._bind_insulator_interfaces(devsim, device)
-        for region in layout.regions:
-            self._apply_doping(devsim, device, region)
-            sp.SetSiliconParameters(device, region, self.materials.temperature_k)
-            sp.CreateSiliconPotentialOnly(device, region)
-        for region, permittivity in layout.insulators.items():
-            # Potential only, for good: the drift-diffusion stage never
-            # reaches these Regions, so they hold no carriers.
-            devsim.set_parameter(
-                device=device,
-                region=region,
-                name="Permittivity",
-                value=permittivity * VACUUM_PERMITTIVITY_F_PER_CM,
-            )
-            sp.CreateOxidePotentialOnly(device, region)
-        for contact in self.contacts:
-            # Each contact is driven through a circuit voltage source so the
-            # small-signal AC solve can read the terminal admittance (the
-            # C(V) extraction) and the DC current from the circuit node.
-            devsim.circuit_element(
-                name=self._source_name(contact.name),
-                n1=sp.GetContactBiasName(contact.name),
-                n2=0,
-                value=0.0,
-                acreal=0.0,
-                acimag=0.0,
-            )
-            sp.CreateSiliconPotentialOnlyContact(
-                device, layout.contact_regions[contact.name], contact.name, True
-            )
-            self.current_bias[contact.name] = 0.0
-        for interface in (*layout.interface_regions, *bound):
-            self._interface_continuity(devsim, sp, device, interface, "Potential")
-
+        try:
+            bound = self._bind_insulator_interfaces(devsim, device)
+            for region in layout.regions:
+                self._apply_doping(devsim, device, region)
+                sp.SetSiliconParameters(device, region, self.materials.temperature_k)
+                sp.CreateSiliconPotentialOnly(device, region)
+            for region, permittivity in layout.insulators.items():
+                # Potential only, for good: the drift-diffusion stage never
+                # reaches these Regions, so they hold no carriers.
+                devsim.set_parameter(
+                    device=device,
+                    region=region,
+                    name="Permittivity",
+                    value=permittivity * VACUUM_PERMITTIVITY_F_PER_CM,
+                )
+                sp.CreateOxidePotentialOnly(device, region)
+            for contact in self.contacts:
+                # Each contact is driven through a circuit voltage source so the
+                # small-signal AC solve can read the terminal admittance (the
+                # C(V) extraction) and the DC current from the circuit node.
+                devsim.circuit_element(
+                    name=self._source_name(contact.name),
+                    n1=sp.GetContactBiasName(contact.name),
+                    n2=0,
+                    value=0.0,
+                    acreal=0.0,
+                    acimag=0.0,
+                )
+                sp.CreateSiliconPotentialOnlyContact(
+                    device, layout.contact_regions[contact.name], contact.name, True
+                )
+                self.current_bias[contact.name] = 0.0
+            for interface in (*layout.interface_regions, *bound):
+                self._interface_continuity(devsim, sp, device, interface, "Potential")
+        except BaseException:
+            # A device set up halfway would be taken for a finished one by
+            # the next solve.
+            self.release()
+            raise
         self.dd_initialized = False
         return device
 
