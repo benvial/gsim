@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal, Self
 
 import numpy as np
@@ -343,6 +344,8 @@ _DISPERSION_SAMPLES = 21
 _BAND_MARGIN = 0.1
 
 _Samples = list[tuple[float, float, float]]
+# Warnings point past every gsim frame, at the user's write() or run() call.
+_GSIM_DIR = str(Path(__file__).parents[1])
 
 
 def _evaluate_nm(
@@ -483,7 +486,10 @@ def _material_configs(
 ) -> dict[str, MaterialConfig]:
     """Convert every material, warning once about cards made constant."""
     if band_nm is None:
-        remedy = "which needs a pulsed source with a nonzero wavelength span"
+        remedy = (
+            "which needs a pulsed source with a nonzero wavelength span and "
+            "materials(dispersion=True)"
+        )
         return {
             name: _lossless_scalar(snapshot, remedy)
             for name, snapshot in material_snapshots.items()
@@ -511,7 +517,7 @@ def _material_configs(
             f"{band_nm[0]:g} to {band_nm[1]:g} nm band: {details}. "
             "materials(dispersion=True) sends dispersive models instead.",
             UserWarning,
-            stacklevel=5,
+            skip_file_prefixes=(_GSIM_DIR,),
         )
     return materials
 

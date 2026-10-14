@@ -216,7 +216,7 @@ def test_lossy_cards_need_a_band_and_dispersion() -> None:
     assert set(table.n) == {3.47}
     assert set(table.k) == {0.01}
 
-    with pytest.raises(FDTDConfigError, match="needs a pulsed source"):
+    with pytest.raises(FDTDConfigError, match=r"pulsed source .*\(dispersion=True\)"):
         _config(lossy, wavelength_halfspan_nm=0)
     with pytest.raises(FDTDConfigError, match=r"dispersion=False\), the default"):
         _config(lossy, dispersion=False)
@@ -271,6 +271,7 @@ def test_constant_indices_warn_once_about_flattened_cards() -> None:
     with pytest.warns(UserWarning, match="dispersion is not sent") as caught:
         config = _config(dispersion=False)
     assert len(caught) == 1
+    assert caught[0].filename == __file__
     message = str(caught[0].message)
     assert "Si (0.3" in message
     assert "SiO2 (0.1" in message
