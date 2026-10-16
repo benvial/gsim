@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from gsim.common.stack.extractor import Layer, LayerStack
-from gsim.modulator.staircase import (
+from gsim.common.staircase import (
     CrossSectionOrientationError,
     SurroundingRegion,
     carrier_map_extent,
@@ -230,7 +230,7 @@ class TestTheRegionsAreDrawable:
     def test_a_non_ascending_extent_is_reported(self):
         import gdsfactory as gf
 
-        from gsim.modulator.staircase import _surrounding_layers
+        from gsim.common.staircase import _surrounding_layers
 
         bad = SurroundingRegion(name="x", h=(1.0, 1.0), z=(0.0, 0.2), material="si")
         with pytest.raises(ValueError, match="in-plane extent"):
@@ -241,7 +241,7 @@ class TestTheRegionsAreDrawable:
     def test_two_regions_of_one_name_are_reported(self):
         import gdsfactory as gf
 
-        from gsim.modulator.staircase import _surrounding_layers
+        from gsim.common.staircase import _surrounding_layers
 
         one = SurroundingRegion(name="x", h=(0.0, 1.0), z=(0.0, 0.2), material="si")
         with pytest.raises(ValueError, match="both named"):

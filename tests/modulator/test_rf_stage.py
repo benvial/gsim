@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from gsim.common.carriers import MobilityModel
-from gsim.modulator.staircase import ElectrodeSpec
+from gsim.common.staircase import ElectrodeSpec
 
 from .conftest import CENTER_Y, HALF_WIDTH, PAD_WIDTH, SLAB
 

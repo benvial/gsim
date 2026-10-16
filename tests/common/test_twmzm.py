@@ -1,4 +1,4 @@
-"""Tests for the TW-MZM physics layer (gsim.modulator.twmzm).
+"""Tests for the TW-MZM physics layer (gsim.common.twmzm).
 
 Analytic checks use the standard traveling-wave modulator limits:
 
@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from scipy.constants import speed_of_light as C0  # noqa: N812
 
-from gsim.modulator.twmzm import (
+from gsim.common.twmzm import (
     eo_bandwidth,
     eo_response,
     mzm_chirp,

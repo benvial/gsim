@@ -9,7 +9,7 @@ report: EO frequency response and 3 dB bandwidth, velocity mismatch and
 the analytic walk-off limit, RLGC line parameters, V_pi·L, and the
 Mach-Zehnder built from that Phase shifter — its static transfer, V_pi,
 insertion loss, extinction ratio and chirp — all computed with the pure
-analysis functions of :mod:`gsim.modulator.twmzm` over the line
+analysis functions of :mod:`gsim.common.twmzm` over the line
 :mod:`gsim.common.transmission_line` describes.
 
 :class:`LoadedLineComparison` is the other container the Study hands
@@ -30,7 +30,7 @@ from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gsim.common.transmission_line import RFLineParams, segmented_line
-from gsim.modulator.twmzm import (
+from gsim.common.twmzm import (
     QUADRATURE_RAD,
     DriveConfiguration,
     eo_bandwidth,
@@ -269,7 +269,7 @@ class TWMZMReport(BaseModel):
         transfer_message: Why ``v_pi_v``, ``insertion_loss_db`` and
             ``extinction_ratio_db`` are absent, when they are.
         chirp: Small-signal chirp parameter at each bias point, in the sign
-            convention of :func:`gsim.modulator.twmzm.mzm_chirp`.
+            convention of :func:`gsim.common.twmzm.mzm_chirp`.
         fill_factor: Fraction of the Traveling-wave electrode the Junction
             loads. One is an electrode loaded all the way; below one the
             electrode is segmented, and every line quantity here —

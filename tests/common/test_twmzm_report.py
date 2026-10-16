@@ -1,7 +1,7 @@
 """Hermetic tests: solver outputs wired into the TW-MZM device report.
 
 Synthetic mode results drive the wiring; results are checked against the
-analytic limits of the physics functions in :mod:`gsim.modulator.twmzm`.
+analytic limits of the physics functions in :mod:`gsim.common.twmzm`.
 """
 
 from __future__ import annotations
@@ -14,16 +14,16 @@ from gsim.common.transmission_line import (
     line_params_from_neff,
     segmented_line_params,
 )
-from gsim.modulator.report import (
+from gsim.common.twmzm import (
+    SINC_3DB_ARGUMENT,
+    segmented_eo_response,
+    walkoff_bandwidth,
+)
+from gsim.common.twmzm_report import (
     SILICON_ONLY_RTOL,
     LoadedLineComparison,
     OpticalPhaseSweep,
     twmzm_figures_of_merit,
-)
-from gsim.modulator.twmzm import (
-    SINC_3DB_ARGUMENT,
-    segmented_eo_response,
-    walkoff_bandwidth,
 )
 
 FREQ = np.linspace(1e9, 100e9, 200)

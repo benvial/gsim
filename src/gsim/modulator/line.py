@@ -7,10 +7,10 @@ into — and combines them with the optical and RF results into the whole
 device answer.
 
 The combination itself is not re-derived here. It is
-:func:`~gsim.modulator.report.twmzm_figures_of_merit`, the same entry
+:func:`~gsim.common.twmzm_report.twmzm_figures_of_merit`, the same entry
 point the hand-assembled workflow calls, so the Stage's job is to feed it
 the Study's results and hand back its
-:class:`~gsim.modulator.report.TWMZMReport`: the EO response and its
+:class:`~gsim.common.twmzm_report.TWMZMReport`: the EO response and its
 3 dB bandwidth, the Velocity mismatch and the Walk-off bandwidth, the
 RLGC line parameters, and the Modulation efficiency along the Bias sweep.
 
@@ -54,14 +54,14 @@ import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from gsim.common.twmzm import QUADRATURE_RAD, DriveConfiguration
 from gsim.modulator.stage import Stage
-from gsim.modulator.twmzm import QUADRATURE_RAD, DriveConfiguration
 
 if TYPE_CHECKING:
     from gsim.common.circuit import SaxLineModel
     from gsim.common.transmission_line import RFLineParams
+    from gsim.common.twmzm_report import OpticalPhaseSweep, TWMZMReport
     from gsim.modulator.optical import OpticalSweep
-    from gsim.modulator.report import OpticalPhaseSweep, TWMZMReport
 
 __all__ = ["BRAGG_WARNING_FRACTION", "ExportRoundTrip", "LineStage"]
 
@@ -381,7 +381,7 @@ class LineStage(Stage):
                 so the index shift has no slope, or when it visits one
                 bias twice, so the slope there is undefined.
         """
-        from gsim.modulator.report import OpticalPhaseSweep
+        from gsim.common.twmzm_report import OpticalPhaseSweep
 
         if len(sweep.points) < 2:
             raise ValueError(
@@ -711,7 +711,7 @@ class LineStage(Stage):
 
     def _solve(self) -> TWMZMReport:
         """Combine both EM Stages into the device report, running them first."""
-        from gsim.modulator.report import twmzm_figures_of_merit
+        from gsim.common.twmzm_report import twmzm_figures_of_merit
 
         study = self._require_study()
         optical = self.optical_sweep(study.optical.run())

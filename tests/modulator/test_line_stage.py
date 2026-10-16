@@ -3,7 +3,7 @@
 Nothing here solves anything. Both EM Stages are stubbed with canned
 results, so what is under test is the assembly the line Stage does — the
 optical sweep and the RF line parameters turned into the existing
-:class:`~gsim.modulator.report.TWMZMReport` — and the lifecycle around
+:class:`~gsim.common.twmzm_report.TWMZMReport` — and the lifecycle around
 it: the report runs whatever upstream Stage has not run, and re-configuring
 the line throws the report away without touching either solve.
 """
@@ -19,15 +19,15 @@ from gsim.common.transmission_line import (
     line_params_from_neff,
     segmented_period_abcd,
 )
+from gsim.common.twmzm import mzm_transfer, mzm_transfer_figures
+from gsim.common.twmzm_report import OpticalPhaseSweep, twmzm_figures_of_merit
 from gsim.modulator.optical import (
     GroupIndex,
     OpticalMode,
     OpticalStage,
     OpticalSweep,
 )
-from gsim.modulator.report import OpticalPhaseSweep, twmzm_figures_of_merit
 from gsim.modulator.rf import RFStage
-from gsim.modulator.twmzm import mzm_transfer, mzm_transfer_figures
 
 WAVELENGTH_UM = 1.55
 N_GROUP = 3.8

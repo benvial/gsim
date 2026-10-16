@@ -30,15 +30,15 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import Field, model_validator
 
-from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
-from gsim.modulator.route import EMRoute, Route, route_for
-from gsim.modulator.stage import Stage
-from gsim.modulator.staircase import (
+from gsim.common.staircase import (
     SEGMENT_TOL_UM,
     STRIP_LENGTH_UM,
     StaircaseDrawing,
     StripSegment,
 )
+from gsim.modulator.meshing import STAGE_AIRBOX, STAGE_MESH
+from gsim.modulator.route import EMRoute, Route, route_for
+from gsim.modulator.stage import Stage
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     import gdsfactory as gf
 
     from gsim.common.stack.extractor import LayerStack
-    from gsim.modulator.staircase import (
+    from gsim.common.staircase import (
         ElectrodeSpec,
         StaircaseCrossSection,
         StripMaterial,
@@ -198,7 +198,7 @@ class EMStage(Stage):
         if carriers is None:
             return wanted
 
-        from gsim.modulator.staircase import carrier_map_extent
+        from gsim.common.staircase import carrier_map_extent
 
         covered = carrier_map_extent(carriers, study.layout.junction_span.z)
         clipped = (max(wanted[0], covered[0]), min(wanted[1], covered[1]))
@@ -318,7 +318,7 @@ class EMStage(Stage):
         Returns:
             The Staircase Cross-section, drawn on its own component.
         """
-        from gsim.modulator.staircase import build_staircase_cross_section
+        from gsim.common.staircase import build_staircase_cross_section
 
         study = self._require_study()
         junction = study.layout.junction_span

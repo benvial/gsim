@@ -16,7 +16,7 @@ import gdsfactory as gf
 import numpy as np
 import pytest
 
-from gsim.modulator.staircase import (
+from gsim.common.staircase import (
     RFStripMaterial,
     StaircaseDrawing,
     build_staircase_cross_section,

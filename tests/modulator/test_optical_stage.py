@@ -188,7 +188,7 @@ class TestUnperturbedIndex:
 
     def test_it_is_the_drawn_junction_material_not_a_textbook_value(self, study):
         """The continuous route perturbs this index; so must the strips."""
-        from gsim.modulator.staircase import DEFAULT_SI_INDEX
+        from gsim.common.staircase import DEFAULT_SI_INDEX
 
         index = study.optical.unperturbed_index()
 
@@ -248,7 +248,7 @@ class TestConductorClearance:
 
     @staticmethod
     def _metal(h, z):
-        from gsim.modulator.staircase import SurroundingRegion
+        from gsim.common.staircase import SurroundingRegion
 
         return SurroundingRegion(
             name="pad_metal", h=h, z=z, material="aluminum", layer_type="conductor"
@@ -279,7 +279,7 @@ class TestConductorClearance:
             )
 
     def test_a_dielectric_the_window_cuts_is_not_its_business(self):
-        from gsim.modulator.staircase import SurroundingRegion
+        from gsim.common.staircase import SurroundingRegion
 
         self._clear(
             [

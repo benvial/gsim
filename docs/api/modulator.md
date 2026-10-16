@@ -7,7 +7,7 @@ Backends are optional installs — importing this package never requires one.
 
 The package exports the Study, its Stages, the result types they return and
 the presets that configure them. Everything else is imported by its
-submodule path, as `from gsim.modulator.staircase import StaircaseCrossSection`.
+submodule path, as `from gsim.common.staircase import StaircaseCrossSection`.
 
 ## The Study
 
@@ -172,107 +172,107 @@ preset never draws anything — the component and the stack are always yours.
       show_source: false
       inherited_members: false
 
-## MZM physics — `gsim.modulator.twmzm`
+## MZM physics — `gsim.common.twmzm`
 
 The traveling-wave MZM transfer function and its bandwidths, on plain arrays
 rather than on a Study: the electro-optic and walk-off responses, the drive
 range and the chirp. Imported by module path.
 
-::: gsim.modulator.twmzm.mzm_transfer
+::: gsim.common.twmzm.mzm_transfer
     options:
       show_source: false
 
-::: gsim.modulator.twmzm.mzm_transfer_figures
+::: gsim.common.twmzm.mzm_transfer_figures
     options:
       show_source: false
 
-::: gsim.modulator.twmzm.MZMTransferFigures
-    options:
-      show_source: false
-      inherited_members: false
-
-::: gsim.modulator.twmzm.eo_response
-    options:
-      show_source: false
-
-::: gsim.modulator.twmzm.eo_bandwidth
-    options:
-      show_source: false
-
-::: gsim.modulator.twmzm.segmented_eo_response
-    options:
-      show_source: false
-
-::: gsim.modulator.twmzm.walkoff_bandwidth
-    options:
-      show_source: false
-
-::: gsim.modulator.twmzm.walkoff_bandwidth_dispersive
-    options:
-      show_source: false
-
-::: gsim.modulator.twmzm.mzm_drive_range
-    options:
-      show_source: false
-
-::: gsim.modulator.twmzm.mzm_chirp
-    options:
-      show_source: false
-
-::: gsim.modulator.twmzm.vpi_length_vcm
-    options:
-      show_source: false
-
-::: gsim.modulator.twmzm.DriveConfiguration
+::: gsim.common.twmzm.MZMTransferFigures
     options:
       show_source: false
       inherited_members: false
 
-## The report — `gsim.modulator.report`
+::: gsim.common.twmzm.eo_response
+    options:
+      show_source: false
+
+::: gsim.common.twmzm.eo_bandwidth
+    options:
+      show_source: false
+
+::: gsim.common.twmzm.segmented_eo_response
+    options:
+      show_source: false
+
+::: gsim.common.twmzm.walkoff_bandwidth
+    options:
+      show_source: false
+
+::: gsim.common.twmzm.walkoff_bandwidth_dispersive
+    options:
+      show_source: false
+
+::: gsim.common.twmzm.mzm_drive_range
+    options:
+      show_source: false
+
+::: gsim.common.twmzm.mzm_chirp
+    options:
+      show_source: false
+
+::: gsim.common.twmzm.vpi_length_vcm
+    options:
+      show_source: false
+
+::: gsim.common.twmzm.DriveConfiguration
+    options:
+      show_source: false
+      inherited_members: false
+
+## The report — `gsim.common.twmzm_report`
 
 What `Study.report()` returns, and the cross-Route comparison it carries.
 Imported by module path.
 
-::: gsim.modulator.report.TWMZMReport
+::: gsim.common.twmzm_report.TWMZMReport
     options:
       show_source: false
       inherited_members: false
 
-::: gsim.modulator.report.LoadedLineComparison
+::: gsim.common.twmzm_report.LoadedLineComparison
     options:
       show_source: false
       inherited_members: false
 
-::: gsim.modulator.report.OpticalPhaseSweep
+::: gsim.common.twmzm_report.OpticalPhaseSweep
     options:
       show_source: false
       inherited_members: false
 
-::: gsim.modulator.report.twmzm_figures_of_merit
+::: gsim.common.twmzm_report.twmzm_figures_of_merit
     options:
       show_source: false
 
-## The Staircase — `gsim.modulator.staircase`
+## The Staircase — `gsim.common.staircase`
 
 The Carrier map, averaged into Strips and redrawn as a Cross-section both EM
 Stages mesh. Imported by module path and not exported from the package: a
 Staircase is what a Stage builds, not something a user assembles.
 
-::: gsim.modulator.staircase.StaircaseCrossSection
+::: gsim.common.staircase.StaircaseCrossSection
     options:
       show_source: false
       inherited_members: false
 
-::: gsim.modulator.staircase.CarrierCoupling
+::: gsim.common.staircase.CarrierCoupling
     options:
       show_source: false
       inherited_members: false
 
-::: gsim.modulator.staircase.ElectrodeSpec
+::: gsim.common.staircase.ElectrodeSpec
     options:
       show_source: false
       inherited_members: false
 
-::: gsim.modulator.staircase.ConductorModel
+::: gsim.common.staircase.ConductorModel
     options:
       show_source: false
