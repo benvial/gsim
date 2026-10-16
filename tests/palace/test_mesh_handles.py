@@ -64,4 +64,3 @@ class TestAfterMeshing:
             mesh_path=tmp_path / "palace.msh", groups=None
         )
         assert sim.mesh_groups == {}
-
