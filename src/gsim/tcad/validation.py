@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from gsim.common.stack.pn_junction import PNJunctionConfig
 from gsim.tcad.results import BiasSweepResult
+from gsim.tcad.silicon import SILICON_RELATIVE_PERMITTIVITY, intrinsic_density_cm3
 
 __all__ = [
     "CapacitanceComparison",
@@ -101,6 +102,13 @@ def compare_capacitance(
 ) -> CapacitanceComparison:
     """Compare a TCAD bias sweep's C(V) against the analytic Sze model.
 
+    The two sides describe the same silicon: a ``junction`` that leaves
+    ``ni_cm3`` or ``permittivity`` at its default takes the solve's own
+    values, :func:`gsim.tcad.silicon.intrinsic_density_cm3` at the
+    junction's temperature and
+    :data:`gsim.tcad.silicon.SILICON_RELATIVE_PERMITTIVITY`. Set them on
+    the junction to compare against other constants.
+
     Args:
         junction: Depletion-model parameters of the same junction.
         sweep: TCAD bias sweep result.
@@ -113,6 +121,17 @@ def compare_capacitance(
     Returns:
         The per-point comparison of both C(V) curves.
     """
+    solver_constants = {
+        "ni_cm3": intrinsic_density_cm3(junction.temperature_k),
+        "permittivity": SILICON_RELATIVE_PERMITTIVITY,
+    }
+    junction = junction.model_copy(
+        update={
+            name: value
+            for name, value in solver_constants.items()
+            if name not in junction.model_fields_set
+        }
+    )
     v_reverse = reverse_bias_sign * sweep.voltages
     c_analytic = analytic_capacitance_f_per_cm(junction, v_reverse, height_um=height_um)
     return CapacitanceComparison(

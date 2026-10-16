@@ -118,7 +118,7 @@ def test_reset_device_does_not_reimport_devsim(monkeypatch):
     second import redeclares what the first declared and raises again —
     out of a release path that only means to clean up.
     """
-    from gsim.tcad import ChargeTransportSim
+    from gsim.tcad.device import _LIVE_DEVICES, Device
 
     monkeypatch.delitem(sys.modules, "devsim", raising=False)
     real_import = builtins.__import__
@@ -130,7 +130,10 @@ def test_reset_device_does_not_reimport_devsim(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _devsim_fails_to_initialise)
 
-    sim = ChargeTransportSim()
-    sim._device = "gsim_tcad_device_0"
-    sim.reset_device()
-    assert sim._device is None
+    device = Device.__new__(Device)
+    device.name = "gsim_tcad_device_0"
+    device.mesh_name = None
+    _LIVE_DEVICES.add(device.name)
+    device.release()
+    assert device.name is None
+    assert "gsim_tcad_device_0" not in _LIVE_DEVICES

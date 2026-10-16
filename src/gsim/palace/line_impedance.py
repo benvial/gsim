@@ -5,10 +5,11 @@ voltage across a gap and the current around a conductor on every Mode it
 finds; the impedance those integrals imply lands in its own tables. It
 can also be asked to save the Modes themselves, and the same impedance
 can then be integrated off the saved fields afterwards. Both are here,
-with the policy that prefers the first, because they are one story:
+with the policy that chooses between them, because they are one story:
 size two paths from the conductor layout, declare them on the solve,
 read the impedance off Palace's tables under the index the solve
-assigned, and fall back to the fields when there is no table.
+assigned when the conductors are perfect, off the saved fields when
+they are lossy, and fall back to the fields when there is no table.
 
 Splitting the table reader into :mod:`gsim.palace.results` and the field
 reader into :mod:`gsim.palace.mode_fields` would push a line-mode
@@ -216,11 +217,18 @@ def native_line_impedance(
     the wall-Mode diagnostic: a Mode whose gap voltage carries almost
     none of its power is not running between the two electrodes.
 
-    The reading is real-only, because the tables carry magnitudes. It
-    sits 0.15% from what :func:`field_line_impedance` reads on the same
-    solve (2.83% against femwell, versus 2.98%), and only the field path
-    carries the reactance — so a caller wanting a complex ``Z_0`` reads
-    the fields, not this.
+    The reading is real-only, because the tables carry magnitudes. With
+    perfect conductors that costs nothing: it sits 0.15% from what
+    :func:`field_line_impedance` reads on the same solve (2.83% against
+    femwell, versus 2.98%). With lossy conductors it is wrong, not merely
+    real: ``V``, ``I`` and ``P`` then carry phases that ``|V|/|I|`` and
+    ``|V|^2/2P`` lose, and the ratio stops being the power-current
+    impedance at all. On a 10/6 um aluminium CPW at 10 GHz the tables
+    give 85.3 ohm where the fields give 74.6 - 8.3j ohm (femwell 74.0 -
+    8.4j), 14.5% off, against 4% between all three with PEC electrodes.
+    So this is read for a ``"pec"`` conductor only; :func:`palace_line_impedance`
+    keeps it for the wall-Mode diagnostic alone when the conductor is
+    lossy, and the impedance comes off the fields.
 
     Palace also tabulates ``L_PV`` and ``C_PV``, and they are no second
     opinion: they are ``Z_PV`` divided and multiplied by the phase
@@ -331,15 +339,20 @@ def palace_line_impedance(
     signal: Conductor,
     context: str,
 ) -> LineReading:
-    """One Mode's reading: tables first, saved fields as fallback.
+    """One Mode's reading: tables for a perfect conductor, fields for a lossy one.
 
-    Palace's own answer first: the power-current impedance its
-    postprocessing paths measured (:func:`native_line_impedance`), read
-    off this run's tables under the index the path was declared at, with
-    the wall-Mode diagnostic the gap voltage gives. A run without the
+    With a ``"pec"`` signal conductor, Palace's own answer: the
+    power-current impedance its postprocessing paths measured
+    (:func:`native_line_impedance`), read off this run's tables under the
+    index the path was declared at, with the wall-Mode diagnostic the
+    gap voltage gives. With a lossy (``"volume"``) one the tables'
+    magnitudes do not combine into the complex impedance — see
+    :func:`native_line_impedance` for the numbers — so the impedance is
+    integrated off the saved fields (:func:`field_line_impedance`) and
+    the tables keep the wall-Mode diagnostic alone. A run without the
     tables — a solve that declared no path, or an older Palace — falls
-    back to the saved fields (:func:`field_line_impedance`), whose NaN
-    contract stands and which say nothing about which Mode this is.
+    back to the saved fields either way, whose NaN contract stands and
+    which say nothing about which Mode this is.
 
     Args:
         sim: The simulation that was run.
@@ -348,20 +361,23 @@ def palace_line_impedance(
             under, or ``None`` when none could be declared.
         mode_id: Palace's own mode number of the Mode being read.
         n_eff: That Mode's effective index.
-        signal: The signal electrode, whose outline the fallback
-            integrates around.
-        context: Who is asking, opening the fallback's warning.
+        signal: The signal electrode: its ``model`` decides which
+            reading, and its outline is what the field integral runs
+            around.
+        context: Who is asking, opening the field reader's warning.
 
     Returns:
-        The reading: impedance real off the tables, complex off the
-        fields, NaN when neither could be read.
+        The reading: impedance real off the tables for a perfect
+        conductor, complex off the fields otherwise, NaN when the fields
+        were wanted and could not be read.
     """
-    if index is not None:
-        native = native_line_impedance(
-            results, index=index, mode_id=mode_id, n_eff=n_eff
-        )
-        if native is not None:
-            return native
+    native = (
+        native_line_impedance(results, index=index, mode_id=mode_id, n_eff=n_eff)
+        if index is not None
+        else None
+    )
+    if native is not None and signal.model == "pec":
+        return native
     h_span, v_span = signal.extent
     z0 = field_line_impedance(
         sim,
@@ -371,6 +387,15 @@ def palace_line_impedance(
         v_span=v_span,
         context=context,
     )
+    if native is not None:
+        return LineReading(
+            n_eff=complex(n_eff),
+            z0_ohm=z0,
+            wall_mode=native.wall_mode,
+            diagnostic=f"{native.diagnostic}; the impedance itself was read off "
+            "the saved fields, since the tables carry magnitudes only and a "
+            "lossy conductor's Z_VI^2 / Z_PV is not the power-current impedance",
+        )
     return LineReading(
         n_eff=complex(n_eff),
         z0_ohm=z0,

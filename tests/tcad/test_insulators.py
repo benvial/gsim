@@ -1,8 +1,8 @@
 """Hermetic tests for insulating Regions in the charge-transport solve.
 
-DEVSIM is faked (see conftest). The device is the modulator demo Phase
-shifter, whose Contacts sit between a doped pad and its electrode, so the
-oxide around the doped slab is free to join the solve. The fake reports
+DEVSIM is faked (see conftest). The device is a padded diode whose
+Contacts sit between a doped pad and its electrode, so the oxide around
+the doped slab is free to join the solve. The fake reports
 every mesh node for every Region, which is all the node-by-node Interface
 binding needs to find its pairs.
 """
@@ -15,37 +15,43 @@ import meshio
 import numpy as np
 import pytest
 
-from gsim.modulator.demo import demo_phase_shifter
-from gsim.tcad import ChargeTransportSim, Insulator, StepDoping
+from gsim.tcad import Insulator, Simulation, StepDoping
+from gsim.tcad.device import VACUUM_PERMITTIVITY_F_PER_CM
 from gsim.tcad.mesh import line_group_points
-from gsim.tcad.sim import VACUUM_PERMITTIVITY_F_PER_CM
+
+from .conftest import build_contacted_diode
 
 DOPED = {"n_pad": "donor", "n_rib": "donor", "p_rib": "acceptor", "p_pad": "acceptor"}
 OXIDE_PERMITTIVITY = 3.9
 
 
 def _make_meshed_sim(tmp_path, *, contact_against="electrode"):
-    demo = demo_phase_shifter()
-    sim = ChargeTransportSim()
-    sim.set_output_dir(str(tmp_path))
-    sim.set_stack(demo.stack)
-    sim.set_airbox(margin_x=2.0, margin_y=2.0, z_above=1.5, z_below=1.0)
-    sim.set_geometry(demo.component)
-    sim.set_cross_section("x=0", window=(-21.1, -18.9))
+    comp, stack = build_contacted_diode()
+    sim = Simulation()
+    sim.geometry(comp, stack=stack)
+    sim.domain(
+        plane="x=0",
+        window=(-21.1, -18.9),
+        margin_x=2.0,
+        margin_y=2.0,
+        z_above=1.5,
+        z_below=1.0,
+    )
     sides = {
         "electrode": {"cathode": "cathode_metal", "anode": "anode_metal"},
         "oxide": {"cathode": "sio2", "anode": "sio2"},
     }[contact_against]
-    sim.add_contact(name="cathode", layer_a="n_pad", layer_b=sides["cathode"])
-    sim.add_contact(name="anode", layer_a="p_pad", layer_b=sides["anode"])
-    sim.add_interface(name="n_link", layer_a="n_pad", layer_b="n_rib")
-    sim.add_interface(name="junction", layer_a="n_rib", layer_b="p_rib")
-    sim.add_interface(name="p_link", layer_a="p_rib", layer_b="p_pad")
+    sim.contacts.add(name="cathode", semiconductor="n_pad", electrode=sides["cathode"])
+    sim.contacts.add(name="anode", semiconductor="p_pad", electrode=sides["anode"])
+    sim.interfaces.add(name="n_link", region_a="n_pad", region_b="n_rib")
+    sim.interfaces.add(name="junction", region_a="n_rib", region_b="p_rib")
+    sim.interfaces.add(name="p_link", region_a="p_rib", region_b="p_pad")
     for region, dopant_type in DOPED.items():
-        sim.add_doping(
+        sim.doping.add(
             StepDoping(region=region, dopant_type=dopant_type, concentration_cm3=1e18)
         )
-    sim.mesh(preset="coarse", refined_mesh_size=0.05, max_mesh_size=40.0, verbose=False)
+    sim.solver(mesh_preset="coarse", refined_mesh_size_um=0.05, max_mesh_size_um=40.0)
+    sim.mesh(output_dir=tmp_path)
     return sim
 
 
@@ -58,14 +64,21 @@ def meshed_sim(tmp_path_factory):
 def oxide_sim(meshed_sim, fake_devsim):
     """The meshed sim with the oxide declared, over a fake DEVSIM."""
     devsim, _sp = fake_devsim
-    points = meshio.read(str(meshed_sim.devsim_mesh_path)).points
+    points = meshio.read(str(meshed_sim._current_mesh().devsim_mesh_path)).points
     devsim.node_coords = {"x": list(points[:, 0]), "y": list(points[:, 1])}
-    meshed_sim.reset_device()
-    meshed_sim.insulators = []
-    meshed_sim.add_insulator(region="sio2", relative_permittivity=OXIDE_PERMITTIVITY)
+    meshed_sim._reset_device()
+    meshed_sim.materials.insulators = {"sio2": OXIDE_PERMITTIVITY}
     yield meshed_sim
-    meshed_sim.insulators = []
-    meshed_sim.reset_device()
+    meshed_sim.materials.insulators = {}
+    meshed_sim._reset_device()
+
+
+@pytest.fixture
+def restore_insulators(meshed_sim):
+    """Put the module sim's insulators back after a test changes them."""
+    yield meshed_sim
+    meshed_sim.materials.insulators = {}
+    meshed_sim._reset_device()
 
 
 def _node_coordinates(devsim, call, side):
@@ -78,22 +91,29 @@ def _node_coordinates(devsim, call, side):
 
 class TestDeclaration:
     def test_no_insulator_is_solved_by_default(self):
-        assert ChargeTransportSim().insulators == []
+        assert Simulation().materials.insulators == {}
 
     def test_an_insulator_names_its_region_and_permittivity(self):
-        sim = ChargeTransportSim()
-        sim.add_insulator(region="sio2", relative_permittivity=3.9)
-        assert sim.insulators == [Insulator(region="sio2", relative_permittivity=3.9)]
+        sim = Simulation()
+        sim.materials(insulators={"sio2": 3.9})
+        assert sim.materials.insulators == {"sio2": 3.9}
+
+    def test_an_insulator_model_is_accepted(self):
+        sim = Simulation()
+        sim.materials.insulators = [Insulator(region="sio2", relative_permittivity=3.9)]  # ty: ignore[invalid-assignment]
+        assert sim.materials.insulators == {"sio2": 3.9}
 
     def test_a_permittivity_must_be_positive(self):
+        with pytest.raises(ValueError, match="greater than 0"):
+            Simulation().materials(insulators={"sio2": 0.0})
         with pytest.raises(ValueError, match="relative_permittivity"):
-            ChargeTransportSim().add_insulator(region="sio2", relative_permittivity=0.0)
+            Insulator(region="sio2", relative_permittivity=0.0)
 
 
 class TestPotentialOnlyRegion:
     def test_the_insulator_is_a_region_of_the_device(self, oxide_sim, fake_devsim):
         devsim, _sp = fake_devsim
-        oxide_sim.setup_device()
+        oxide_sim._setup_device()
         materials = {
             c["region"]: c["material"] for c in devsim.called("add_gmsh_region")
         }
@@ -104,7 +124,7 @@ class TestPotentialOnlyRegion:
         self, oxide_sim, fake_devsim
     ):
         devsim, sp = fake_devsim
-        oxide_sim.setup_device()
+        oxide_sim._setup_device()
         assert [args[1] for args in sp.called("CreateOxidePotentialOnly")] == ["sio2"]
         [permittivity] = [
             c for c in devsim.called("set_parameter") if c["name"] == "Permittivity"
@@ -127,7 +147,7 @@ class TestInterfaces:
         self, oxide_sim, fake_devsim
     ):
         devsim, _sp = fake_devsim
-        oxide_sim.setup_device()
+        oxide_sim._setup_device()
         calls = devsim.called("create_interface_from_nodes")
         assert {c["region0"] for c in calls} == set(DOPED)
         assert {c["region1"] for c in calls} == {"sio2"}
@@ -159,10 +179,10 @@ class TestInterfaces:
     ):
         """DEVSIM assembles a node on two Interfaces wrongly; see the sim."""
         devsim, _sp = fake_devsim
-        oxide_sim.setup_device()
+        oxide_sim._setup_device()
         taken = np.vstack(
             [
-                line_group_points(oxide_sim.devsim_mesh_path, name)
+                line_group_points(oxide_sim._current_mesh().devsim_mesh_path, name)
                 for name in ("cathode", "anode", "n_link", "junction", "p_link")
             ]
         )
@@ -183,18 +203,18 @@ class TestInterfaces:
             for axis, values in devsim.node_coords.items()
         }
         with pytest.warns(UserWarning, match="match no node"):
-            oxide_sim.setup_device()
+            oxide_sim._setup_device()
         assert devsim.called("create_interface_from_nodes") == []
 
     def test_a_matched_mesh_raises_no_such_warning(self, oxide_sim):
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            oxide_sim.setup_device()
+            oxide_sim._setup_device()
 
     def test_no_insulator_means_no_node_built_interface(self, meshed_sim, fake_devsim):
         devsim, _sp = fake_devsim
-        meshed_sim.reset_device()
-        meshed_sim.setup_device()
+        meshed_sim._reset_device()
+        meshed_sim._setup_device()
         assert devsim.called("create_interface_from_nodes") == []
         assert {c["region"] for c in devsim.called("add_gmsh_region")} == set(DOPED)
 
@@ -207,22 +227,22 @@ class TestCarrierMap:
 
 class TestRefusals:
     @pytest.mark.usefixtures("fake_devsim")
-    def test_an_insulator_the_mesh_does_not_hold_is_named(self, meshed_sim):
-        sim = meshed_sim.model_copy()
-        sim.insulators = [Insulator(region="nitride", relative_permittivity=7.5)]
+    def test_an_insulator_the_mesh_does_not_hold_is_named(self, restore_insulators):
+        sim = restore_insulators
+        sim.materials.insulators = {"nitride": 7.5}
         with pytest.raises(ValueError, match="nitride"):
-            sim.setup_device()
+            sim._setup_device()
 
     @pytest.mark.usefixtures("fake_devsim")
-    def test_a_doped_region_cannot_also_be_insulating(self, meshed_sim):
-        sim = meshed_sim.model_copy()
-        sim.insulators = [Insulator(region="n_rib", relative_permittivity=11.9)]
+    def test_a_doped_region_cannot_also_be_insulating(self, restore_insulators):
+        sim = restore_insulators
+        sim.materials.insulators = {"n_rib": 11.9}
         with pytest.raises(ValueError, match="n_rib"):
-            sim.setup_device()
+            sim._setup_device()
 
     @pytest.mark.usefixtures("fake_devsim")
     def test_a_contact_against_the_insulator_is_refused(self, tmp_path):
         sim = _make_meshed_sim(tmp_path, contact_against="oxide")
-        sim.add_insulator(region="sio2", relative_permittivity=OXIDE_PERMITTIVITY)
+        sim.materials.insulators = {"sio2": OXIDE_PERMITTIVITY}
         with pytest.raises(ValueError, match=r"cathode.*sio2"):
-            sim.setup_device()
+            sim._setup_device()

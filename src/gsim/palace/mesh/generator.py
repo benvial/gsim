@@ -32,6 +32,9 @@ from .geometry import (
 )
 from .groups import assign_physical_groups
 from .metadata import write_metadata
+from .net_groups import check_via_merging, split_groups_by_net
+from .nets import extract_nets
+from .symmetry import clamp_xy_bounds
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -47,6 +50,7 @@ if TYPE_CHECKING:
     )
     from gsim.palace.models.cross_section import _LayerPairSpec
     from gsim.palace.models.pec import PECBlockConfig
+    from gsim.palace.models.symmetry import SymmetryPlaneConfig
     from gsim.palace.ports.config import PalacePort
 
 logger = logging.getLogger(__name__)
@@ -167,6 +171,7 @@ class MeshResult:
     fmax: float = 100e9
     periodic_axis: str | None = None
     periodic_translation: tuple[float, float, float] | None = None
+    symmetry_plane: dict | None = None
 
 
 def _extract_native_boundarymode_rectangles(
@@ -1219,6 +1224,7 @@ def generate_mesh(
     pec_blocks: list[PECBlockConfig] | None = None,
     absorbing_boundary: bool = True,
     periodic_axis: str | None = None,
+    symmetry_plane: SymmetryPlaneConfig | None = None,
     merge_via_distance: float = 2.0,
     curve_fit_mode: Literal["line", "spline", "bspline"] = "line",
     curve_fit_layers: list[str] | None = None,
@@ -1234,6 +1240,7 @@ def generate_mesh(
     algorithm_3d: Literal["delaunay", "hxt"] = "delaunay",
     threads: int = 1,
     surface_threads: int = 1,
+    split_conductors_by_net: bool = False,
 ) -> MeshResult:
     """Generate mesh for Palace EM simulation.
 
@@ -1274,6 +1281,9 @@ def generate_mesh(
         planar_conductors: If True, treat conductors as 2D PEC surfaces
         absorbing_boundary: If True, use absorbing boundary conditions on outer surfaces
         periodic_axis: ("x" or "y") for meshing constraints on opposite domain sides
+        symmetry_plane: Optional PEC/PMC symmetry plane; only the kept half of
+            the domain is meshed. Not supported with ``boundarymode`` or with
+            a ``periodic_axis`` equal to the plane axis.
         merge_via_distance: Max gap between vias to merge (um)
         curve_fit_mode: Patterned dielectric boundary mode: line/spline/bspline
         curve_fit_layers: Layer names where curve fitting is applied
@@ -1293,6 +1303,11 @@ def generate_mesh(
         threads: Threads for 3D meshing
         surface_threads: Threads for 1D and 2D meshing; above 1 the mesh
             differs from run to run
+        split_conductors_by_net: Electrostatic terminals by net: give each
+            conductor, planar-conductor and via-boundary group one physical
+            group per electrical net (``<name>@<net>``) and list the nets
+            in ``groups["nets"]``. Needs ``write_config=False``, since the
+            config needs the terminals. Ignored for boundary mode.
 
     Returns:
         MeshResult with paths and metadata
@@ -1302,9 +1317,30 @@ def generate_mesh(
 
     msh_path = output_dir / f"{model_name}.msh"
 
+    if symmetry_plane is not None:
+        if simulation_type == "boundarymode":
+            raise ValueError("Symmetry planes are not supported for boundarymode.")
+        if periodic_axis == symmetry_plane.axis:
+            raise ValueError(
+                f"periodic_axis={periodic_axis!r} conflicts with a symmetry plane "
+                "on the same axis: one of the periodic walls would be the plane."
+            )
+        logger.info(
+            "Half model, plane %s=%s %s (%s). Expect ~half the DOFs.",
+            symmetry_plane.axis,
+            symmetry_plane.position,
+            symmetry_plane.kind.upper(),
+            "even/common mode" if symmetry_plane.kind == "pmc" else "odd/differential",
+        )
+
     # Extract geometry
     logger.info("Extracting geometry...")
-    geometry = extract_geometry(component, stack, decimate_tolerance=decimate_tolerance)
+    geometry = extract_geometry(
+        component,
+        stack,
+        decimate_tolerance=decimate_tolerance,
+        symmetry_plane=symmetry_plane,
+    )
     logger.info("  Polygons: %s", len(geometry.polygons))
     logger.info("  Bbox: %s", geometry.bbox)
 
@@ -1312,6 +1348,23 @@ def generate_mesh(
         raise ValueError(
             "refinement_boxes apply to native-2D cross-section meshes only."
         )
+
+    # Terminals by net: find the nets and make sure that via merging keeps them
+    # apart, before any meshing work is done.
+    nets = None
+    if split_conductors_by_net and simulation_type != "boundarymode":
+        if write_config:
+            raise ValueError(
+                "split_conductors_by_net needs write_config=False: the config "
+                "is written afterwards, from the terminals."
+            )
+        nets = extract_nets(
+            geometry,
+            stack,
+            [p for p in component.ports if p.port_type == "electrical"],
+        )
+        logger.info("  Nets: %s", len(nets))
+        check_via_merging(geometry, stack, nets, merge_via_distance)
 
     # The mesh must depend only on gsim's settings, not on the user's Gmsh options file
     gmsh.initialize(readConfigFiles=False)
@@ -1517,13 +1570,16 @@ def generate_mesh(
             curve_fit_tolerance_um=curve_fit_tolerance_um,
             curve_fit_min_points=curve_fit_min_points,
             curve_fit_corner_angle_deg=curve_fit_corner_angle_deg,
+            symmetry_plane=symmetry_plane,
         )
 
         # Add PEC blocks if configured
         pec_block_tags: dict = {}
         if pec_blocks:
             logger.info("Adding PEC blocks...")
-            pec_block_tags = add_pec_blocks(kernel, component, pec_blocks, stack)
+            pec_block_tags = add_pec_blocks(
+                kernel, component, pec_blocks, stack, symmetry_plane
+            )
 
         logger.info("Adding ports...")
         domain_bounds = resolve_mesh_domain_bounds(
@@ -1536,6 +1592,7 @@ def generate_mesh(
             airbox_margin_y=airbox_margin_y,
             airbox_z_above=airbox_z_above,
             airbox_z_below=airbox_z_below,
+            symmetry_plane=symmetry_plane,
         )
         domain_bbox = (
             geometry.bbox[0] - margin_x,
@@ -1543,12 +1600,15 @@ def generate_mesh(
             geometry.bbox[2] + margin_x,
             geometry.bbox[3] + margin_y,
         )
+        if symmetry_plane is not None:
+            domain_bbox = clamp_xy_bounds(domain_bbox, symmetry_plane)
         port_tags, port_info = add_ports(
             kernel,
             ports,
             stack,
             domain_bbox=domain_bbox,
             domain_bounds=domain_bounds,
+            symmetry_plane=symmetry_plane,
         )
 
         logger.info("Adding dielectrics...")
@@ -1563,6 +1623,7 @@ def generate_mesh(
             airbox_margin_y=airbox_margin_y,
             airbox_z_above=airbox_z_above,
             airbox_z_below=airbox_z_below,
+            symmetry_plane=symmetry_plane,
         )
 
         logger.info("Adding patterned dielectric layers...")
@@ -1595,6 +1656,13 @@ def generate_mesh(
             stack=stack,
         )
         pg_map = gmsh_utils.run_boolean_pipeline(entities)
+
+        # Before set_periodic_mesh, so plane faces are never periodic candidates.
+        symmetry_info: dict | None = None
+        if symmetry_plane is not None:
+            symmetry_info = gmsh_utils.assign_symmetry_plane_group(
+                pg_map, symmetry_plane
+            )
 
         if periodic_axis in {"x", "y"}:
             periodic_info = gmsh_utils.set_periodic_mesh(pg_map, periodic_axis)
@@ -1632,6 +1700,16 @@ def generate_mesh(
         groups["refinement_lines"] = {
             k: v for k, v in groups.get("refinement_lines", {}).items() if v.get("tags")
         }
+
+        if symmetry_info is not None:
+            groups["boundary_surfaces"]["symmetry"] = {
+                "phys_group": [symmetry_info["phys_group"]],
+                "tags": symmetry_info["tags"],
+                "axis": symmetry_info["axis"],
+                "position": symmetry_info["position"],
+                "kind": symmetry_info["kind"],
+                "keep": symmetry_info["keep"],
+            }
 
         if periodic_info:
             donor_surfaces = periodic_info.get("master_surfaces")
@@ -1719,6 +1797,13 @@ def generate_mesh(
                         exc,
                     )
 
+        # One physical group per net instead of per layer
+        if nets is not None:
+            logger.info("Splitting conductor groups by net...")
+            split_groups_by_net(
+                groups, nets, stack, merge_via_distance=merge_via_distance
+            )
+
         # Collect mesh statistics
         mesh_stats = collect_mesh_stats(
             field_order=numerical_config.order if numerical_config else 2,
@@ -1772,6 +1857,9 @@ def generate_mesh(
         fmax=fmax,
         periodic_axis=periodic_axis,
         periodic_translation=periodic_translation,
+        symmetry_plane=(
+            dict(groups["boundary_surfaces"]["symmetry"]) if symmetry_info else None
+        ),
     )
 
     return result

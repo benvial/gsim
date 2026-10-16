@@ -8,11 +8,12 @@ before every local run and read back by :meth:`BoundaryModeSim.read_results`),
 and the postprocessing index Palace reports an impedance path under
 (:meth:`BoundaryModeSim.add_impedance_path`).
 
-It also owns what a local run that ends badly means. Palace 0.17 corrupts
-its heap while shutting a boundary-mode solve down, *after* writing the
-answer, so :meth:`BoundaryModeSim.run_local` reads a complete table back
-rather than throwing the run away; a binary that died before writing
-anything is reported as the runtime failure it is
+It also owns what a local run that ends badly means. Palace has been
+seen (0.17) to corrupt its heap while shutting a boundary-mode solve
+down, *after* writing the answer, so :meth:`BoundaryModeSim.run_local`
+reads a run back when everything it was asked for is on disk rather
+than throwing it away; a binary that died before writing it all is
+reported as the runtime failure it is
 (:func:`gsim.palace.runtime.local_abort_report`).
 """
 
@@ -21,10 +22,18 @@ from __future__ import annotations
 import shutil
 import subprocess
 import warnings
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    field_validator,
+)
 
 from gsim.common import Geometry, LayerStack
 from gsim.palace.base import PalaceSimMixin
@@ -67,8 +76,12 @@ class ModePath(BaseModel):
         voltage_path: Two or more ``(h, v)`` points in the cross-section's
             own coordinates (um), from one conductor's face to the other's.
         current_path: Corners of a closed loop around one conductor, in
-            the same coordinates; Palace joins the last corner back to the
-            first. ``None`` asks for the voltage alone.
+            the same coordinates, open: Palace joins the last corner back
+            to the first itself, so a loop handed in closed is opened
+            here. The loop should hug the conductor, since by Ampere's
+            law it encloses the displacement current of the gap as well
+            as the conduction current of the metal, and a wider loop
+            reads less current. ``None`` asks for the voltage alone.
         nsamples: Quadrature order of each line integral.
     """
 
@@ -81,10 +94,17 @@ class ModePath(BaseModel):
 
     @field_validator("voltage_path", "current_path")
     @classmethod
-    def _points_are_planar(
-        cls, value: list[list[float]] | None
+    def _points_are_planar_and_distinct(
+        cls, value: list[list[float]] | None, info: ValidationInfo
     ) -> list[list[float]] | None:
-        """Every point is ``(h, v)`` on the cross-section, nothing else."""
+        """Every point is ``(h, v)`` on the cross-section and no segment is empty.
+
+        Palace integrates each segment with ``ComputeLineIntegral``, which
+        aborts the whole run on a zero-length one, and it closes a current
+        loop itself by joining the last corner to the first. A loop written
+        closed would hand it exactly such a segment, so its closing point
+        is dropped here; a point repeated anywhere else is refused.
+        """
         if value is None:
             return None
         cleaned = []
@@ -95,6 +115,19 @@ class ModePath(BaseModel):
                     f"got a point with {len(point)} coordinates."
                 )
             cleaned.append([float(point[0]), float(point[1])])
+        if info.field_name == "current_path" and cleaned[-1] == cleaned[0]:
+            cleaned.pop()
+            if len(cleaned) < 3:
+                raise ValueError(
+                    "A current loop needs three or more distinct corners; "
+                    "Palace joins the last back to the first itself."
+                )
+        for previous, point in pairwise(cleaned):
+            if previous == point:
+                raise ValueError(
+                    f"Mode path repeats the point {point}; Palace aborts on a "
+                    "zero-length segment."
+                )
         return cleaned
 
 
@@ -142,6 +175,7 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     # Stack configuration (stored as kwargs until resolved)
     _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
     _pec_blocks: list = PrivateAttr(default_factory=list)
+    _symmetry_planes: list = PrivateAttr(default_factory=list)
     _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
     _impedance_boundaries: list = PrivateAttr(default_factory=list)
     _airbox_config: dict[str, Any] = PrivateAttr(default_factory=dict)
@@ -287,12 +321,22 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             name: What to call the path.
             voltage: ``(h, v)`` points (um) from one conductor's face
                 across the gap to the other's.
-            current: Corners of a closed loop around the signal conductor
-                (um), or ``None`` for the voltage alone.
+            current: Corners of a loop around the signal conductor (um),
+                left open — Palace closes it — or ``None`` for the voltage
+                alone. Keep it close to the metal: the loop encloses the
+                gap's displacement current along with the conductor's own,
+                so the further it stands off, the less current it reads
+                and the higher the ``Z_VI`` it gives; a loop hugging the
+                conductor agrees with the field-based power-current
+                impedance. :func:`gsim.palace.line_impedance.line_impedance_paths`
+                places one from the electrode layout.
             nsamples: Quadrature order of each line integral.
 
         Returns:
             The 1-based index Palace reports this path under.
+
+        Raises:
+            ValueError: When a path repeats a point, which Palace aborts on.
         """
         path = ModePath(
             name=name, voltage_path=voltage, current_path=current, nsamples=nsamples
@@ -459,39 +503,72 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
             raise ValueError("Output directory not set. Call set_output_dir() first.")
         return load_boundary_mode_field(Path(self._output_dir), mode_id=mode_id)
 
-    def _salvage_mode_table(self, err: Exception) -> PalaceTextResults | None:
-        """Read a crashed run's mode table back, if it is complete.
+    def _run_answered(self, text: PalaceTextResults) -> bool:
+        """Whether *text* and the run directory hold all this run was asked for.
 
-        Palace 0.17 intermittently corrupts its heap while shutting down
-        a ``BoundaryMode`` solve (``free(): corrupted unsorted chunks``),
-        after the solve itself has finished and its results are on disk.
-        The crash is non-deterministic on an identical mesh and config,
-        so a run that exits abnormally may still have answered the
-        question it was asked — and the answer on disk is used rather
+        That is every Mode asked for in ``mode-kn.csv``; under each declared
+        path's index, a voltage and an impedance row for each of those
+        Modes; and, when fields were asked for, a saved ParaView cycle for
+        each Mode to be saved. A run that died before writing any of it
+        did not answer, whatever its exit status.
+
+        Args:
+            text: The run's parsed tables.
+
+        Returns:
+            Whether the run is complete.
+        """
+        settings = self.solver.boundary_mode
+        mode_ids = set(text.modes)
+        if len(mode_ids) < settings.num_modes:
+            return False
+        for index in range(1, len(self.mode_paths) + 1):
+            if not mode_ids <= set(text.mode_voltages.get(index, {})):
+                return False
+            if not mode_ids <= set(text.mode_impedance.get(index, {})):
+                return False
+        if settings.save > 0:
+            fields_dir = self.run_dir / "paraview" / "boundarymode"
+            for mode_id in range(1, settings.save + 1):
+                cycle_dir = fields_dir / f"Cycle{mode_id:06d}"
+                if not any(cycle_dir.glob("*.pvtu")):
+                    return False
+        return True
+
+    def _salvage_mode_table(self, err: Exception) -> PalaceTextResults | None:
+        """Read a crashed run back, if it answered everything it was asked.
+
+        Palace has been seen to corrupt its heap while shutting down a
+        ``BoundaryMode`` solve (0.17: ``free(): corrupted unsorted
+        chunks``), after the solve itself has finished and its results
+        are on disk. The crash is non-deterministic on an identical mesh
+        and config, so a run that exits abnormally may still have answered
+        the question it was asked — and the answer on disk is used rather
         than thrown away, which is what lets a gate depend on a live
-        solve at all. The run directory is cleared before each run, so
-        what is read back is this run's.
+        solve at all. What counts as answered is :meth:`_run_answered`:
+        the mode table alone is not, when paths or fields were asked for
+        too. The run directory is cleared before each run, so what is
+        read back is this run's.
 
         Args:
             err: What the run raised, named in the warning.
 
         Returns:
-            The parsed text results when the table is complete, else
+            The parsed text results when the run is complete, else
             ``None`` so the caller re-raises.
         """
         try:
             text = self.read_results()
         except Exception:
             return None
-        num_modes = self.solver.boundary_mode.num_modes
-        if text is None or len(getattr(text, "modes", {})) < num_modes:
+        if text is None or not self._run_answered(text):
             return None
         freq = self.solver.boundary_mode.freq
         warnings.warn(
-            f"Palace exited abnormally at f = {freq:g} Hz but "
-            f"its complete mode table was on disk, so the run's answer is used "
-            f"({err}). Palace 0.17 is known to corrupt its heap on shutdown of "
-            "a boundary-mode solve.",
+            f"Palace exited abnormally at f = {freq:g} Hz but everything the "
+            f"run was asked for was on disk, so its answer is used ({err}). "
+            "Palace has been seen to corrupt its heap on shutdown of a "
+            "boundary-mode solve, after writing its results.",
             stacklevel=3,
         )
         return text
@@ -511,15 +588,18 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
 
         A run that ends abnormally is asked whether it answered anyway
         before it is reported as a failure, because on Palace 0.17 it
-        often did (:meth:`_salvage_mode_table`). One that did not, and
-        whose binary died rather than exited, is reported as the runtime
+        often did (:meth:`_salvage_mode_table`). One that did not — a
+        mode table short of a Mode, a declared path with no row, fields
+        asked for and not saved — is the failure it looks like, and when
+        its binary died rather than exited it is reported as the runtime
         failure it is rather than as a raw exit status.
 
         Args:
-            salvage: Take a complete mode table left by an abnormal exit
-                as the run's answer, warning that it happened. ``False``
-                re-raises instead, which is also what a caller running
-                with warnings as errors gets.
+            salvage: Take everything an abnormal exit left on disk, when
+                it is everything the run was asked for, as the run's
+                answer, warning that it happened. ``False`` re-raises
+                instead, which is also what a caller running with
+                warnings as errors gets.
             remedy: A second way out, named at the end of the abort
                 report beyond pointing ``PALACE_BIN`` somewhere else.
             **kwargs: What :meth:`gsim.palace.base.PalaceSimMixin.run_local`

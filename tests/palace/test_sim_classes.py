@@ -291,6 +291,36 @@ class TestModePaths:
                 "line", voltage=[[1.0, -19.8, 0.11], [1.0, -20.2, 0.11]]
             )
 
+    def test_a_loop_handed_in_closed_is_opened(self):
+        """Palace closes the loop itself and aborts on the zero-length segment."""
+        sim = BoundaryModeSim()
+        loop = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]
+        sim.add_impedance_path(
+            "line", voltage=[[0.0, 0.0], [1.0, 0.0]], current=[*loop, loop[0]]
+        )
+        assert sim.mode_postprocessing()["Impedance"][0]["CurrentPath"] == loop
+
+    @pytest.mark.parametrize(
+        "current",
+        [
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [1.0, 1.0]],
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 0.0]],
+        ],
+        ids=["repeated-corner", "repeated-last-corner", "two-corners-closed"],
+    )
+    def test_a_loop_with_an_empty_segment_is_refused(self, current):
+        sim = BoundaryModeSim()
+        with pytest.raises(ValueError, match=r"repeats the point|three or more"):
+            sim.add_impedance_path(
+                "line", voltage=[[0.0, 0.0], [1.0, 0.0]], current=current
+            )
+
+    def test_a_voltage_path_with_an_empty_segment_is_refused(self):
+        sim = BoundaryModeSim()
+        with pytest.raises(ValueError, match="repeats the point"):
+            sim.add_impedance_path("line", voltage=[[0.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+
     def test_the_block_reaches_the_written_config(self, tmp_path, monkeypatch):
         """``write_config`` emits the paths as ``Boundaries.Postprocessing``."""
         from types import SimpleNamespace

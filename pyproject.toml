@@ -31,20 +31,13 @@ dependencies = [
   # must be 9.3.1 or greater", and the mixed VTK segfaults on macOS. 7.9 pins
   # `vtk==9.6.2`, so resolving vtk any higher falls back to the bundled one.
   # cadquery arrives through femwell -> meshwell -> cadquery, so this bites
-  # wherever the femwell or modulator extra is installed.
+  # wherever the femwell extra is installed.
   "vtk<9.7",
 ]
 
 [project.optional-dependencies]
 # femwell/skfem mode-solving adapter (gsim.femwell).
 femwell = [
-  "femwell>=0.1.11",
-  "scikit-fem>=8.0.0",
-]
-# Full TW-MZM modulator workflow (charge transport + femwell modes).
-modulator = [
-  "devsim>=2.6.0",
-  "devsim-openblas>=0.1.0",
   "femwell>=0.1.11",
   "scikit-fem>=8.0.0",
 ]
@@ -72,7 +65,6 @@ visualize = [
 [dependency-groups]
 dev = [
   "build>=1.2.0",
-  "towncrier>=24.0.0",
   { include-group = "docs" },
   { include-group = "lint" },
   { include-group = "test" }
@@ -82,6 +74,7 @@ docs = [
   "griffe>=1.5.6",
   "ipykernel>=6.29.5",
   "matplotlib>=3.10.0",
+  "mkdocstrings-python>=2.0.9",
   "mkdocstrings[python]>=0.27.0",
   "nb-clean>=4.0.1",
   "nbconvert>=7.16.6",
@@ -89,7 +82,7 @@ docs = [
   "papermill>=2.6.0",
   "plotly>=6.0.0",
   "vega-datasets>=0.9.0",
-  "zensical>=0.0.46"
+  "zensical>=0.0.69"
 ]
 lint = [
   "mkinit>=1.1.0",
@@ -236,11 +229,11 @@ reportMissingTypeStubs = "none"
 [tool.pytest.ini_options]
 addopts = "--tb=short -m 'not cloud and not meep_local and not tcad_local and not palace_local'"
 markers = [
+  "palace_local: tests running the Palace binary locally (deselected by default; run with `pytest -m palace_local`)",
   "cloud: tests that submit jobs to GDSFactory+ cloud servers (deselected by default; run with `pytest -m cloud`)",
   "sim_smoke_test: smallest cloud sims (one per solver) run automatically per-PR; run with `pytest -m sim_smoke_test`",
   "meep_local: tests requiring a local MEEP installation (deselected by default; run with `pytest -m meep_local`)",
   "tcad_local: tests requiring a local DEVSIM installation (deselected by default; run with `pytest -m tcad_local`)",
-  "palace_local: tests running the Palace binary locally (deselected by default; run with `pytest -m palace_local`)",
 ]
 norecursedirs = ["scripts"]
 testpaths = ["tests"]

@@ -192,7 +192,7 @@ def fake_devsim(monkeypatch):
     monkeypatch.setitem(sys.modules, "devsim.python_packages.simple_physics", sp)
     # The devices gsim holds are process-wide: one an earlier test left
     # behind would be released into this test's recorder.
-    monkeypatch.setattr("gsim.tcad.sim._LIVE_DEVICES", set())
+    monkeypatch.setattr("gsim.tcad.device._LIVE_DEVICES", set())
     return devsim, sp
 
 
@@ -258,6 +258,88 @@ def build_padded_diode(
         verbose=False,
     )
     return comp, stack, list(spans)
+
+
+def build_contacted_diode(
+    *,
+    center_y: float = -20.0,
+    half_width: float = 0.3,
+    pad_width: float = 0.3,
+    zmax: float = 0.22,
+    electrode_thickness: float = 0.5,
+):
+    """The padded diode with a metal electrode over each outer pad.
+
+    ``cathode_metal`` sits on ``n_pad`` and ``anode_metal`` on ``p_pad``,
+    so each Contact lies between a doped pad and its electrode, and the
+    oxide around the doped slab is free to join the solve as an insulator.
+
+    Returns:
+        ``(comp, stack)``.
+    """
+    from gsim.common.cross_section import build_doped_cross_section
+    from gsim.common.stack.extractor import Layer
+    from gsim.common.stack.materials import make_doped_materials
+
+    gf.gpdk.PDK.activate()
+    comp = gf.Component()
+    wg = comp << gf.c.rectangle((10.0, 0.4), centered=True, layer=(1, 0))
+    wg.y = center_y
+    slab = comp << gf.c.rectangle((10.0, 100.0), centered=True, layer=(3, 0))
+    slab.y = -5.0
+
+    spans = {
+        "n_pad": (center_y - half_width - pad_width, center_y - half_width),
+        "n_rib": (center_y - half_width, center_y),
+        "p_rib": (center_y, center_y + half_width),
+        "p_pad": (center_y + half_width, center_y + half_width + pad_width),
+    }
+    layer_specs = {}
+    for i, (name, (y0, y1)) in enumerate(spans.items()):
+        gds_layer = (30, i)
+        rect = comp << gf.c.rectangle((10.0, y1 - y0), layer=gds_layer)
+        rect.y = (y0 + y1) / 2
+        layer_specs[name] = Layer(
+            name=name,
+            gds_layer=gds_layer,
+            zmin=0.0,
+            zmax=zmax,
+            thickness=zmax,
+            material=name,
+            layer_type="dielectric",
+            mesh_resolution="fine",
+        )
+    # Off the generic PDK's own layers: an electrode drawn on metal1 would
+    # also be read as metal1, a micron higher.
+    for i, (pad, electrode) in enumerate(
+        {"n_pad": "cathode_metal", "p_pad": "anode_metal"}.items()
+    ):
+        y0, y1 = spans[pad]
+        gds_layer = (46, i)
+        rect = comp << gf.c.rectangle((10.0, y1 - y0), layer=gds_layer)
+        rect.y = (y0 + y1) / 2
+        layer_specs[electrode] = Layer(
+            name=electrode,
+            gds_layer=gds_layer,
+            zmin=zmax,
+            zmax=zmax + electrode_thickness,
+            thickness=electrode_thickness,
+            material="aluminum",
+            layer_type="conductor",
+            mesh_resolution="fine",
+        )
+    materials = make_doped_materials(
+        [(name, 1.6e3) for name in spans], permittivity=11.9
+    )
+    stack, _section = build_doped_cross_section(
+        comp,
+        axis="x",
+        value=0.0,
+        substrate_thickness=2.0,
+        doping={"layer_specs": layer_specs, "materials": materials},
+        verbose=False,
+    )
+    return comp, stack
 
 
 def build_pn_device():

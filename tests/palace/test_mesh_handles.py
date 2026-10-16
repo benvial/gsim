@@ -1,8 +1,8 @@
 """Public mesh handles on the Palace sim classes.
 
 The Palace sim classes answer "where is your mesh, and what groups does it
-have?" with the same public accessors the charge-transport sim class
-exposes, so no supported path needs private mesh state.
+have?" through public accessors, so no supported path needs private mesh
+state.
 """
 
 from __future__ import annotations
@@ -65,23 +65,3 @@ class TestAfterMeshing:
         )
         assert sim.mesh_groups == {}
 
-
-def test_charge_transport_sim_names_the_handles_identically():
-    """All four sim classes answer the mesh question the same way."""
-    from gsim.tcad import ChargeTransportSim
-
-    for name in ("mesh_path", "mesh_groups", "has_mesh"):
-        assert isinstance(getattr(ChargeTransportSim, name), property)
-        for sim_class in SIM_CLASSES:
-            assert isinstance(getattr(sim_class, name), property)
-
-
-def test_charge_transport_sim_raises_before_meshing():
-    from gsim.tcad import ChargeTransportSim
-
-    sim = ChargeTransportSim()
-    assert sim.has_mesh is False
-    with pytest.raises(ValueError, match=r"mesh\(\)"):
-        _ = sim.mesh_path
-    with pytest.raises(ValueError, match=r"mesh\(\)"):
-        _ = sim.mesh_groups

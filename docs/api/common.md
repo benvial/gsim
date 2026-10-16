@@ -1,4 +1,7 @@
-# Common API
+# Shared components guide
+
+Use shared geometry and layer-stack objects to describe components and their fabrication stack across simulation engines.
+The links below open the API reference for each object or helper.
 
 `gsim.common` itself is a narrow façade: it re-exports the geometry and
 stack names of the two sections below and nothing else. Everything else in
@@ -9,41 +12,15 @@ the package — `modes`, `circuit`, `carriers`, `transmission_line`,
 
 ## Geometry
 
-::: gsim.common.Geometry
-    options:
-      show_source: false
-      inherited_members: false
-      members: false
-
-::: gsim.common.GeometryModel
-    options:
-      show_source: false
-      inherited_members: false
-      members: false
-
-::: gsim.common.Prism
-    options:
-      show_source: false
-      inherited_members: false
-      members: false
-
-::: gsim.common.extract_geometry_model
-    options:
-      show_source: false
+- [`Geometry`][gsim.common.Geometry]
+- [`GeometryModel`][gsim.common.GeometryModel]
+- [`Prism`][gsim.common.Prism]
+- [`extract_geometry_model`][gsim.common.extract_geometry_model]
 
 ## Stack
 
-::: gsim.common.LayerStack
-    options:
-      show_source: false
-      inherited_members: false
-      members: false
-
-::: gsim.common.Layer
-    options:
-      show_source: false
-      inherited_members: false
-      members: false
+- [`LayerStack`][gsim.common.LayerStack]
+- [`Layer`][gsim.common.Layer]
 
 ## PN Junction
 
@@ -51,99 +28,39 @@ Depletion model after Sze & Ng, *Physics of Semiconductor Devices*, ch. 2:
 the quick analytic path beside the charge-transport solve, and the
 reference its numeric `C(V)` is validated against.
 
-::: gsim.common.stack.PNJunctionConfig
-    options:
-      show_source: false
-
-::: gsim.common.stack.built_in_voltage
-    options:
-      show_source: false
-
-::: gsim.common.stack.depletion_width
-    options:
-      show_source: false
-
-::: gsim.common.stack.depletion_extents
-    options:
-      show_source: false
-
-::: gsim.common.stack.junction_capacitance_per_area
-    options:
-      show_source: false
+- [`PNJunctionConfig`][gsim.common.stack.PNJunctionConfig]
+- [`built_in_voltage`][gsim.common.stack.built_in_voltage]
+- [`depletion_width`][gsim.common.stack.depletion_width]
+- [`depletion_extents`][gsim.common.stack.depletion_extents]
+- [`junction_capacitance_per_area`][gsim.common.stack.junction_capacitance_per_area]
 
 ## Visualization
 
-::: gsim.common.viz.plot_prisms_3d
-    options:
-      show_source: false
-
-::: gsim.common.viz.plot_prism_slices
-    options:
-      show_source: false
-
-::: gsim.common.viz.create_web_export
-    options:
-      show_source: false
-
-::: gsim.common.viz.export_3d_mesh
-    options:
-      show_source: false
+- [`plot_prisms_3d`][gsim.common.viz.plot_prisms_3d]
+- [`plot_prism_slices`][gsim.common.viz.plot_prism_slices]
+- [`create_web_export`][gsim.common.viz.create_web_export]
+- [`export_3d_mesh`][gsim.common.viz.export_3d_mesh]
 
 ## Transmission line
 
-The Traveling-wave electrode as a transmission line, described with no
-modulator in sight: what a mode solve says about it, its per-unit-length
-circuit, how the junction's series-RC branch loads it, and what a
-periodically loaded electrode behaves as. The physics that turns these
-into device figures of merit lives in `gsim.modulator`.
+The Traveling-wave electrode as a transmission line: what a mode solve says
+about it, its per-unit-length circuit, how the junction's series-RC branch
+loads it, and what a periodically loaded electrode behaves as. The
+[TW-MZM notebook](../nbs/tcad_twmzm.md) turns these into device figures of
+merit.
 
-::: gsim.common.transmission_line.RFLineParams
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.line_params_from_neff
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.line_params_from_gamma
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.rlgc_from_line_params
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.JunctionBranch
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.series_rc_from_admittance
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.loaded_line_params
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.section_abcd
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.segmented_period_abcd
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.segmented_line_params
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.segmented_line
-    options:
-      show_source: false
-
-::: gsim.common.transmission_line.bragg_fraction
-    options:
-      show_source: false
+- [`RFLineParams`][gsim.common.transmission_line.RFLineParams]
+- [`line_params_from_neff`][gsim.common.transmission_line.line_params_from_neff]
+- [`line_params_from_gamma`][gsim.common.transmission_line.line_params_from_gamma]
+- [`rlgc_from_line_params`][gsim.common.transmission_line.rlgc_from_line_params]
+- [`JunctionBranch`][gsim.common.junction.JunctionBranch]
+- [`series_rc_from_admittance`][gsim.common.junction.series_rc_from_admittance]
+- [`loaded_line_params`][gsim.common.transmission_line.loaded_line_params]
+- [`section_abcd`][gsim.common.transmission_line.section_abcd]
+- [`segmented_period_abcd`][gsim.common.transmission_line.segmented_period_abcd]
+- [`segmented_line_params`][gsim.common.transmission_line.segmented_line_params]
+- [`segmented_line`][gsim.common.transmission_line.segmented_line]
+- [`bragg_fraction`][gsim.common.transmission_line.bragg_fraction]
 
 ## Circuit export
 
@@ -153,34 +70,11 @@ file, and the plain-numpy readers and driven-line responses that prove
 the round trip. The junction model file format is specified in
 `write_junction_model`.
 
-::: gsim.common.circuit.line_smatrix
-    options:
-      show_source: false
-
-::: gsim.common.circuit.write_touchstone
-    options:
-      show_source: false
-
-::: gsim.common.circuit.read_touchstone
-    options:
-      show_source: false
-
-::: gsim.common.circuit.sax_line_model
-    options:
-      show_source: false
-
-::: gsim.common.circuit.write_junction_model
-    options:
-      show_source: false
-
-::: gsim.common.circuit.read_junction_model
-    options:
-      show_source: false
-
-::: gsim.common.circuit.terminated_response
-    options:
-      show_source: false
-
-::: gsim.common.circuit.line_driven_response
-    options:
-      show_source: false
+- [`line_smatrix`][gsim.common.circuit.line_smatrix]
+- [`write_touchstone`][gsim.common.circuit.write_touchstone]
+- [`read_touchstone`][gsim.common.circuit.read_touchstone]
+- [`sax_line_model`][gsim.common.circuit.sax_line_model]
+- [`write_junction_model`][gsim.common.circuit.write_junction_model]
+- [`read_junction_model`][gsim.common.circuit.read_junction_model]
+- [`terminated_response`][gsim.common.circuit.terminated_response]
+- [`line_driven_response`][gsim.common.circuit.line_driven_response]

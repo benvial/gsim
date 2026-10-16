@@ -12,20 +12,37 @@ Example::
 
     from gsim import tcad
 
-    sim = tcad.ChargeTransportSim()
-    sim.set_geometry(component)
-    sim.set_stack(stack)
-    sim.set_cross_section("x=0", window=(-25.0, -15.0))
-    sim.add_contact(name="anode", layer_a="metal1", layer_b="p_rib")
-    sim.add_contact(name="cathode", layer_a="metal1", layer_b="n_rib")
-    sim.add_doping(
+    sim = tcad.Simulation()
+    sim.geometry(component, stack=stack)
+    sim.domain(plane="x=0", window=(-25.0, -15.0))
+    sim.doping.add(
         tcad.StepDoping(region="p_rib", dopant_type="acceptor", concentration_cm3=1e18)
     )
-    sim.set_output_dir("./tcad")
-    sim.mesh(preset="coarse")
-    result = sim.sweep([0.0, -1.0, -2.0], contact="cathode")
+    sim.doping.add(
+        tcad.StepDoping(region="n_rib", dopant_type="donor", concentration_cm3=1e18)
+    )
+    sim.contacts.add(name="anode", semiconductor="p_rib", electrode="metal_p")
+    sim.contacts.add(name="cathode", semiconductor="n_rib", electrode="metal_n")
+    sim.interfaces.add(name="junction", region_a="p_rib", region_b="n_rib")
+    sim.solver(mesh_preset="coarse")
+    sim.mesh(output_dir="./tcad")
+    result = sim.sweep([0.0, 1.0, 2.0], contact="cathode")
 """
 
+from gsim.common.carriers import MobilityModel
+from gsim.tcad.api import (
+    Contact,
+    Contacts,
+    Domain,
+    Doping,
+    Geometry,
+    Insulator,
+    Interface,
+    Interfaces,
+    Materials,
+    Solver,
+    TCADMesh,
+)
 from gsim.tcad.doping import (
     CallableDoping,
     DopingProfile,
@@ -37,7 +54,7 @@ from gsim.tcad.doping import (
     net_doping_cm3,
 )
 from gsim.tcad.results import BiasPoint, BiasSweepResult, CarrierMap
-from gsim.tcad.sim import ChargeTransportSim, Insulator
+from gsim.tcad.simulation import Simulation
 from gsim.tcad.validation import (
     CapacitanceComparison,
     analytic_capacitance_f_per_cm,
@@ -51,12 +68,23 @@ __all__ = [
     "CallableDoping",
     "CapacitanceComparison",
     "CarrierMap",
-    "ChargeTransportSim",
+    "Contact",
+    "Contacts",
+    "Domain",
+    "Doping",
     "DopingProfile",
     "GaussianDoping",
+    "Geometry",
     "ImplantDoping",
     "Insulator",
+    "Interface",
+    "Interfaces",
+    "Materials",
+    "MobilityModel",
+    "Simulation",
+    "Solver",
     "StepDoping",
+    "TCADMesh",
     "TableDoping",
     "acceptor_donor_concentrations",
     "analytic_capacitance_f_per_cm",

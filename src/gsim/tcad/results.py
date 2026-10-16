@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from gsim.common.sweep import ScalarSweep
 
 if TYPE_CHECKING:
-    from gsim.common.transmission_line import JunctionBranch
+    from gsim.common.junction import JunctionBranch
 
 __all__ = ["BiasPoint", "BiasSweepResult", "CarrierMap"]
 
@@ -106,14 +106,14 @@ class BiasPoint(BaseModel):
         capacitance behind the series resistance of the doped slab.
 
         Returns:
-            The fitted :class:`~gsim.common.transmission_line.JunctionBranch`, both
+            The fitted :class:`~gsim.common.junction.JunctionBranch`, both
             fields floats.
 
         Raises:
             ValueError: When this point holds no small-signal admittance,
                 or one a series RC cannot represent.
         """
-        from gsim.common.transmission_line import (
+        from gsim.common.junction import (
             JunctionBranch,
             series_rc_from_admittance,
         )
@@ -170,10 +170,10 @@ class BiasSweepResult(ScalarSweep[BiasPoint]):
         """The series-RC junction branch fitted at every Bias point.
 
         Returns:
-            A :class:`~gsim.common.transmission_line.JunctionBranch` of arrays in
+            A :class:`~gsim.common.junction.JunctionBranch` of arrays in
             sweep order.
         """
-        from gsim.common.transmission_line import JunctionBranch
+        from gsim.common.junction import JunctionBranch
 
         fitted = [p.junction_branch() for p in self.points]
         return JunctionBranch(

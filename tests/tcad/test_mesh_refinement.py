@@ -4,33 +4,38 @@ from __future__ import annotations
 
 import pytest
 
-from gsim.modulator.demo import demo_phase_shifter
-from gsim.tcad import ChargeTransportSim
+from gsim.tcad import Simulation
 from tests._helpers import longest_edge_in_box
 
-#: Around the demo Junction, the height of the slab: (h, h, z, z, size) in um.
+from .conftest import build_contacted_diode
+
+#: Around the diode's Junction, the height of the slab: (h, h, z, z, size) in um.
 BOX = (-20.15, -19.85, 0.0, 0.22, 0.01)
 
 
-def _longest_edge_in_box(tmp_path, **mesh_kwargs) -> float:
-    demo = demo_phase_shifter()
-    sim = ChargeTransportSim()
-    sim.set_output_dir(str(tmp_path))
-    sim.set_stack(demo.stack)
-    sim.set_airbox(margin_x=2.0, margin_y=2.0, z_above=1.5, z_below=1.0)
-    sim.set_geometry(demo.component)
-    sim.set_cross_section("x=0", window=(-21.1, -18.9))
-    sim.add_contact(name="cathode", layer_a="n_pad", layer_b="cathode_metal")
-    sim.add_contact(name="anode", layer_a="p_pad", layer_b="anode_metal")
-    sim.add_interface(name="junction", layer_a="n_rib", layer_b="p_rib")
-    sim.mesh(
-        preset="coarse",
-        refined_mesh_size=0.05,
-        max_mesh_size=40.0,
-        verbose=False,
-        **mesh_kwargs,
+def _longest_edge_in_box(tmp_path, **solver_settings) -> float:
+    comp, stack = build_contacted_diode()
+    sim = Simulation()
+    sim.geometry(comp, stack=stack)
+    sim.domain(
+        plane="x=0",
+        window=(-21.1, -18.9),
+        margin_x=2.0,
+        margin_y=2.0,
+        z_above=1.5,
+        z_below=1.0,
     )
-    return longest_edge_in_box(sim.mesh_path, BOX[:2], BOX[2:4])
+    sim.contacts.add(name="cathode", semiconductor="n_pad", electrode="cathode_metal")
+    sim.contacts.add(name="anode", semiconductor="p_pad", electrode="anode_metal")
+    sim.interfaces.add(name="junction", region_a="n_rib", region_b="p_rib")
+    sim.solver(
+        mesh_preset="coarse",
+        refined_mesh_size_um=0.05,
+        max_mesh_size_um=40.0,
+        **solver_settings,
+    )
+    mesh = sim.mesh(output_dir=tmp_path)
+    return longest_edge_in_box(mesh.mesh_path, BOX[:2], BOX[2:4])
 
 
 def test_elements_inside_a_refinement_box_keep_to_its_size(tmp_path):
@@ -48,6 +53,13 @@ def test_elements_inside_a_refinement_box_keep_to_its_size(tmp_path):
 def test_a_refinement_box_needs_a_positive_size(tmp_path):
     with pytest.raises(ValueError, match="refinement"):
         _longest_edge_in_box(tmp_path, refinement_boxes=[(*BOX[:4], 0.0)])
+
+
+def test_a_refinement_box_is_a_mesh_setting():
+    """A box changes the mesh, so it is one of the solver's mesh fields."""
+    from gsim.tcad.api import MESH_FIELDS
+
+    assert "refinement_boxes" in MESH_FIELDS
 
 
 class TestTheOptionOnTheMeshConfig:
