@@ -1,15 +1,29 @@
 """Reassemble gsim's modulator exports with numpy and scikit-rf.
 
 This is the reference for the consuming side of gsim's compact-model
-handoff (circulax, or any circuit tool): it reads the two files a Study
+handoff (circulax, or any circuit tool): it reads the two files gsim
 exports and wires them together with plain network math — no gsim, no
 circulax, no sax imported anywhere; scikit-rf reads the Touchstone file
 and converts it to a chain matrix. Copy it as a starting point.
 
 The two artifacts, produced on the gsim side by::
 
-    study.line.export_touchstone()          # -> electrode.s2p
-    study.charge.export_junction_model()    # -> junction.json
+    from gsim.common.circuit import line_smatrix, write_junction_model, write_touchstone
+
+    write_touchstone(  # -> electrode.s2p
+        "electrode.s2p",
+        freq_hz=line.freq_hz,
+        s=line_smatrix(line.gamma_per_m, line.z0_ohm, length_m=length_m),
+    )
+    branch = sweep.junction_branch()  # a gsim.tcad BiasSweepResult
+    write_junction_model(  # -> junction.json
+        "junction.json",
+        bias_v=sweep.voltages,
+        r_s_ohm_m=branch.r_s_ohm_m,
+        c_j_f_per_m=branch.c_j_f_per_m,
+        contact="cathode",
+        freq_hz=sim.solver.junction_freq_hz,
+    )
 
 are meant to be wired as follows:
 
@@ -25,7 +39,7 @@ are meant to be wired as follows:
   the branch a circuit tool inserts per unit length to re-bias the
   line, or lumps into ``C_j*L`` for driver design.
 
-Run it against a Study's output directory::
+Run it against those two files::
 
     python circulax_reassembly.py electrode.s2p junction.json \
         --z-gen 50 --z-load 50

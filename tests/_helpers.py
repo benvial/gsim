@@ -40,7 +40,7 @@ def series_rc_admittance(
 def fake_coupling(n_cm3: ArrayLike, p_cm3: ArrayLike) -> SimpleNamespace:
     """A stand-in carrier coupling: linear in the concentrations, no physics.
 
-    Shaped like the carriers Stage's response — index shift, absorption
+    Shaped like a carrier coupling's response — index shift, absorption
     and conductivity per sample — so a Staircase test can inject it in
     place of a plasma-dispersion model. Electrons conduct twice as well
     as holes, so a profile's asymmetry survives into the conductivity.

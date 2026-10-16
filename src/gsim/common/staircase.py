@@ -20,7 +20,7 @@ Everything that turns a Carrier map into per-Strip averages lives here:
 - :func:`build_staircase_cross_section` does the whole job in one call: a
   Carrier map, a strip count and the Junction extent in, a meshable
   Staircase cross-section out — the strip Regions, their material
-  response for *both* EM Stages (:class:`Strips`), and the flanking
+  response for *both* mode solves, optical and RF (:class:`Strips`), and the flanking
   electrodes. The drawing of the Strips and the material of each one are
   its own private steps.
 - :func:`surroundings_from_section` supplies what the Strips are *not*:
@@ -129,15 +129,15 @@ BAND_AVERAGE_SAMPLES_PER_STRIP: int = 8
 
 #: Drawn length of a Staircase along the propagation direction (um).
 #: The Cross-section is invariant along it, so it is not a setting;
-#: a Stage meshing a Staircase cuts through the middle of it.
+#: the plane a Staircase is meshed on cuts through the middle of it.
 STRIP_LENGTH_UM: float = 10.0
 
 
 class MaterialResponseLike(Protocol):
     """What a carrier coupling answers, sample by sample.
 
-    The shape of :class:`gsim.modulator.carriers.MaterialResponse`, stated
-    here so the Staircase depends on the answer and not on the Stage.
+    Anything carrying these three per-sample arrays answers, so the
+    Staircase depends on the answer and not on how it was computed.
     """
 
     @property
@@ -159,8 +159,9 @@ class MaterialResponseLike(Protocol):
 class CarrierCoupling(Protocol):
     """The one thing that turns concentrations into material response.
 
-    The carriers Stage's ``response`` method satisfies it; a test hands in
-    any callable of the same shape.
+    Any callable of this shape satisfies it: the TW-MZM notebook builds one
+    from :mod:`gsim.common.carriers`, and a test hands in a linear
+    stand-in.
     """
 
     def __call__(self, n_cm3: ArrayLike, p_cm3: ArrayLike) -> MaterialResponseLike:
@@ -170,10 +171,10 @@ class CarrierCoupling(Protocol):
 
 @dataclass(frozen=True)
 class OpticalStripMaterial:
-    """What the optical Stage adds to a Strip's material.
+    """What the optical mode solve adds to a Strip's material.
 
     Attributes:
-        wavelength_um: Vacuum wavelength the Stage solves at (um). Each
+        wavelength_um: Vacuum wavelength the mode is solved at (um). Each
             Strip's extinction ``kappa = dalpha lambda / 4 pi`` is built
             at it, so the Staircase and a continuous ``eps(x, y)`` carry
             the same loss.
@@ -187,7 +188,7 @@ class OpticalStripMaterial:
 
 @dataclass(frozen=True)
 class RFStripMaterial:
-    """What the RF Stage adds to a Strip's material.
+    """What the RF mode solve adds to a Strip's material.
 
     Attributes:
         permittivity: Relative permittivity of the Strip lattice, which
@@ -199,7 +200,7 @@ class RFStripMaterial:
     fmax_hz: float = 200e9
 
 
-#: The per-Stage strip input: one typed value per EM Stage.
+#: The per-solve strip input: one typed value per mode solve, optical or RF.
 StripMaterial = OpticalStripMaterial | RFStripMaterial
 
 
@@ -233,7 +234,7 @@ class StaircaseDrawing:
     component: gf.Component | None = None
 
 
-#: The drawing every Stage uses unless it says otherwise.
+#: The drawing a Staircase uses unless told otherwise.
 DEFAULT_DRAWING = StaircaseDrawing()
 
 
@@ -543,8 +544,8 @@ class Strips:
 
     One entry per Strip, low edge first. The concentrations are the
     Carrier map's averages over the Strip; the response is what those
-    averages turn into — the Drude conductivity the RF Stage meshes and
-    the plasma-dispersion permittivity the optical Stage meshes.
+    averages turn into — the Drude conductivity the RF solve meshes and
+    the plasma-dispersion permittivity the optical solve meshes.
 
     Attributes:
         edges_um: Ascending Strip edges along the junction axis (um),
@@ -627,8 +628,8 @@ def _strip_response(
         p_strips_cm3: Per-strip average hole concentration (cm^-3).
         zmin: Per-strip bottom (um).
         zmax: Per-strip top (um).
-        response: The carriers Stage's coupling.
-        material: The per-Stage strip input: an optical one builds each
+        response: The carrier coupling.
+        material: The per-solve strip input: an optical one builds each
             Strip's complex permittivity at the solve wavelength from
             the coupling's index shift and absorption; an RF one gives
             every Strip the lattice permittivity beside its Drude
@@ -675,13 +676,13 @@ def _strip_response(
 def _strip_material(
     name: str, strips: Strips, index: int, *, material: StripMaterial
 ) -> dict[str, MaterialProperties]:
-    """Material of one Strip, for the Stage the Staircase was built for.
+    """Material of one Strip, for the solve the Staircase was built for.
 
     Args:
         name: Region (and material) name of the strip.
         strips: The Staircase's Strips.
         index: Strip index within them.
-        material: The per-Stage strip input the Staircase was built with.
+        material: The per-solve strip input the Staircase was built with.
 
     Returns:
         ``{name: MaterialProperties}`` for that one strip.
@@ -839,8 +840,8 @@ class StaircaseCrossSection:
 
     The strip Regions and the electrodes are drawn once on
     :attr:`component`; :meth:`stack` resolves them to a ``LayerStack``
-    carrying the Strip materials of the Stage the Staircase was built
-    for — the RF Stage's Drude conductivity or the optical Stage's
+    carrying the Strip materials of the solve the Staircase was built
+    for — the RF solve's Drude conductivity or the optical solve's
     perturbed permittivity, chosen by the :data:`StripMaterial` handed
     to the builder.
 
@@ -960,7 +961,7 @@ class StaircaseCrossSection:
 
     @property
     def material(self) -> StripMaterial:
-        """The per-Stage strip input this Staircase was built with."""
+        """The per-solve strip input this Staircase was built with."""
         return self._material
 
     def _doping(self) -> dict[str, Any]:
@@ -990,7 +991,7 @@ class StaircaseCrossSection:
         }
 
     def _electrode_materials(self) -> dict[str, MaterialProperties]:
-        """Electrode materials for the Stage the Staircase was built for.
+        """Electrode materials for the solve the Staircase was built for.
 
         Returns:
             ``{name: MaterialProperties}`` for every electrode.
@@ -1049,7 +1050,7 @@ class StaircaseCrossSection:
 
         Returns:
             The ``LayerStack``, built once and cached, carrying the Strip
-            materials of the Stage this Staircase was built for.
+            materials of the solve this Staircase was built for.
         """
         if self._stack is None:
             stack, _section = build_doped_cross_section(
@@ -1419,7 +1420,7 @@ def build_staircase_cross_section(
     """Turn a Carrier map into a meshable Staircase cross-section.
 
     The Carrier map is binned into *n_strips* piecewise-constant Strips
-    across the Junction extent, the carriers Stage's coupling turns each
+    across the Junction extent, the carrier coupling turns each
     Strip's averages into its material, and each Strip is drawn as its
     own Region beside the Traveling-wave electrodes and whatever of the
     drawn device is redrawn around them.
@@ -1446,10 +1447,10 @@ def build_staircase_cross_section(
             first, tiling one extent end to end — in place of
             *n_strips*, *junction*, *zmin* and *zmax*, which then stay
             unset.
-        response: The carriers Stage's coupling — the one thing that
+        response: The carrier coupling — the one thing that
             turns electron and hole concentrations into index shift,
             absorption and conductivity.
-        material: The per-Stage strip input: an
+        material: The per-solve strip input: an
             :class:`OpticalStripMaterial` (wavelength and unperturbed
             index) or an :class:`RFStripMaterial` (lattice permittivity
             and top frequency).

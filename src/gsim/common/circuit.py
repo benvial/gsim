@@ -279,7 +279,7 @@ def sax_line_model(
     freq = np.atleast_1d(np.asarray(freq_hz, dtype=np.float64)).copy()
     _require_ascending(freq, "freq_hz")
     # The record copies its inputs and owns the resampling, so this model
-    # interpolates the way the line Stage's response grid does.
+    # interpolates the way RFLineParams.resampled does.
     line = line_params_from_gamma(
         freq,
         np.broadcast_to(np.asarray(gamma_per_m, dtype=np.complex128), freq.shape),

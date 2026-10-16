@@ -23,7 +23,7 @@ outside a band of the Cross-section (:func:`field_fraction_outside`),
 the current one conductor carries (:func:`electrode_current`) and the
 Marks-Williams power-current impedance it implies
 (:func:`z0_power_current`), and — for an RF line — the one reading of a
-selected Mode the RF Stage asks for: index, impedance and whether it is
+selected Mode an RF line solve asks for: index, impedance and whether it is
 the wall Mode (:func:`line_reading`). A conductor is named to every
 current integral the same way, as a
 :class:`~gsim.common.modes.Conductor`.
@@ -599,7 +599,7 @@ def line_reading(
     signal: Conductor,
     return_: Conductor | None = None,
 ) -> LineReading:
-    """What the RF Stage asks of one selected Mode, in one reading.
+    """What an RF line solve asks of one selected Mode, in one reading.
 
     The index off the Mode, the impedance off its fields over the signal
     conductor, and — given the return electrode — whether the Mode is

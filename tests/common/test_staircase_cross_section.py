@@ -20,7 +20,7 @@ from gsim.common.staircase import (
 )
 from tests._helpers import fake_coupling
 
-#: The optical Stage's strip input, at the wavelength the fixtures solve at.
+#: The optical solve's strip input, at the wavelength the fixtures solve at.
 OPTICAL = OpticalStripMaterial(wavelength_um=1.55, index=3.4757)
 
 CENTER = -20.0
@@ -162,7 +162,7 @@ class TestBothMaterialResponses:
 
         The dispersion model's own wavelength is where its coefficients
         were fitted, which says what ``alpha`` is; it does not say what
-        wavelength the Stage is solving at. Reading the extinction off
+        wavelength the mode is solved at. Reading the extinction off
         the fit wavelength inflates the loss of every strip whenever the
         two differ.
         """

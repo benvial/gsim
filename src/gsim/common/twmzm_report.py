@@ -1,4 +1,4 @@
-"""What ``Study.report()`` returns: the whole-device figures of merit.
+"""The whole-device figures of merit of a traveling-wave Mach-Zehnder modulator.
 
 The mode solvers (Palace BoundaryMode or the femwell adapter) produce
 complex effective indices and characteristic impedances versus frequency
@@ -12,9 +12,9 @@ insertion loss, extinction ratio and chirp — all computed with the pure
 analysis functions of :mod:`gsim.common.twmzm` over the line
 :mod:`gsim.common.transmission_line` describes.
 
-:class:`LoadedLineComparison` is the other container the Study hands
-back: the two loaded-line routes side by side at one Bias point, and the
-gate that fails where they disagree.
+:class:`LoadedLineComparison` puts the two ways of assembling the loaded
+line side by side at one Bias point, with the gate that fails where they
+disagree.
 
 Sign convention for complex effective indices is ``exp(+i omega t)``
 (lossy: ``Im(n_eff) < 0``); the extraction accepts either sign of the
@@ -53,9 +53,10 @@ __all__ = [
 ]
 
 #: The :meth:`LoadedLineComparison.check` tolerances a silicon-only charge
-#: solve (``study.charge(oxide=False)``) needs: just outside the gap
-#: measured without the fringing field in C_j, at worst 25 % on n_RF, 59 %
-#: on the loss and 42 % on |Z0| across the two demo devices.
+#: solve (Poisson in the doped silicon alone, no oxide insulator) needs:
+#: just outside the gap measured without the fringing field in C_j, at
+#: worst 25 % on n_RF, 59 % on the loss and 42 % on |Z0| across the two
+#: demo devices.
 SILICON_ONLY_RTOL: dict[str, float] = {
     "rtol_n_rf": 0.3,
     "rtol_alpha": 0.7,
@@ -75,8 +76,8 @@ class LoadedLineComparison(BaseModel):
 
     What is measured, at 20 and 30 GHz on the two demo devices. The two
     routes agree on the series R and L to 1 %; the gap is in the shunt
-    branch. With Poisson solved in the doped silicon alone
-    (``study.charge(oxide=False)``) the assembled route reads 16-25 % low
+    branch. With Poisson solved in the doped silicon alone (no oxide
+    insulator declared) the assembled route reads 16-25 % low
     on n_RF, 46-59 % low on the loss and 25-42 % high on |Z0|: the direct
     solve finds 115-150 pF/m more shunt capacitance on the rib Phase
     shifter. Most of that is the field fringing through the oxide around

@@ -12,7 +12,6 @@ same n_eff on identical piecewise-constant materials.
 
 What it does not cover: the mesh is fixed and only the *materials* vary,
 so nothing here can see a staircase whose geometry is not the device.
-That is tests/modulator/test_representation_gate.py.
 """
 
 from __future__ import annotations
