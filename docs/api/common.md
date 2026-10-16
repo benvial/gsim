@@ -5,8 +5,9 @@ The links below open the API reference for each object or helper.
 
 `gsim.common` itself is a narrow façade: it re-exports the geometry and
 stack names of the two sections below and nothing else. Everything else in
-the package — `modes`, `circuit`, `carriers`, `transmission_line`,
-`interpolate`, `mesh_regions` — is imported by its submodule path, as
+the package — `modes`, `circuit`, `carriers`, `junction`,
+`transmission_line`, `twmzm`, `staircase`, `interpolate`, `mesh_regions` —
+is imported by its submodule path, as
 `from gsim.common.transmission_line import RFLineParams`, so importing
 `gsim.common` never pulls a backend's dependencies in with it.
 
@@ -78,3 +79,40 @@ the round trip. The junction model file format is specified in
 - [`read_junction_model`][gsim.common.circuit.read_junction_model]
 - [`terminated_response`][gsim.common.circuit.terminated_response]
 - [`line_driven_response`][gsim.common.circuit.line_driven_response]
+
+## Traveling-wave MZM figures of merit
+
+The traveling-wave Mach-Zehnder modulator on plain arrays: the electro-optic and walk-off responses, $V_\pi L$, the
+static transfer, drive range and chirp (`gsim.common.twmzm`), and the whole-device report wired from RF line parameters
+and an optical bias sweep (`gsim.common.twmzm_report`). The [TW-MZM notebook](../nbs/tcad_twmzm.md) uses both.
+
+- [`eo_response`][gsim.common.twmzm.eo_response]
+- [`eo_bandwidth`][gsim.common.twmzm.eo_bandwidth]
+- [`segmented_eo_response`][gsim.common.twmzm.segmented_eo_response]
+- [`walkoff_bandwidth`][gsim.common.twmzm.walkoff_bandwidth]
+- [`walkoff_bandwidth_dispersive`][gsim.common.twmzm.walkoff_bandwidth_dispersive]
+- [`vpi_length_vcm`][gsim.common.twmzm.vpi_length_vcm]
+- [`mzm_transfer`][gsim.common.twmzm.mzm_transfer]
+- [`mzm_transfer_figures`][gsim.common.twmzm.mzm_transfer_figures]
+- [`MZMTransferFigures`][gsim.common.twmzm.MZMTransferFigures]
+- [`mzm_drive_range`][gsim.common.twmzm.mzm_drive_range]
+- [`mzm_chirp`][gsim.common.twmzm.mzm_chirp]
+- [`twmzm_figures_of_merit`][gsim.common.twmzm_report.twmzm_figures_of_merit]
+- [`TWMZMReport`][gsim.common.twmzm_report.TWMZMReport]
+- [`OpticalPhaseSweep`][gsim.common.twmzm_report.OpticalPhaseSweep]
+- [`LoadedLineComparison`][gsim.common.twmzm_report.LoadedLineComparison]
+
+## Staircase cross-section
+
+A carrier map averaged into piecewise-constant strips and redrawn as a meshable cross-section, the representation a
+mode solver with one material per region can take. Each strip carries the carrier coupling's optical permittivity or RF
+conductivity.
+
+- [`build_staircase_cross_section`][gsim.common.staircase.build_staircase_cross_section]
+- [`StaircaseCrossSection`][gsim.common.staircase.StaircaseCrossSection]
+- [`CarrierCoupling`][gsim.common.staircase.CarrierCoupling]
+- [`OpticalStripMaterial`][gsim.common.staircase.OpticalStripMaterial]
+- [`RFStripMaterial`][gsim.common.staircase.RFStripMaterial]
+- [`ElectrodeSpec`][gsim.common.staircase.ElectrodeSpec]
+- [`surroundings_from_section`][gsim.common.staircase.surroundings_from_section]
+- [`staircase_profile`][gsim.common.staircase.staircase_profile]
