@@ -139,7 +139,7 @@ def epsilon_by_region(
         wavelength = C0 / frequency * 1e6
 
     if not isinstance(mesh, meshio.Mesh):
-        mesh = meshio.read(str(mesh))
+        mesh = meshio.read(str(mesh), file_format="gmsh")
     regions = list(group_tags(mesh, dim=2))
     if not regions:
         raise ValueError("Mesh has no 2D physical groups.")
@@ -189,7 +189,7 @@ def elementwise_epsilon(
         Complex epsilon per triangle, in the mesh's triangle order.
     """
     if not isinstance(mesh, meshio.Mesh):
-        mesh = meshio.read(str(mesh))
+        mesh = meshio.read(str(mesh), file_format="gmsh")
     tris, _tags = cell_blocks(mesh, "triangle")
     centroids = mesh.points[tris][:, :, :2].mean(axis=1)
 
@@ -258,7 +258,7 @@ def solve_modes(
     # meshio: skfem's own msh subdomain parsing is version-fragile, and the
     # explicit construction keeps the meshio triangle order == skfem element
     # order (which the per-element epsilon path relies on).
-    mio = meshio.read(str(msh_path))
+    mio = meshio.read(str(msh_path), file_format="gmsh")
     tris, phys_tags = cell_blocks(mio, "triangle")
 
     # Drop points no triangle references (e.g. nodes only line/contact

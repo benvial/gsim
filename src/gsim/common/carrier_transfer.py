@@ -79,7 +79,11 @@ class TransferredCarriers(BaseModel):
 
 def _read_mesh(mesh: meshio.Mesh | str | Path) -> meshio.Mesh:
     """Load the target mesh if it was given as a path."""
-    return mesh if isinstance(mesh, meshio.Mesh) else meshio.read(str(mesh))
+    return (
+        mesh
+        if isinstance(mesh, meshio.Mesh)
+        else meshio.read(str(mesh), file_format="gmsh")
+    )
 
 
 def _validated_samples(

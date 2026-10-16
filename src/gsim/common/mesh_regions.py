@@ -186,7 +186,7 @@ def region_elements(mesh: meshio.Mesh | str | Path, region: str) -> NDArray[np.i
             that name.
     """
     if not isinstance(mesh, meshio.Mesh):
-        mesh = meshio.read(str(mesh))
+        mesh = meshio.read(str(mesh), file_format="gmsh")
     tags_by_name = group_tags(mesh, dim=2)
     if region not in tags_by_name:
         raise ValueError(
