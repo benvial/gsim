@@ -121,10 +121,11 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
         verbose: Literal["quiet", "status", "full"] = "status",
         wait: bool = True,
         check_cache: bool = False,
+        poll_interval: float = 5.0,
     ) -> dict[str, Path] | str:
         """Run the eigenmode sim on GDSFactory+ cloud.
 
-        Thin wrapper over :meth:`PalaceSimMixin.run` that narrows the
+        Thin wrapper over :meth:`~gsim.common.cloud.CloudJobMixin.run` that narrows the
         return type: an eigenmode run returns a ``dict[str, Path]`` of
         output files keyed by name (e.g. ``"eig.csv"``), or the
         ``job_id`` string when ``wait=False``.
@@ -132,7 +133,11 @@ class EigenmodeSim(PalaceSimMixin, BaseModel):
         from gsim.palace.results import SParams
 
         result = super().run(
-            parent_dir, verbose=verbose, wait=wait, check_cache=check_cache
+            parent_dir,
+            verbose=verbose,
+            wait=wait,
+            check_cache=check_cache,
+            poll_interval=poll_interval,
         )
         if isinstance(result, SParams):
             msg = (

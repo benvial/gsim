@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from gsim.common.cloud import CloudJobMixin
 from gsim.palace.models import (
     CPWPortConfig,
     ImpedanceBoundaryConfig,
@@ -309,7 +310,7 @@ class MeshSourceMixin:
         return dict(self._meshed_mesh_source().mesh_groups)
 
 
-class PalaceSimMixin(SolverSettingsMixin):
+class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
     """Mixin providing common methods for all Palace simulation classes.
 
     Subclasses must define these attributes (typically via Pydantic fields):
@@ -336,9 +337,8 @@ class PalaceSimMixin(SolverSettingsMixin):
         wave_ports: list[WavePortConfig]
         two_terminal_ports: list[TwoTerminalPortConfig]
         terminals: list[TerminalConfig]
+    _cloud_job_type = "palace"
     _output_dir: Path | None
-    _job_id: str | None
-    _input_hash: str | None
     _stack_kwargs: dict[str, Any]
     _pec_blocks: list
     _symmetry_planes: list[SymmetryPlaneConfig]
@@ -2239,7 +2239,8 @@ class PalaceSimMixin(SolverSettingsMixin):
         """Prepare a temp directory with all config/mesh files for upload.
 
         Ensures ``_output_dir`` is set, ``config.json`` exists, and copies
-        everything to a fresh temp directory.
+        everything to a fresh temp directory, so neither an upload nor its
+        failure touches the user's directory.
 
         Returns:
             Path to temp directory ready for upload.
@@ -2261,167 +2262,6 @@ class PalaceSimMixin(SolverSettingsMixin):
             else:
                 shutil.copy2(item, dest)
         return tmp
-
-    def upload(self, *, verbose: bool = True) -> str:
-        """Prepare config, upload to the cloud. Does NOT start execution.
-
-        Requires :meth:`set_output_dir` and :meth:`mesh` to have been
-        called first.
-
-        Args:
-            verbose: Print progress messages.
-
-        Returns:
-            ``job_id`` string for use with :meth:`start`, :meth:`get_status`,
-            or :func:`gsim.wait_for_results`.
-        """
-        from gsim import gcloud
-        from gsim.hashing import compute_input_hash
-
-        tmp = self._prepare_upload_dir()
-        try:
-            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(tmp)
-            self._input_hash = compute_input_hash(tmp, "palace")
-            self._job_id = gcloud.upload(
-                tmp, "palace", verbose=verbose, input_hash=self._input_hash
-            )
-        except Exception:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
-            raise
-        return self._job_id
-
-    def start(self, *, verbose: bool = True) -> None:
-        """Start cloud execution for this sim's uploaded job.
-
-        Raises:
-            ValueError: If :meth:`upload` has not been called.
-        """
-        from gsim import gcloud
-
-        if self._job_id is None:
-            raise ValueError("Call upload() first")
-        gcloud.start(self._job_id, verbose=verbose)
-
-    def get_status(self) -> str:
-        """Get the current status of this sim's cloud job.
-
-        Returns:
-            Status string (``"created"``, ``"queued"``, ``"running"``,
-            ``"completed"``, ``"failed"``).
-
-        Raises:
-            ValueError: If no job has been submitted yet.
-        """
-        from gsim import gcloud
-
-        if self._job_id is None:
-            raise ValueError("No job submitted yet")
-        return gcloud.get_status(self._job_id)
-
-    def wait_for_results(
-        self,
-        *,
-        verbose: Literal["quiet", "status", "full"] = "status",
-        parent_dir: str | Path | None = None,
-    ) -> Any:
-        """Wait for this sim's cloud job, download and parse results.
-
-        Args:
-            verbose: Print progress messages.
-            parent_dir: Where to create the sim-data directory.
-
-        Returns:
-            Parsed result (typically ``dict[str, Path]`` of output files).
-
-        Raises:
-            ValueError: If no job has been submitted yet.
-        """
-        from gsim import gcloud
-
-        if self._job_id is None:
-            raise ValueError("No job submitted yet")
-        return gcloud.wait_for_results(
-            self._job_id,
-            verbose=verbose,
-            parent_dir=parent_dir,
-            estimated_runtime_seconds=getattr(self, "_estimated_runtime_seconds", None),
-        )
-
-    # -------------------------------------------------------------------------
-    # Simulation
-    # -------------------------------------------------------------------------
-
-    def run(
-        self,
-        parent_dir: str | Path | None = None,
-        *,
-        verbose: Literal["quiet", "status", "full"] = "status",
-        wait: bool = True,
-        check_cache: bool = False,
-    ) -> SParams | dict[str, Path] | str:
-        """Run simulation on GDSFactory+ cloud.
-
-        Requires mesh() to be called first. Automatically calls
-        write_config() if config.json hasn't been written yet.
-
-        Args:
-            parent_dir: Where to create the sim directory.
-                Defaults to the current working directory.
-            verbose: ``"quiet"`` no output, ``"status"`` status line,
-                ``"full"`` stream solver logs.
-            check_cache: If ``True``, look for a completed cloud job with
-                byte-identical inputs and reuse its results instead of
-                submitting. A lookup failure degrades to a normal submit.
-            wait: If ``True`` (default), block until results are ready.
-                If ``False``, upload + start and return the ``job_id``.
-
-        Returns:
-            - :class:`SParams` for :class:`DrivenSim` (driven sweeps with
-              ``port-S.csv``).
-            - ``dict[str, Path]`` of output files for eigenmode /
-              electrostatic runs.
-            - ``job_id`` string when ``wait=False``.
-
-            Subclasses narrow this annotation to the concrete type they
-            return (e.g. ``DrivenSim.run -> SParams | str``).
-
-        Raises:
-            ValueError: If output_dir not set or mesh not generated
-            RuntimeError: If simulation fails
-
-        Example:
-            >>> sp = driven_sim.run()  # returns SParams
-            >>> sp.s21.db  # dB magnitude of S21
-            >>> results = eigen_sim.run()  # returns dict[str, Path]
-            >>> print(results["eig.csv"])
-        """
-        from gsim import gcloud
-
-        if check_cache:
-            tmp = self._prepare_upload_dir()
-            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(tmp)
-            self._input_hash, cached_job_id = gcloud.check_cache_for_dir(tmp, "palace")
-            if cached_job_id is not None:
-                self._job_id = cached_job_id
-                if verbose != "quiet":
-                    print(f"Cache hit: reusing job {cached_job_id}")  # noqa: T201
-                if not wait:
-                    return self._job_id
-                return self.wait_for_results(verbose=verbose, parent_dir=parent_dir)
-            self._job_id = gcloud.upload(
-                tmp, "palace", verbose=False, input_hash=self._input_hash
-            )
-        else:
-            self.upload(verbose=False)
-        self.start(verbose=verbose != "quiet")
-        if not wait:
-            if self._job_id is None:
-                msg = "job_id not set — call upload() first"
-                raise RuntimeError(msg)
-            return self._job_id
-        return self.wait_for_results(verbose=verbose, parent_dir=parent_dir)
 
     def run_local(
         self,

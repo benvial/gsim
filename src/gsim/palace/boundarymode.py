@@ -185,9 +185,6 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
     _last_mesh_result: Any = PrivateAttr(default=None)
     _last_ports: list = PrivateAttr(default_factory=list)
 
-    # Cloud job state
-    _job_id: str | None = PrivateAttr(default=None)
-
     @property
     def boundary_mode(self) -> BoundaryModeConfig:
         """Deprecated alias for solver.boundary_mode, retaining the original type."""
