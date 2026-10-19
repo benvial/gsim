@@ -62,8 +62,10 @@ def fresh_devsim(monkeypatch, tmp_path):
     from gsim.tcad import runtime
 
     monkeypatch.delitem(sys.modules, "devsim", raising=False)
-    for name in _MATH_ENV:
-        monkeypatch.delenv(name, raising=False)
+    # _select_math_libraries writes os.environ itself, which monkeypatch.delenv
+    # does not undo for a variable that was unset: give it a throwaway copy.
+    environ = {k: v for k, v in os.environ.items() if k not in _MATH_ENV}
+    monkeypatch.setattr(os, "environ", environ)
     library = tmp_path / f"libscipy_openblas{runtime._SHARED_LIBRARY_SUFFIX}"
     library.touch()
     fake = SimpleNamespace(get_lib_dir=lambda: str(tmp_path))

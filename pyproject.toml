@@ -28,9 +28,10 @@ dependencies = [
 
 [project.optional-dependencies]
 # DEVSIM charge-transport backend (gsim.tcad). scipy-openblas32 gives DEVSIM
-# a BLAS/LAPACK on every OS: without it a plain pip install has none DEVSIM can
-# load on macOS or Windows. DEVSIM reads its scipy_-prefixed symbols from
-# 2.11.1 on (devsim/devsim#167).
+# a BLAS/LAPACK on Linux, Windows and macOS: without it a plain pip install has
+# none DEVSIM can load on macOS or Windows. DEVSIM reads its scipy_-prefixed
+# symbols from 2.11.1 on (devsim/devsim#167), whose only macOS wheel is for
+# macOS 15+ on Apple silicon, so the extra does not install on macOS 14.
 tcad = [
   "devsim>=2.11.1",
   "scipy-openblas32",
