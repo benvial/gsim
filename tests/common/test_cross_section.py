@@ -387,7 +387,7 @@ class TestBuildDopedCrossSection:
             ],
             permittivity=11.9,
             fmax=200e9,
-            verbose=False,
+            verbose=True,
         )
 
         assert "pp_slab_0" in stack.layers
