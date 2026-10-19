@@ -16,7 +16,7 @@ DEVSIM is optional. Install the `tcad` extra:
 pip install "gsim[tcad]"
 ```
 
-It brings `devsim` and `devsim-openblas`, which gives DEVSIM a BLAS/LAPACK library on every OS. `import gsim.tcad`
+It brings `devsim` and `scipy-openblas32`, which gives DEVSIM a BLAS/LAPACK library on every OS. `import gsim.tcad`
 works without DEVSIM; `solve()` and `sweep()` raise an error naming the extra.
 
 ## Configure and solve

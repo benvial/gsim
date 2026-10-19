@@ -1,6 +1,6 @@
 name: TCAD Local Tests
 # The tcad_local tests run a real DEVSIM solve. The tcad extra brings DEVSIM
-# its BLAS/LAPACK through devsim-openblas, so a plain `uv sync` is enough on
+# its BLAS/LAPACK through scipy-openblas32, so a plain `uv sync` is enough on
 # every OS: this is the check that a pip install of gsim[tcad] still solves.
 # The gsim.tcad solves take well under a minute.
 on:
