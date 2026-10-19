@@ -186,6 +186,11 @@ def _electrostatic_net_boundaries(
     return boundaries
 
 
+def output_subdir(model_name: str) -> Path:
+    """Where Palace writes its tables, relative to the simulation directory."""
+    return Path("output") / model_name
+
+
 def generate_palace_config(
     groups: dict,
     ports: list[PalacePort],
@@ -340,7 +345,7 @@ def generate_palace_config(
         "Problem": {
             "Type": problem_type_map[simulation_type],
             "Verbose": 3,
-            "Output": f"output/{model_name}",
+            "Output": output_subdir(model_name).as_posix(),
         },
         "Model": {
             "Mesh": f"{model_name}.msh",
@@ -1105,5 +1110,6 @@ def write_config(
 __all__ = [
     "collect_mesh_stats",
     "generate_palace_config",
+    "output_subdir",
     "write_config",
 ]

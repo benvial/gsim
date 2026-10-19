@@ -58,7 +58,8 @@ if TYPE_CHECKING:
 __all__ = ["BoundaryModeSim", "ModePath"]
 
 #: Where a local Palace run writes its tables, under the simulation's
-#: output directory.
+#: output directory, for the default model name; :attr:`BoundaryModeSim.run_dir`
+#: follows the name ``mesh()`` was given.
 RUN_SUBDIR = Path("output") / "palace"
 
 
@@ -448,9 +449,7 @@ class BoundaryModeSim(PalaceSimMixin, BaseModel):
         Raises:
             ValueError: When no output directory is set.
         """
-        if self._output_dir is None:
-            raise ValueError("Output directory not set. Call set_output_dir() first.")
-        return Path(self._output_dir) / RUN_SUBDIR
+        return self._postpro_dir()
 
     @property
     def last_run_files(self) -> dict[str, Path]:
