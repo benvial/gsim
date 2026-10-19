@@ -464,12 +464,20 @@ def _resolved(directory: Path | None) -> Path | None:
 
 
 def _cpu_package_library_dir() -> Path | None:
-    """The libraries shipped with the legacy ``palace-toolkit-cpu`` wheel."""
+    """The libraries shipped with the legacy ``palace-toolkit-cpu`` wheel.
+
+    A wheel that names no library directory leaves its binary to find its
+    own, so the lookup never stops the binary from being resolved.
+    """
     if not _palace_cpu_available():
         return None
-    from palacetoolkit_palace_cpu import palace_library_path
+    try:
+        from palacetoolkit_palace_cpu import palace_library_path
 
-    lib_dir = palace_library_path()
+        lib_dir = palace_library_path()
+    except Exception as exc:
+        logger.debug("palace-toolkit-cpu names no library directory: %s", exc)
+        return None
     return lib_dir.resolve() if lib_dir.is_dir() else None
 
 

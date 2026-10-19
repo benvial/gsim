@@ -50,7 +50,7 @@ def test_a_local_bin_beats_the_resolved_runtime(tmp_path, monkeypatch):
 
 
 def test_apptainer_runs_a_discovered_sif(tmp_path, monkeypatch):
-    sif = tmp_path / "bin" / "palace.sif"
+    sif = tmp_path / "bin" / "Palace.sif"
     sif.parent.mkdir()
     sif.touch()
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -76,7 +76,7 @@ def test_libraries_travel_with_the_binary_they_belong_to(
     assert launch.binary == str(binary)
     assert ("LD_LIBRARY_PATH" in launch.env) is expected
     if expected:
-        assert launch.env["LD_LIBRARY_PATH"] == "/rt/lib"
+        assert launch.env["LD_LIBRARY_PATH"] == str(found.library_dir)
 
 
 def test_nothing_found_falls_back_to_palace_on_path(tmp_path, monkeypatch):
