@@ -9,18 +9,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import Field
 
-from gsim.common import Geometry, LayerStack
-from gsim.palace.base import PalaceSimMixin
+from gsim.palace.base import _PalaceSimBase
 from gsim.palace.models import (
     CPWPortConfig,
     DrivenConfig,
     DrivenSolverConfig,
-    MaterialConfig,
-    MeshConfig,
     PortConfig,
-    RefinementConfig,
     TwoTerminalPortConfig,
     WavePortConfig,
 )
@@ -30,7 +26,7 @@ if TYPE_CHECKING:
     from gsim.palace.results import SParams
 
 
-class DrivenSim(PalaceSimMixin, BaseModel):
+class DrivenSim(_PalaceSimBase):
     """Frequency-domain driven simulation for S-parameter extraction.
 
     This class configures and runs driven simulations that sweep through
@@ -63,15 +59,7 @@ class DrivenSim(PalaceSimMixin, BaseModel):
         solver: Grouped numerical and problem-specific solver configuration
     """
 
-    model_config = ConfigDict(
-        validate_assignment=True,
-        arbitrary_types_allowed=True,
-    )
     simulation_type: Literal["driven"] = "driven"
-
-    # Composed objects (from common)
-    geometry: Geometry | None = None
-    stack: LayerStack | None = None
 
     # Port configurations
     ports: list[PortConfig] = Field(default_factory=list)
@@ -82,27 +70,7 @@ class DrivenSim(PalaceSimMixin, BaseModel):
 
     absorbing_boundary: bool = True
 
-    # Mesh config
-    mesh_config: MeshConfig = Field(default_factory=MeshConfig.default)
-
-    # Material overrides and solver config
-    materials: dict[str, MaterialConfig] = Field(default_factory=dict)
     solver: DrivenSolverConfig = Field(default_factory=DrivenSolverConfig)
-    refinement: RefinementConfig = Field(default_factory=RefinementConfig)
-
-    # Stack configuration (stored as kwargs until resolved)
-    _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
-    _airbox_config: dict[str, Any] = PrivateAttr(default_factory=dict)
-    _pec_blocks: list = PrivateAttr(default_factory=list)
-    _symmetry_planes: list = PrivateAttr(default_factory=list)
-    _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
-    _impedance_boundaries: list = PrivateAttr(default_factory=list)
-
-    # Internal state
-    _output_dir: Path | None = PrivateAttr(default=None)
-    _configured_ports: bool = PrivateAttr(default=False)
-    _last_mesh_result: Any = PrivateAttr(default=None)
-    _last_ports: list = PrivateAttr(default_factory=list)
 
     # Legacy solver settings
 

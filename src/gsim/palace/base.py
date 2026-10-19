@@ -4,6 +4,7 @@
 types — DrivenSim, EigenmodeSim, ElectrostaticSim and BoundaryModeSim:
 geometry and stack configuration, meshing, config generation, and the
 local run, including what a run that dies on a signal means.
+:class:`_PalaceSimBase` declares, once, the state those methods share.
 
 :class:`MeshSourceMixin` is the same surface for a simulation that does
 not mesh for itself but delegates to one that does.
@@ -18,6 +19,9 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+
+from gsim.common import Geometry, LayerStack
 from gsim.common.cloud import CloudJobMixin
 from gsim.palace.models import (
     CPWPortConfig,
@@ -43,7 +47,6 @@ from gsim.palace.solver_settings import SolverSettingsMixin
 if TYPE_CHECKING:
     from gdsfactory.component import Component
 
-    from gsim.common import Geometry, LayerStack
     from gsim.palace.results import PalaceTextResults, SParams
 
 logger = logging.getLogger(__name__)
@@ -313,23 +316,28 @@ class MeshSourceMixin:
 class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
     """Mixin providing common methods for all Palace simulation classes.
 
-    Subclasses must define these attributes (typically via Pydantic fields):
-        - geometry: Geometry | None
-        - stack: LayerStack | None
-        - materials: dict[str, MaterialConfig]
-        - solver: SolverConfig
-        - refinement: RefinementConfig
-        - _output_dir: Path | None (private)
-        - _stack_kwargs: dict[str, Any] (private)
+    The state these methods use is declared once, by :class:`_PalaceSimBase`;
+    the hints below only tell the type checker about it.
     """
 
-    # Type hints for required attributes (implemented by subclasses)
-    geometry: Geometry | None
-    stack: LayerStack | None
-    materials: dict[str, MaterialConfig]
-    refinement: RefinementConfig
-    simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
     if TYPE_CHECKING:
+        geometry: Geometry | None
+        stack: LayerStack | None
+        materials: dict[str, MaterialConfig]
+        refinement: RefinementConfig
+        mesh_config: MeshConfig
+        simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
+        absorbing_boundary: bool
+        _output_dir: Path | None
+        _stack_kwargs: dict[str, Any]
+        _airbox_config: dict[str, Any]
+        _pec_blocks: list
+        _symmetry_planes: list[SymmetryPlaneConfig]
+        _hints: dict[str, Any]
+        _impedance_boundaries: list[ImpedanceBoundaryConfig]
+        _configured_ports: bool
+        _last_mesh_result: Any
+        _last_ports: list
         # Declared by the sim classes that take 3D ports or terminals; a
         # boundary-mode sim has none, so these must not become fields.
         ports: list[PortConfig]
@@ -338,14 +346,6 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         two_terminal_ports: list[TwoTerminalPortConfig]
         terminals: list[TerminalConfig]
     _cloud_job_type = "palace"
-    _output_dir: Path | None
-    _stack_kwargs: dict[str, Any]
-    _pec_blocks: list
-    _symmetry_planes: list[SymmetryPlaneConfig]
-    _hints: dict[str, Any]
-    _impedance_boundaries: list[ImpedanceBoundaryConfig]
-    absorbing_boundary: bool
-    _airbox_config: dict[str, Any]
 
     def _mesh_by_net(self) -> bool:
         """Whether the mesh needs one physical group per net; only some sims do."""
@@ -382,7 +382,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
     @property
     def has_mesh(self) -> bool:
         """Whether ``mesh()`` has run and left a mesh to read."""
-        return getattr(self, "_last_mesh_result", None) is not None
+        return self._last_mesh_result is not None
 
     def _run_context(self) -> str:
         """What was being run, named in the first line of an abort report."""
@@ -390,7 +390,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
 
     def _require_mesh_result(self) -> Any:
         """Return the last mesh result, or explain that meshing is missing."""
-        result = getattr(self, "_last_mesh_result", None)
+        result = self._last_mesh_result
         if result is None:
             raise ValueError(
                 f"No mesh generated for this {type(self).__name__}. Call mesh() first."
@@ -1041,30 +1041,28 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
                         mesh_config.refined_mesh_size,
                     )
 
-        existing_config = getattr(self, "mesh_config", None)
+        existing_config = self.mesh_config
 
         # Preserve curve-fit settings from sim.mesh_config unless overridden.
-        if existing_config is not None:
-            mesh_config.curve_fit_mode = existing_config.curve_fit_mode
-            mesh_config.curve_fit_layers = list(existing_config.curve_fit_layers)
-            mesh_config.curve_fit_tolerance_um = existing_config.curve_fit_tolerance_um
-            mesh_config.curve_fit_min_points = existing_config.curve_fit_min_points
-            mesh_config.curve_fit_corner_angle_deg = (
-                existing_config.curve_fit_corner_angle_deg
-            )
-            mesh_config.high_order_elements = existing_config.high_order_elements
-            mesh_config.high_order_order = existing_config.high_order_order
-            mesh_config.high_order_optimize = existing_config.high_order_optimize
-            mesh_config.refinement_boxes = list(existing_config.refinement_boxes)
-            mesh_config.algorithm_3d = existing_config.algorithm_3d
-            mesh_config.threads = existing_config.threads
-            mesh_config.surface_threads = existing_config.surface_threads
+        mesh_config.curve_fit_mode = existing_config.curve_fit_mode
+        mesh_config.curve_fit_layers = list(existing_config.curve_fit_layers)
+        mesh_config.curve_fit_tolerance_um = existing_config.curve_fit_tolerance_um
+        mesh_config.curve_fit_min_points = existing_config.curve_fit_min_points
+        mesh_config.curve_fit_corner_angle_deg = (
+            existing_config.curve_fit_corner_angle_deg
+        )
+        mesh_config.high_order_elements = existing_config.high_order_elements
+        mesh_config.high_order_order = existing_config.high_order_order
+        mesh_config.high_order_optimize = existing_config.high_order_optimize
+        mesh_config.refinement_boxes = list(existing_config.refinement_boxes)
+        mesh_config.algorithm_3d = existing_config.algorithm_3d
+        mesh_config.threads = existing_config.threads
+        mesh_config.surface_threads = existing_config.surface_threads
 
         # Preserve planar_conductors from sim.mesh_config if not
         # explicitly provided via sim.mesh(planar_conductors=...)
         if planar_conductors is None:
-            if existing_config is not None:
-                mesh_config.planar_conductors = existing_config.planar_conductors
+            mesh_config.planar_conductors = existing_config.planar_conductors
         else:
             mesh_config.planar_conductors = planar_conductors
 
@@ -2098,10 +2096,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         # here so it surfaces before any run is submitted.
         from gsim.palace.mesh.geometry import is_air_like_material
 
-        mesh_result = getattr(self, "_mesh_result", None) or getattr(
-            self, "_last_mesh_result", None
-        )
-        groups = getattr(mesh_result, "groups", None) or {}
+        groups = getattr(self._last_mesh_result, "groups", None) or {}
         volumes = groups.get("volumes", {})
         if groups.get("boundary_surfaces", {}).get("absorbing") and not any(
             is_air_like_material(stack, name) for name in volumes
@@ -2989,3 +2984,43 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
                 eigensolver_verbose=eigensolver_verbose,
             )
         )
+
+
+class _PalaceSimBase(PalaceSimMixin, BaseModel):
+    """The state every Palace simulation holds, declared once.
+
+    Each problem class adds only what varies: its ``simulation_type`` and
+    ``absorbing_boundary`` defaults, its ``solver`` type, and its ports or
+    terminals.
+    """
+
+    model_config = ConfigDict(
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+    )
+
+    # Composed objects (from common)
+    geometry: Geometry | None = None
+    stack: LayerStack | None = None
+    materials: dict[str, MaterialConfig] = Field(default_factory=dict)
+    refinement: RefinementConfig = Field(default_factory=RefinementConfig)
+    # Defaults set by each problem class
+    simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
+    absorbing_boundary: bool
+    mesh_config: MeshConfig = Field(default_factory=MeshConfig.default)
+
+    # Stack configuration (stored as kwargs until resolved)
+    _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _airbox_config: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _pec_blocks: list = PrivateAttr(default_factory=list)
+    _symmetry_planes: list[SymmetryPlaneConfig] = PrivateAttr(default_factory=list)
+    _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _impedance_boundaries: list[ImpedanceBoundaryConfig] = PrivateAttr(
+        default_factory=list
+    )
+
+    # Internal state
+    _output_dir: Path | None = PrivateAttr(default=None)
+    _configured_ports: bool = PrivateAttr(default=False)
+    _last_mesh_result: Any = PrivateAttr(default=None)
+    _last_ports: list = PrivateAttr(default_factory=list)
