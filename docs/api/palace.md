@@ -353,6 +353,17 @@ phase and frequency must be finite, while dB magnitudes permit negative infinity
 
 ## Mesh
 
+Presets select mesh-size targets near conductors and in the bulk. Explicit
+`refined_mesh_size` and `max_mesh_size` arguments override those targets.
+`auto_size=True` only scales a preset when `refined_mesh_size` is omitted;
+an explicit size is always preserved, even with `auto_size=True`.
+
+Resolution warnings compare the **effective** size with the detected conductor
+feature divided by `cells_per_feature` (2 by default). They suggest a smaller
+explicit size when an override is present. This feature-based rule is a heuristic;
+mesh validation and a lack of warnings do not establish convergence of resonance
+frequencies, Q, or S-parameters. Compare results across mesh refinements.
+
 `sim.mesh()` also reports **Estimated Field DOFs** for tetrahedral 3D driven and
 eigenmode problems, using the configured field order. For order 2, the estimate
 is `2 * unique_edges + 2 * unique_triangular_faces`, counting interior and shared
@@ -377,8 +388,8 @@ metadata["mesh"]["kappa"]["max"]  # numerical distortion, not formatted text
 problem type, solver settings and refinement controls. The result object is a
 snapshot from meshing. Consumers should accept additional metadata keys so new
 measurements can be added. Allocation rules remain in DataLab; these are sizing
-hints. Compatible SDKs also forward it as a separate submission parameter;
-older SDK interfaces retain fixed-resource submission. See
+hints. gsim sends supported tetrahedron and field-DOF counts to DataLab before
+upload, including with older SDK versions. See
 [cloud sizing metadata](cloud.md#sizing-metadata) for the calibration assumptions.
 The root-level `metadata.json` name is reserved for these diagnostics. It is
 excluded from the Palace result-cache key so measurements can evolve without

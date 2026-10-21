@@ -45,10 +45,35 @@ solvers can have different memory needs and convergence behavior; these tiers
 are not validated sizing guarantees for every solver. The full diagnostic sidecar,
 including solver settings, remains in the input ZIP. The deployed prepare API reads
 the compact counts, not `sizing_metadata` or `input_manifest`. Palace field-DOF
-estimates describe the mesh before Palace preprocessing. With AMR and an explicit
-`MaxSize`, gsim sends the larger of that bound and the input estimate. Unbounded
-refinement can grow beyond the initial estimate; the compact API does not validate
-its peak resource needs.
+estimates describe the mesh before Palace preprocessing. When AMR is enabled
+(`MaxIts > 0`), cloud sizing requires a finite, positive integer
+`Model.Refinement.MaxSize`. Set `sim.set_refinement(max_dofs=...)`, or disable AMR
+with `sim.set_refinement(max_its=0)`. gsim sends the larger of the configured limit
+and the input estimate; DataLab selects CPU and RAM from those counts. These counts
+do not guarantee peak resource needs for every solver or refinement run.
+
+## Palace size limits and out-of-memory failures
+
+There is no single tetrahedron or field-DOF count that guarantees a Palace model
+will fit in memory. The active cloud resource profiles determine which problem
+sizes the prepare endpoint accepts. Supported sized submissions are checked before
+gsim creates or uploads the input ZIP; a rejection includes DataLab's explanation.
+Contact support for the current supported capacity if your model exceeds it.
+
+Inspect `sim.mesh()`'s **Estimated Field DOFs**, or
+`result.metadata["mesh"]["field_dofs"]["estimated_field_dofs"]`, before submission.
+The estimate uses the configured field order, rather than mesh file size alone.
+Acceptance is not a memory guarantee: solver settings, mesh preprocessing and
+refinement can change peak memory beyond the sizing estimate.
+
+`wait_for_results()` raises `RuntimeError` for a failed job, including in
+`verbose="quiet"` mode. Exit 137 means SIGKILL, often an out-of-memory kill;
+the error includes the backend reason, available solver logs and recovery advice.
+Coarsen the mesh, reduce the model size, or lower Palace's field order with
+`sim.solver.order` and recheck convergence. Cloud resources are selected
+automatically; contact support with the job ID if more memory is needed.
+Jobs without supported sizing metadata use fixed resources and do not receive
+the prepare endpoint's problem-size check.
 
 ## Result caching
 

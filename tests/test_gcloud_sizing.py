@@ -59,12 +59,15 @@ def upload_transport(monkeypatch):
             recorded["prepare"].append(json.loads(request.content))
             return httpx.Response(
                 recorded["prepare_status"],
-                json={
-                    "data": {
-                        "job_id": "submitted",
-                        "upload_url": "https://storage.example.com/source.zip",
-                    }
-                },
+                json=recorded.get(
+                    "prepare_error",
+                    {
+                        "data": {
+                            "job_id": "submitted",
+                            "upload_url": "https://storage.example.com/source.zip",
+                        }
+                    },
+                ),
             )
         assert request.method == "PUT"
         assert str(request.url) == "https://storage.example.com/source.zip"
@@ -201,15 +204,50 @@ def test_malformed_metadata_fails_before_preparation(
     assert upload_transport["prepare"] == []
 
 
-def test_amr_uses_explicit_field_dof_limit(tmp_path, upload_transport):
+@pytest.mark.parametrize("max_size", [100000, 8000000])
+def test_amr_uses_explicit_field_dof_limit(tmp_path, upload_transport, max_size):
     metadata = _inputs(tmp_path, "palace")
-    metadata["simulation"] = {"refinement": {"MaxIts": 3, "MaxSize": 8000000}}
+    metadata["simulation"] = {"refinement": {"MaxIts": 3, "MaxSize": max_size}}
     (tmp_path / "metadata.json").write_text(json.dumps(metadata))
     gcloud.upload(tmp_path, "palace", verbose=False)
-    assert (
-        upload_transport["prepare"][0]["sizing_requirements"]["palace"]["field_dofs"]
-        == 8000000
-    )
+    assert upload_transport["prepare"][0]["sizing_requirements"]["palace"][
+        "field_dofs"
+    ] == max(223152, max_size)
+
+
+@pytest.mark.parametrize(
+    "refinement", [{}, {"MaxIts": 0}, {"MaxIts": 0, "MaxSize": 8000000}]
+)
+def test_fixed_mesh_does_not_use_amr_limit(tmp_path, upload_transport, refinement):
+    metadata = _inputs(tmp_path, "palace")
+    metadata["simulation"] = {"refinement": refinement}
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata))
+    gcloud.upload(tmp_path, "palace", verbose=False)
+    assert upload_transport["prepare"][0]["sizing_requirements"] == {
+        "palace": {"tetrahedra": 34862, "field_dofs": 223152}
+    }
+
+
+@pytest.mark.parametrize("max_size", [None, 0, -1, True, 1.5, "8000000", 2**64])
+@pytest.mark.parametrize("supported_mesh", [False, True])
+def test_unbounded_amr_fails_before_preparation(
+    tmp_path, upload_transport, max_size, supported_mesh
+):
+    metadata = _inputs(tmp_path, "palace")
+    refinement = {"MaxIts": 3}
+    if max_size is not None:
+        refinement["MaxSize"] = max_size
+    metadata["simulation"] = {"refinement": refinement}
+    if not supported_mesh:
+        metadata["mesh"]["field_dofs"] = {
+            "estimated_field_dofs": None,
+            "unavailable_reason": "Not a supported 3D EM mesh",
+        }
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match=r"MaxSize.*max_dofs=.*max_its=0"):
+        gcloud.upload(tmp_path, "palace", verbose=False)
+    assert upload_transport["prepare"] == []
+    assert upload_transport["archive"] == []
 
 
 @pytest.mark.parametrize("solver", ["palace", "fdtd"])
@@ -218,6 +256,11 @@ def test_oversized_rejection_does_not_upload_or_fall_back(
 ):
     _inputs(tmp_path, solver)
     upload_transport["prepare_status"] = 400
+    message = "Problem size exceeds the largest supported resource profile"
+    upload_transport["prepare_error"] = {
+        "message": message,
+        "unrelated_field": "private-response-data",
+    }
     monkeypatch.setattr(
         _cloud_submission,
         "_write_archive",
@@ -226,8 +269,36 @@ def test_oversized_rejection_does_not_upload_or_fall_back(
     with pytest.raises(httpx.HTTPStatusError) as error:
         gcloud.upload(tmp_path, solver, verbose=False)
     assert error.value.response.status_code == 400
+    assert error.value.request.method == "POST"
+    assert message in str(error.value)
+    assert "private-response-data" not in str(error.value)
     assert len(upload_transport["prepare"]) == 1
     assert upload_transport["archive"] == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"<html>private-response-data</html>",
+        b'["private-response-data"]',
+        b'{"message": {"detail": "private-response-data"}}',
+        b'{"message": "  "}',
+        b'{"detail": "private-response-data"}',
+    ],
+)
+def test_prepare_errors_without_api_message_keep_http_diagnostics(body):
+    response = httpx.Response(
+        400,
+        content=body,
+        request=httpx.Request("POST", "https://example.test/job/prepare"),
+    )
+    with pytest.raises(httpx.HTTPStatusError) as error:
+        _cloud_submission._raise_for_prepare_status(response)
+    assert error.value.response is response
+    assert error.value.request is response.request
+    assert "400 Bad Request" in str(error.value)
+    assert "DataLab:" not in str(error.value)
+    assert "private-response-data" not in str(error.value)
 
 
 def test_prepare_forbidden_preserves_cloud_access_error(tmp_path, upload_transport):
