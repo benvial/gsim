@@ -782,3 +782,25 @@ def test_run_local_follows_the_model_name_mesh_was_given(
     assert result.files == {"notes.txt": output_dir / "output" / "foo" / "notes.txt"}
     if isinstance(sim, BoundaryModeSim):
         assert sim.run_dir == output_dir / "output" / "foo"
+
+
+@pytest.mark.parametrize("model_name", ["", ".", "..", "../up", "sub/dir", "a\\b"])
+def test_mesh_rejects_a_model_name_that_is_not_a_plain_name(tmp_path, model_name):
+    """A model name that is a path would point ``output/<name>`` elsewhere."""
+    sim = DrivenSim()
+    sim.set_output_dir(tmp_path)
+    with pytest.raises(ValueError, match="plain file name"):
+        sim.mesh(model_name=model_name)
+
+
+def test_a_boundary_mode_run_never_clears_the_sim_dir(tmp_path):
+    """Even a hand-set ``..`` model name cannot make the run clear the sim dir."""
+    output_dir = tmp_path / "sim"
+    _setup_sim(BoundaryModeSim(), output_dir)
+    sim = BoundaryModeSim()
+    sim.set_output_dir(output_dir)
+    sim._last_mesh_result = SimpleNamespace(mesh_stats={}, groups={}, model_name="..")
+    with pytest.raises(ValueError, match="plain file name"):
+        sim.run_local(verbose=False)
+    assert (output_dir / "config.json").is_file()
+    assert (output_dir / "palace.msh").is_file()

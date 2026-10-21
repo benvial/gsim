@@ -385,7 +385,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
 
     def _model_name(self) -> str:
         """The base name mesh() gave the mesh file and Palace's output dir."""
-        result = getattr(self, "_last_mesh_result", None)
+        result = self._last_mesh_result
         return result.model_name if result is not None else "palace"
 
     def _postpro_dir(self) -> Path:
@@ -1998,7 +1998,8 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             fmax: Max frequency for mesh sizing (Hz), overrides preset
             planar_conductors: Treat conductors as 2D PEC surfaces
             show_gui: Show gmsh GUI during meshing
-            model_name: Base name for output files
+            model_name: Base name for output files: ``<model_name>.msh`` and
+                ``output/<model_name>``. A plain name, without path separators
             verbose: Print progress messages
             verbosity: Gmsh OCC verbosity level (0=silent, 1-99=increasing)
             auto_size: If True, scale refined_mesh_size down to the smallest
@@ -2038,17 +2039,20 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             SimulationResult with mesh path
 
         Raises:
-            ValueError: If output_dir not set or configuration is invalid
+            ValueError: If output_dir not set, configuration is invalid, or
+                ``model_name`` is not a plain file name
 
         Example:
             >>> sim.set_output_dir("./sim")
             >>> result = sim.mesh(preset="fine", planar_conductors=True)
             >>> print(f"Mesh saved to: {result.mesh_path}")
         """
+        from gsim.palace.mesh.config_generator import check_model_name
         from gsim.palace.ports import extract_ports
 
         if self._output_dir is None:
             raise ValueError("Output directory not set. Call set_output_dir() first.")
+        check_model_name(model_name)
 
         component = self.geometry.component if self.geometry else None
 
