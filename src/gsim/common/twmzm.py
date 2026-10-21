@@ -32,7 +32,7 @@ wave on a lossy line of length L terminated in ``Z_L`` and driven through
 from __future__ import annotations
 
 import itertools
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, overload
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -169,7 +169,10 @@ def eo_response(
         z_load_ohm: Termination impedance in ohms.
         z_gen_ohm: Generator impedance in ohms.
         normalize: Divide by the DC value so the response tends to 1 at low
-            frequency (uses the lowest-frequency line parameters at f = 0).
+            frequency. DC is the lossless line at f = 0, where a skin-effect
+            loss vanishes: the line is transparent there, so the DC value is
+            the generator-load divider and takes no line parameter, and the
+            normalisation does not depend on the lowest solved frequency.
 
     Returns:
         Complex response, same shape as ``freq_hz``.
@@ -201,7 +204,7 @@ def eo_response(
             length_m=length_m,
             n_rf=n_rf_arr[:1],
             n_opt=n_opt,
-            alpha_rf_np_m=alpha_arr[:1],
+            alpha_rf_np_m=np.zeros(1),
             z0_ohm=z0_arr[:1],
             z_load_ohm=complex(z_load_ohm),
             z_gen_ohm=complex(z_gen_ohm),
@@ -227,6 +230,11 @@ def eo_bandwidth(
     Returns:
         Linearly interpolated crossing frequency in Hz, or ``None`` when the
         response never falls below the threshold.
+
+    Raises:
+        ValueError: If the response is already below the threshold at the
+            lowest frequency: the crossing lies below the sampled range, and
+            the lowest frequency would only be an upper bound on it.
     """
     freq = np.asarray(freq_hz, dtype=np.float64)
     mag = np.abs(np.asarray(response))
@@ -237,7 +245,11 @@ def eo_bandwidth(
         return None
     i = int(below[0])
     if i == 0:
-        return float(freq[0])
+        raise ValueError(
+            f"The response is already below {threshold:.3g} at the lowest "
+            f"frequency, {freq[0] / 1e9:g} GHz: the crossing lies below the "
+            "sampled range. Add lower frequencies."
+        )
     f0, f1 = freq[i - 1], freq[i]
     m0, m1 = mag[i - 1], mag[i]
     return float(f0 + (threshold - m0) * (f1 - f0) / (m1 - m0))
@@ -319,36 +331,74 @@ def walkoff_bandwidth_dispersive(
     return None
 
 
+@overload
 def vpi_length_vcm(
     voltages: ArrayLike,
     dn_eff: ArrayLike,
     *,
     wavelength_um: float,
-) -> NDArray[np.float64]:
+    bias_v: None = None,
+) -> NDArray[np.float64]: ...
+
+
+@overload
+def vpi_length_vcm(
+    voltages: ArrayLike,
+    dn_eff: ArrayLike,
+    *,
+    wavelength_um: float,
+    bias_v: float,
+) -> float: ...
+
+
+def vpi_length_vcm(
+    voltages: ArrayLike,
+    dn_eff: ArrayLike,
+    *,
+    wavelength_um: float,
+    bias_v: float | None = None,
+) -> NDArray[np.float64] | float:
     """Modulation efficiency ``V_pi L`` in V*cm along a bias sweep.
 
     Uses the local slope of the effective-index shift:
     ``V_pi L = lambda / (2 |d(dn_eff)/dV|)``.
 
     Args:
-        voltages: Bias voltages in volts (>= 2 points, ascending).
+        voltages: Bias voltages in volts (>= 2 points, strictly ascending).
         dn_eff: Effective-index shift at each bias.
         wavelength_um: Vacuum wavelength in um.
+        bias_v: Bias to evaluate at, within the sweep. The slope there comes
+            from a cubic spline through the sweep, so the bias need not be
+            one of the swept points. ``None`` evaluates at every bias point,
+            with the slope from ``np.gradient``.
 
     Returns:
-        ``V_pi L`` in V*cm at each bias point.
+        ``V_pi L`` in V*cm at each bias point, or at ``bias_v`` alone when
+        it is given.
     """
     v = np.asarray(voltages, dtype=np.float64)
     dn = np.asarray(dn_eff, dtype=np.float64)
-    if v.shape != dn.shape or v.size < 2:
+    if v.shape != dn.shape or v.ndim != 1 or v.size < 2:
         raise ValueError("voltages and dn_eff must be equal-length with >= 2 points.")
     if wavelength_um <= 0:
         raise ValueError("wavelength_um must be positive.")
-    slope = np.gradient(dn, v)
+    if bias_v is None:
+        slope = np.gradient(dn, v)
+    else:
+        from scipy.interpolate import CubicSpline
+
+        if np.any(np.diff(v) <= 0):
+            raise ValueError("voltages must be strictly ascending.")
+        if not v[0] <= bias_v <= v[-1]:
+            raise ValueError(
+                f"bias_v = {bias_v} V is outside the sweep [{v[0]}, {v[-1]}] V."
+            )
+        slope = np.asarray(CubicSpline(v, dn)(bias_v, 1), dtype=np.float64)
     if np.any(slope == 0):
         raise ValueError("dn_eff slope vanishes; V_pi L is unbounded there.")
     # lambda[um] / (2 |slope|) is in V*um; 1 V*cm = 1e4 V*um.
-    return wavelength_um / (2.0 * np.abs(slope)) / 1e4
+    vpi_l = wavelength_um / (2.0 * np.abs(slope)) / 1e4
+    return vpi_l if bias_v is None else float(vpi_l)
 
 
 # ----------------------------------------------------------------------
@@ -994,7 +1044,10 @@ def segmented_eo_response(
 
     response = averaged(freq, lines)
     if normalize:
-        # DC holds the lowest-frequency line parameters, as eo_response does.
+        # DC is the lossless line at f = 0, as in eo_response: transparent,
+        # whatever the other line parameters are.
         first = {name: values[:1] for name, values in lines.items()}
+        first["alpha_loaded_np_m"] = np.zeros(1)
+        first["alpha_unloaded_np_m"] = np.zeros(1)
         response = response / averaged(np.array([0.0]), first)[0]
     return response

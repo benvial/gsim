@@ -91,13 +91,47 @@ class TestEOResponse:
             length_m=6e-3,
             n_rf=3.9,
             n_opt=3.6,
-            alpha_rf_np_m=150.0,
+            alpha_rf_np_m=150.0 * np.sqrt(freq / 60e9),
             z0_ohm=42.0,
             z_load_ohm=50.0,
             z_gen_ohm=50.0,
         )
-        # DC-normalized: response tends to 1 at low frequency.
+        # DC-normalized: with a skin-effect loss the response tends to 1.
         assert np.abs(m[0]) == pytest.approx(1.0, abs=1e-3)
+
+    def test_dc_is_the_generator_load_divider(self):
+        freq = np.array([1e9, 10e9, 40e9])
+        line = {
+            "length_m": 3e-3,
+            "n_rf": 3.9,
+            "n_opt": 3.6,
+            "alpha_rf_np_m": 28.6 * np.sqrt(freq / 10e9),
+            "z0_ohm": 42.0 - 3.0j,
+            "z_load_ohm": 35.0,
+            "z_gen_ohm": 50.0,
+        }
+        normalized = eo_response(freq, **line)
+        raw = eo_response(freq, **line, normalize=False)
+        assert normalized * 35.0 / 85.0 == pytest.approx(raw, rel=1e-12)
+
+    def test_the_normalization_does_not_follow_the_lowest_frequency(self):
+        # A sqrt(f) loss solved from 1 GHz: holding its 1 GHz loss as the
+        # DC value put the whole response 1.36 % high.
+        def response(freq):
+            return eo_response(
+                freq,
+                length_m=3e-3,
+                n_rf=3.9,
+                n_opt=3.6,
+                alpha_rf_np_m=28.6 * np.sqrt(freq / 10e9),
+                z0_ohm=42.0 - 3.0j,
+                z_load_ohm=50.0,
+                z_gen_ohm=50.0,
+            )
+
+        coarse = np.linspace(1e9, 40e9, 40)
+        fine = np.concatenate([[1e3], coarse])
+        assert response(coarse) == pytest.approx(response(fine)[1:], rel=1e-12)
 
     def test_frequency_dependent_line_params(self):
         freq = np.linspace(1e8, 50e9, 20)
@@ -180,6 +214,12 @@ class TestEOBandwidth:
         m = np.ones(10, dtype=complex)
         assert eo_bandwidth(freq, m) is None
 
+    def test_a_crossing_below_the_sampled_range_is_refused(self):
+        freq = np.linspace(10e9, 40e9, 4)
+        m = np.array([0.6, 0.5, 0.4, 0.3])
+        with pytest.raises(ValueError, match="below the sampled range"):
+            eo_bandwidth(freq, m)
+
 
 class TestVpiLength:
     def test_linear_dneff(self):
@@ -200,6 +240,40 @@ class TestVpiLength:
     def test_rejects_mismatched_lengths(self):
         with pytest.raises(ValueError):
             vpi_length_vcm(np.array([0.0, 1.0]), np.array([0.0]), wavelength_um=1.55)
+
+    def test_at_a_bias_between_the_swept_points(self):
+        v = np.linspace(0.0, 4.0, 9)
+        vpil = vpi_length_vcm(v, 5e-5 * v, wavelength_um=1.55, bias_v=1.3)
+        assert isinstance(vpil, float)
+        assert vpil == pytest.approx(1.55, rel=1e-9)
+
+    def test_at_a_bias_follows_the_slope_of_a_curved_shift(self):
+        # dn = a sqrt(V + 0.5): slope a / (2 sqrt(V + 0.5)).
+        v = np.linspace(0.0, 4.0, 41)
+        bias = 1.75
+        slope = 1e-4 / (2.0 * np.sqrt(bias + 0.5))
+        vpil = vpi_length_vcm(
+            v, 1e-4 * np.sqrt(v + 0.5), wavelength_um=1.55, bias_v=bias
+        )
+        assert vpil == pytest.approx(1.55 / (2.0 * slope) / 1e4, rel=1e-5)
+
+    def test_at_a_swept_bias_agrees_with_the_sweep(self):
+        v = np.linspace(0.0, 4.0, 41)
+        dneff = 1e-4 * np.sqrt(v + 0.5)
+        sweep = vpi_length_vcm(v, dneff, wavelength_um=1.55)
+        at_bias = vpi_length_vcm(v, dneff, wavelength_um=1.55, bias_v=float(v[20]))
+        assert at_bias == pytest.approx(sweep[20], rel=1e-3)
+
+    @pytest.mark.parametrize("bias", [-0.1, 4.1])
+    def test_a_bias_outside_the_sweep_is_refused(self, bias):
+        v = np.linspace(0.0, 4.0, 9)
+        with pytest.raises(ValueError, match="outside the sweep"):
+            vpi_length_vcm(v, 5e-5 * v, wavelength_um=1.55, bias_v=bias)
+
+    def test_a_bias_needs_an_ascending_sweep(self):
+        v = np.array([0.0, 2.0, 1.0])
+        with pytest.raises(ValueError, match="ascending"):
+            vpi_length_vcm(v, 5e-5 * v, wavelength_um=1.55, bias_v=0.5)
 
 
 class _MachZehnder:
@@ -609,6 +683,14 @@ class TestSegmentedEOResponse:
         )
         assert response[0] == pytest.approx(0.4 * 0.5, rel=1e-6)
 
+    def skin_loss(self, freq):
+        """The LOADED and UNLOADED losses, as a sqrt(f) law hitting them at 40 GHz."""
+        scale = np.sqrt(np.asarray(freq) / 40e9)
+        return {
+            "alpha_loaded_np_m": self.LOADED["alpha_loaded_np_m"] * scale,
+            "alpha_unloaded_np_m": self.UNLOADED["alpha_unloaded_np_m"] * scale,
+        }
+
     def test_normalized_to_unity_at_dc(self):
         response = segmented_eo_response(
             [1e5],
@@ -616,12 +698,27 @@ class TestSegmentedEOResponse:
             period_m=50e-6,
             fill_factor=0.4,
             n_opt=self.N_OPT,
-            **self.LOADED,
-            **self.UNLOADED,
+            **{**self.LOADED, **self.UNLOADED, **self.skin_loss([1e5])},
             z_load_ohm=50.0,
             z_gen_ohm=50.0,
         )
-        assert abs(response[0]) == pytest.approx(1.0, abs=1e-6)
+        assert abs(response[0]) == pytest.approx(1.0, abs=1e-3)
+
+    def test_the_normalization_does_not_follow_the_lowest_frequency(self):
+        def response(freq):
+            return segmented_eo_response(
+                freq,
+                n_periods=12,
+                period_m=250e-6,
+                fill_factor=0.6,
+                n_opt=self.N_OPT,
+                **{**self.LOADED, **self.UNLOADED, **self.skin_loss(freq)},
+                z_load_ohm=45.0,
+                z_gen_ohm=50.0,
+            )
+
+        fine = np.concatenate([[1e3], self.FREQ])
+        assert response(self.FREQ) == pytest.approx(response(fine)[1:], rel=1e-12)
 
     def test_a_lossless_line_normalizes_without_a_dc_impedance(self):
         response = segmented_eo_response(
