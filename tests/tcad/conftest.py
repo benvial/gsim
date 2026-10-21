@@ -14,7 +14,7 @@ import types
 import gdsfactory as gf
 import pytest
 
-from tests._helpers import draw_pn_rib
+from tests._helpers import draw_pn_rib, draw_rectangle
 
 
 class FakeDevsim(types.ModuleType):
@@ -196,26 +196,6 @@ def fake_devsim(monkeypatch):
     return devsim, sp
 
 
-def _draw_rectangle(comp, layer, *, width: float, height: float, x0: float, y: float):
-    """Draw a ``width`` x ``height`` rectangle into ``comp``, centred on ``y``.
-
-    Drawn directly rather than through a cached ``gf.c.rectangle`` cell: a
-    cell cached before another test registers a PDK that names these GDS
-    numbers (IHP names ``(30, *)`` its Metal3 layers) keeps its shapes on a
-    layer index that ``(30, 0)`` no longer resolves to, and the region reads
-    as empty.
-    """
-    comp.add_polygon(
-        [
-            (x0, y - height / 2),
-            (x0 + width, y - height / 2),
-            (x0 + width, y + height / 2),
-            (x0, y + height / 2),
-        ],
-        layer=layer,
-    )
-
-
 def build_padded_diode(
     *,
     center_y: float = -20.0,
@@ -240,8 +220,8 @@ def build_padded_diode(
 
     gf.gpdk.PDK.activate()
     comp = gf.Component()
-    _draw_rectangle(comp, (1, 0), width=10.0, height=0.4, x0=-5.0, y=center_y)
-    _draw_rectangle(comp, (3, 0), width=10.0, height=100.0, x0=-5.0, y=-5.0)
+    draw_rectangle(comp, (1, 0), width=10.0, height=0.4, x0=-5.0, y=center_y)
+    draw_rectangle(comp, (3, 0), width=10.0, height=100.0, x0=-5.0, y=-5.0)
 
     spans = {
         "n_pad": (center_y - half_width - pad_width, center_y - half_width),
@@ -252,7 +232,7 @@ def build_padded_diode(
     layer_specs = {}
     for i, (name, (y0, y1)) in enumerate(spans.items()):
         gds_layer = (30, i)
-        _draw_rectangle(
+        draw_rectangle(
             comp, gds_layer, width=10.0, height=y1 - y0, x0=0.0, y=(y0 + y1) / 2
         )
         layer_specs[name] = Layer(
@@ -302,8 +282,8 @@ def build_contacted_diode(
 
     gf.gpdk.PDK.activate()
     comp = gf.Component()
-    _draw_rectangle(comp, (1, 0), width=10.0, height=0.4, x0=-5.0, y=center_y)
-    _draw_rectangle(comp, (3, 0), width=10.0, height=100.0, x0=-5.0, y=-5.0)
+    draw_rectangle(comp, (1, 0), width=10.0, height=0.4, x0=-5.0, y=center_y)
+    draw_rectangle(comp, (3, 0), width=10.0, height=100.0, x0=-5.0, y=-5.0)
 
     spans = {
         "n_pad": (center_y - half_width - pad_width, center_y - half_width),
@@ -314,7 +294,7 @@ def build_contacted_diode(
     layer_specs = {}
     for i, (name, (y0, y1)) in enumerate(spans.items()):
         gds_layer = (30, i)
-        _draw_rectangle(
+        draw_rectangle(
             comp, gds_layer, width=10.0, height=y1 - y0, x0=0.0, y=(y0 + y1) / 2
         )
         layer_specs[name] = Layer(
@@ -334,7 +314,7 @@ def build_contacted_diode(
     ):
         y0, y1 = spans[pad]
         gds_layer = (46, i)
-        _draw_rectangle(
+        draw_rectangle(
             comp, gds_layer, width=10.0, height=y1 - y0, x0=0.0, y=(y0 + y1) / 2
         )
         layer_specs[electrode] = Layer(
