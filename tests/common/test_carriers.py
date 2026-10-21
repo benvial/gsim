@@ -156,6 +156,33 @@ class TestPermittivityPerturbation:
         assert eps.imag == pytest.approx(expected.imag, rel=1e-12)
         assert eps.imag < 0.0
 
+    def test_scalar_in_scalar_out(self):
+        eps = permittivity_perturbation(
+            n0=3.48, dn=-1e-3, dalpha_cm=1.0, wavelength_um=1.55
+        )
+        assert isinstance(eps, complex)
+
+    def test_a_carrier_map_converts_in_one_call(self):
+        dn = np.array([[0.0, -1e-3], [-2e-3, -4e-3]])
+        dalpha = np.array([[0.0, 1.0], [2.0, 4.0]])
+        eps = permittivity_perturbation(
+            n0=3.48, dn=dn, dalpha_cm=dalpha, wavelength_um=1.55
+        )
+        assert eps.shape == (2, 2)
+        for index in np.ndindex(dn.shape):
+            assert eps[index] == permittivity_perturbation(
+                n0=3.48,
+                dn=float(dn[index]),
+                dalpha_cm=float(dalpha[index]),
+                wavelength_um=1.55,
+            )
+
+    def test_any_negative_absorption_is_rejected(self):
+        with pytest.raises(ValueError, match="dalpha_cm"):
+            permittivity_perturbation(
+                n0=3.48, dn=0.0, dalpha_cm=[1.0, -1.0], wavelength_um=1.55
+            )
+
 
 class TestMobilityModel:
     def test_undoped_silicon_keeps_the_lattice_mobility(self):

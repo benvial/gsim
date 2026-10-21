@@ -434,35 +434,56 @@ def carrier_conductivity(
     return sigma if sigma.ndim else float(sigma)
 
 
+@overload
 def permittivity_perturbation(
     *,
     n0: float,
     dn: float,
     dalpha_cm: float,
     wavelength_um: float,
-) -> complex:
+) -> complex: ...
+@overload
+def permittivity_perturbation(
+    *,
+    n0: ArrayLike,
+    dn: ArrayLike,
+    dalpha_cm: ArrayLike,
+    wavelength_um: float,
+) -> NDArray[np.complex128]: ...
+def permittivity_perturbation(
+    *,
+    n0: ArrayLike,
+    dn: ArrayLike,
+    dalpha_cm: ArrayLike,
+    wavelength_um: float,
+) -> NDArray[np.complex128] | complex:
     """Complex relative permittivity of a carrier-perturbed dielectric.
 
     Builds ``eps = (n0 + dn - i kappa)^2`` with the extinction coefficient
     ``kappa = alpha * lambda / (4 pi)`` from the absorption change, using the
-    ``exp(+i omega t)`` convention (lossy medium: ``Im(eps) < 0``).
+    ``exp(+i omega t)`` convention (lossy medium: ``Im(eps) < 0``). The
+    inputs broadcast, so a whole Carrier map converts in one call.
 
     Args:
-        n0: Unperturbed refractive index.
+        n0: Unperturbed refractive index (scalar or array).
         dn: Carrier-induced index shift (from :func:`carrier_index_shift`).
         dalpha_cm: Carrier-induced absorption in cm^-1 (non-negative).
         wavelength_um: Vacuum wavelength in um.
 
     Returns:
-        Complex relative permittivity.
+        Complex relative permittivity; scalar in, scalar out.
     """
-    if n0 <= 0:
+    n0_arr = np.asarray(n0, dtype=np.float64)
+    dn_arr = np.asarray(dn, dtype=np.float64)
+    alpha_cm = np.asarray(dalpha_cm, dtype=np.float64)
+    if np.any(n0_arr <= 0):
         raise ValueError("n0 must be positive.")
-    if dalpha_cm < 0:
+    if np.any(alpha_cm < 0):
         raise ValueError("dalpha_cm must be non-negative.")
     if wavelength_um <= 0:
         raise ValueError("wavelength_um must be positive.")
-    alpha_m = dalpha_cm * 100.0
+    alpha_m = alpha_cm * 100.0
     kappa = alpha_m * wavelength_um * 1e-6 / (4.0 * np.pi)
-    n_complex = (n0 + dn) - 1j * kappa
-    return complex(n_complex * n_complex)
+    n_complex = (n0_arr + dn_arr) - 1j * kappa
+    eps = np.asarray(n_complex * n_complex, dtype=np.complex128)
+    return eps if eps.ndim else complex(eps)
