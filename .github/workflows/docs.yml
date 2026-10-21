@@ -67,14 +67,14 @@ jobs:
       run: |
         uv sync --no-default-groups --group docs
         case "$NOTEBOOK" in
-          nbs/palace_qpdk_resonator.ipynb)
+          nbs/palace_qpdk_*.ipynb)
             uv pip install qpdk==0.4.0
             ;;
           nbs/palace_inductor.ipynb)
             uv sync --no-default-groups --group docs --group palace-inductor
             ;;
           nbs/palace_*.ipynb)
-            uv pip install ihp-gdsfactory==0.2.8
+            uv pip install ihp-gdsfactory==2.0.1
             ;;
           nbs/tcad_twmzm.ipynb)
             uv sync --no-default-groups --group docs --extra tcad --extra femwell
@@ -86,7 +86,7 @@ jobs:
         uv pip check
         uv run --no-sync python -m ipykernel install --user --name gsim --display-name gsim
     - name: Execute notebook
-      timeout-minutes: 30
+      timeout-minutes: 100
       if: >-
         github.event_name != 'pull_request' || needs.discover-notebooks.outputs.run_all == 'true' || contains(fromJSON(needs.discover-notebooks.outputs.changed_notebooks), matrix.notebook)
       env:

@@ -197,8 +197,10 @@ def _flatten_results(raw_results: dict) -> dict[str, Path]:
 _SIGNAL_EXIT_CODES = {
     134: "exit 134 is SIGABRT — an assertion failure or out-of-memory abort. "
     "Try a coarser mesh, fewer frequency points, or a larger instance.",
-    137: "exit 137 is SIGKILL — almost always the container hitting its "
-    "memory limit. Try a coarser mesh or a larger instance.",
+    137: "exit 137 is SIGKILL — the container was killed, often because it ran "
+    "out of memory (memory limit). Try a coarser mesh or a smaller model. "
+    "Cloud resources are selected automatically; contact support with the job ID "
+    "if more memory is needed.",
     139: "exit 139 is SIGSEGV — a solver crash. Please report the mesh and "
     "config that reproduce it.",
 }
@@ -222,6 +224,9 @@ def _handle_failed_job(job, output_dir: Path, verbose: bool) -> None:
         error_parts = [f"Simulation failed with exit code {exit_code}"]
 
     error_parts.append(f"Status: {_status_value(job.status)}")
+    job_id = getattr(job, "id", None)
+    if job_id:
+        error_parts.append(f"Job ID: {job_id}")
 
     status_reason = getattr(job, "status_reason", None)
     detail_reason = getattr(job, "detail_reason", None)
@@ -232,6 +237,11 @@ def _handle_failed_job(job, output_dir: Path, verbose: bool) -> None:
 
     if exit_code in _SIGNAL_EXIT_CODES:
         error_parts.append(f"Note: {_SIGNAL_EXIT_CODES[exit_code]}")
+    if exit_code == 137 and _extract_solver_from_job(job) == "palace":
+        error_parts.append(
+            "Palace: lowering the field order (sim.solver.order) also reduces "
+            "DOFs. Recheck convergence after changing the mesh or field order."
+        )
 
     # Try to download logs even though job failed
     try:
@@ -881,6 +891,10 @@ def upload_simulation_dir(
         input_hash: Optional cache key recorded with the job. Silently
             dropped when the installed SDK does not support it.
 
+    Palace and FDTD counts are read from root-level ``metadata.json`` and sent
+    as ``sizing_requirements`` to DataLab, including with older SDK versions.
+    Other submissions retain the SDK's existing fixed-resource upload path.
+
     Returns:
         PreJob object from gdsfactoryplus
 
@@ -898,7 +912,14 @@ def upload_simulation_dir(
                 "Installed gdsfactoryplus does not accept input_hash; "
                 "uploading without a cache key"
             )
+    from gsim._cloud_submission import read_sizing_requirements, upload_sized_simulation
+
+    requirements = read_sizing_requirements(input_dir, job_type)
     try:
+        if requirements is not None:
+            return upload_sized_simulation(
+                input_dir, job_type.casefold(), requirements, input_hash=input_hash
+            )
         return sim.upload_simulation(
             path=input_dir, job_definition=job_definition, **kwargs
         )
