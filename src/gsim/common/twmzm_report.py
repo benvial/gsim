@@ -239,7 +239,10 @@ class TWMZMReport(BaseModel):
         freq_hz: RF frequencies of the response (Hz).
         response: Normalized complex EO response per frequency.
         bandwidth_3db_hz: 3 dB EO bandwidth, or None when the response
-            stays above the threshold over the swept range.
+            stays above the threshold over the swept range, or is already
+            below it at the first frequency (``bandwidth_message`` says so).
+        bandwidth_message: Why ``bandwidth_3db_hz`` is absent when the
+            crossing lies below the swept range; ``None`` otherwise.
         walkoff_bandwidth_hz: Walk-off-limited bandwidth of a lossless
             matched line, with the Velocity mismatch the line has at that
             frequency (the last solved index held past the solved range),
@@ -289,6 +292,7 @@ class TWMZMReport(BaseModel):
     freq_hz: NDArray[np.float64]
     response: NDArray[np.complex128]
     bandwidth_3db_hz: float | None
+    bandwidth_message: str | None = None
     walkoff_bandwidth_hz: float | None
     velocity_mismatch: NDArray[np.float64]
     z0_ohm: NDArray[np.complex128]
@@ -367,7 +371,9 @@ def twmzm_figures_of_merit(
             fill factor below one.
 
     Returns:
-        The assembled :class:`TWMZMReport`.
+        The assembled :class:`TWMZMReport`. A response already below 3 dB
+        at the first frequency is not an error: the report then has no
+        ``bandwidth_3db_hz`` and says why in ``bandwidth_message``.
     """
     if length_m <= 0:
         raise ValueError("length_m must be positive.")
@@ -419,7 +425,12 @@ def twmzm_figures_of_merit(
             z_load_ohm=z_load_ohm,
             z_gen_ohm=z_gen_ohm,
         )
-    bandwidth = eo_bandwidth(rf.freq_hz, response)
+    # A response already below 3 dB at the first frequency crosses below
+    # the solved range; that is reported, not read off, as v_pi_v is.
+    try:
+        bandwidth, bandwidth_message = eo_bandwidth(rf.freq_hz, response), None
+    except ValueError as err:
+        bandwidth, bandwidth_message = None, str(err)
 
     # Not read off the band's mean index: a loaded line's index falls with
     # frequency and can cross the group index, where the mean mismatch
@@ -477,6 +488,7 @@ def twmzm_figures_of_merit(
         freq_hz=rf.freq_hz,
         response=np.asarray(response, dtype=np.complex128),
         bandwidth_3db_hz=bandwidth,
+        bandwidth_message=bandwidth_message,
         walkoff_bandwidth_hz=walkoff,
         velocity_mismatch=np.asarray(rf.n_rf - optical.n_group, dtype=np.float64),
         z0_ohm=rf.z0_ohm,

@@ -52,6 +52,22 @@ class TestFiguresOfMerit:
         assert report.walkoff_bandwidth_hz is None
         np.testing.assert_allclose(report.velocity_mismatch, 0.0)
 
+    def test_a_crossing_below_the_solved_range_is_reported_not_read_off(self):
+        # 300 Np/m over 5 mm already costs more than 3 dB at 10 GHz.
+        freq = np.linspace(10e9, 30e9, 3)
+        rf = line_params_from_neff(
+            freq, 2.5 + 1j * 300.0 * C0 / (2 * np.pi * freq), z0_ohm=50.0
+        )
+        report = twmzm_figures_of_merit(rf, _optical(n_group=2.5), length_m=5e-3)
+        assert report.bandwidth_3db_hz is None
+        assert "below the sampled range" in (report.bandwidth_message or "")
+
+    def test_a_resolved_bandwidth_carries_no_message(self):
+        rf = line_params_from_neff(FREQ, 6.0 + 0j, z0_ohm=50.0)
+        report = twmzm_figures_of_merit(rf, _optical(), length_m=10e-3)
+        assert report.bandwidth_3db_hz is not None
+        assert report.bandwidth_message is None
+
     def test_velocity_mismatch_reproduces_walkoff_limit(self):
         n_rf, n_opt, length = 6.0, 3.8, 10e-3
         optical = _optical(n_group=n_opt)
