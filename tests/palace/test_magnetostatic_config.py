@@ -6,13 +6,16 @@ mesh real coils with gmsh (no Palace run).
 
 from __future__ import annotations
 
+import dataclasses
 import json
+from types import SimpleNamespace
 
 import gdsfactory as gf
 import pytest
 
 from gsim.palace import DrivenSim, MagnetostaticSim
 from gsim.palace.mesh.config_generator import generate_palace_config
+from gsim.palace.mesh.validation import check_lumped_port_geometry, validate_mesh
 from gsim.palace.models import MagnetostaticConfig, MagnetostaticSolverConfig
 from gsim.palace.ports.config import PalacePort, PortGeometry, PortType
 from tests._electrode_layouts import stack
@@ -198,6 +201,7 @@ def _meshed(sim: MagnetostaticSim, output_dir) -> dict:
         "ports": json.loads((output_dir / "port_information.json").read_text())[
             "ports"
         ],
+        "metadata": json.loads((output_dir / "metadata.json").read_text()),
     }
 
 
@@ -253,6 +257,16 @@ def test_a_meshed_pair_has_pec_conductors_and_wall_and_one_sheet_per_source(
     assert not {a for (a,) in sheets} & pec
 
 
+def test_the_cloud_sizes_a_meshed_pair_from_its_nd_dof_estimate(
+    stacked_pair,
+) -> None:
+    metadata = stacked_pair["forward"]["metadata"]
+    estimate = metadata["mesh"]["field_dofs"]
+    assert metadata["simulation"]["problem_type"] == "Magnetostatic"
+    assert "unavailable_reason" not in estimate
+    assert estimate["estimated_field_dofs"] >= metadata["mesh"]["topology"]["edges"]
+
+
 def test_the_port_information_names_surface_currents_without_z0(
     stacked_pair,
 ) -> None:
@@ -288,3 +302,86 @@ def test_ports_a_driven_sim_configured_on_the_component_are_not_meshed(
     assert list(run["groups"]["port_surfaces"]) == ["P1"]
     assert len(run["config"]["Boundaries"]["SurfaceCurrent"]) == 1
     assert "LumpedPort" not in run["config"]["Boundaries"]
+
+
+def test_planar_conductors_are_refused(tmp_path) -> None:
+    gf.gpdk.PDK.activate()
+    sim = MagnetostaticSim()
+    sim.set_geometry(gf.components.inductor())
+    sim.set_stack()
+    sim.set_airbox(margin_x=20, margin_y=20, z_above=20, z_below=20)
+    sim.add_current_source("L", plus_port="P1", minus_port="P2")
+    sim.set_output_dir(tmp_path)
+    with pytest.raises(ValueError, match="planar_conductors"):
+        sim.mesh(planar_conductors=True, **COARSE)
+    assert not (tmp_path / "palace.msh").exists()
+
+
+@pytest.fixture
+def meshed_pair(tmp_path) -> MagnetostaticSim:
+    """The stacked IHP coil pair, meshed and ready for ``validate_mesh``."""
+    pytest.importorskip("ihp")
+    from tests._cloud_fixtures import inductor2_pair
+
+    sim = MagnetostaticSim()
+    sim.set_geometry(inductor2_pair(stacked=True))
+    sim.set_stack(substrate_thickness=2.0)
+    sim.set_airbox(margin_x=20, margin_y=20, z_above=20, z_below=20)
+    sim.add_current_source("A", plus_port="A_P1", minus_port="A_P2")
+    sim.add_current_source("B", plus_port="B_P1", minus_port="B_P2")
+    sim.set_output_dir(tmp_path)
+    sim.mesh(**COARSE)
+    return sim
+
+
+def test_validate_mesh_accepts_a_meshed_pair(meshed_pair) -> None:
+    result = validate_mesh(meshed_pair)
+    assert result.valid, result.errors
+
+
+def test_validate_mesh_flags_a_source_sheet_that_touches_no_pec(
+    meshed_pair,
+) -> None:
+    # Coil A is TopMetal2; losing its surfaces leaves sheet A floating in
+    # dielectric, as when a boolean cut consumes the leads.
+    conductors = meshed_pair.mesh_groups["conductor_surfaces"]
+    del conductors["topmetal2_xy"], conductors["topmetal2_z"]
+    errors = validate_mesh(meshed_pair).errors
+    assert any("surface currents [1]" in e and "share no nodes" in e for e in errors), (
+        errors
+    )
+
+
+def test_the_sheet_geometry_check_covers_surface_currents(meshed_pair) -> None:
+    sheets = meshed_pair._last_ports
+    kwargs = {
+        "mesh_path": meshed_pair._last_mesh_result.mesh_path,
+        "port_surfaces": meshed_pair.mesh_groups["port_surfaces"],
+    }
+    assert check_lumped_port_geometry(palace_ports=sheets, **kwargs) == []
+    turned = [dataclasses.replace(s, orientation=s.orientation + 90) for s in sheets]
+    errors = check_lumped_port_geometry(palace_ports=turned, **kwargs)
+    assert len(errors) == 2
+    assert all("geometry check FAILED" in e for e in errors)
+
+
+def test_a_mesh_without_source_sheets_is_an_error(meshed_pair) -> None:
+    meshed_pair.mesh_groups["port_surfaces"].clear()
+    assert "No port surfaces in mesh." in validate_mesh(meshed_pair).errors
+
+
+def test_a_config_without_surface_currents_is_an_error(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps({"Boundaries": {"PEC": {"Attributes": [4]}}})
+    )
+    sim = SimpleNamespace(
+        simulation_type="magnetostatic",
+        _last_mesh_result=SimpleNamespace(
+            groups={"volumes": {"air": {}}, "conductor_surfaces": {"m": {}}},
+            mesh_path=tmp_path / "missing.msh",
+        ),
+        _output_dir=tmp_path,
+        write_config=lambda **_kwargs: None,
+    )
+    errors = validate_mesh(sim).errors
+    assert any("SurfaceCurrent" in e for e in errors), errors
