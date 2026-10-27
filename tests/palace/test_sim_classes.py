@@ -397,7 +397,7 @@ class TestMagnetostaticSim:
         assert result.valid
         assert any("No airbox" in w for w in result.warnings)
 
-    def test_an_airbox_smaller_than_the_component_is_warned(self):
+    def test_an_airbox_smaller_than_the_meshed_conductors_is_warned(self):
         sim = _loop_sim()
         sim.add_current_source("L", plus_port="P", minus_port="M")
         # the loop is 6 um x 12 um
@@ -406,7 +406,34 @@ class TestMagnetostaticSim:
         assert result.valid
         (warning,) = result.warnings
         assert "Airbox extents {'z_below': 6.0} um" in warning
-        assert "component (12 um)" in warning
+        assert "meshed conductors (12 um across)" in warning
+
+    def test_an_unmeshed_marker_does_not_size_the_airbox_warning(self):
+        sim = _loop_sim()
+        sim.add_current_source("L", plus_port="P", minus_port="M")
+        component = sim.component
+        assert component is not None
+        # A 200 um marker on a layer outside the stack is never meshed.
+        component.add_polygon(
+            [(-100, -100), (100, -100), (100, 100), (-100, 100)], layer=(99, 0)
+        )
+        assert component.xsize == pytest.approx(200)
+        sim.set_airbox(margin_x=50, margin_y=50, z_above=50, z_below=50)
+        result = sim.validate_config()
+        assert result.valid, result.errors
+        assert result.warnings == []
+
+    def test_the_recommended_airbox_is_quiet_for_the_ihp_validation_pair(
+        self, tmp_path: Path
+    ):
+        from tests._cloud_fixtures import make_magnetostatic_pair_sim
+
+        # 128.7 um with its marker layers, 68.7 um of meshed TopMetal2
+        sim = make_magnetostatic_pair_sim(tmp_path)
+        assert sim.component.xsize > 100
+        result = sim.validate_config()
+        assert result.valid, result.errors
+        assert result.warnings == []
 
     def test_a_conductor_without_a_source_is_warned_as_a_screen(self):
         sim = _loop_sim(island=True)
