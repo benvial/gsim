@@ -327,7 +327,9 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         materials: dict[str, MaterialConfig]
         refinement: RefinementConfig
         mesh_config: MeshConfig
-        simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
+        simulation_type: Literal[
+            "driven", "eigenmode", "electrostatic", "magnetostatic", "boundarymode"
+        ]
         absorbing_boundary: bool
         absorbing_order: Literal[1, 2]
         _output_dir: Path | None
@@ -846,7 +848,8 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             verify_symmetry: Check that the layout is mirror-symmetric.
 
         Raises:
-            NotImplementedError: For electrostatic and boundarymode simulations.
+            NotImplementedError: For electrostatic, magnetostatic and
+                boundarymode simulations.
             ValueError: If a plane was already added.
 
         Example:
@@ -2196,8 +2199,10 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
 
         groups = getattr(self._last_mesh_result, "groups", None) or {}
         volumes = groups.get("volumes", {})
-        if groups.get("boundary_surfaces", {}).get("absorbing") and not any(
-            is_air_like_material(stack, name) for name in volumes
+        if (
+            self.absorbing_boundary
+            and groups.get("boundary_surfaces", {}).get("absorbing")
+            and not any(is_air_like_material(stack, name) for name in volumes)
         ):
             logger.warning(
                 "Absorbing boundary is applied to solid dielectric surfaces "
@@ -2318,6 +2323,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             electrostatic_config=electrostatic_config,
             terminals=terminals or [],
             resolved_terminals=self._config_terminals(self._last_mesh_result.groups),
+            magnetostatic_config=self._get_problem_settings("magnetostatic"),
         )
 
         # Validate mesh and config unless this is a photonic workflow.
@@ -2833,7 +2839,9 @@ class _PalaceSimBase(PalaceSimMixin, BaseModel):
     materials: dict[str, MaterialConfig] = Field(default_factory=dict)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     # Defaults set by each problem class
-    simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
+    simulation_type: Literal[
+        "driven", "eigenmode", "electrostatic", "magnetostatic", "boundarymode"
+    ]
     absorbing_boundary: bool
     absorbing_order: Literal[1, 2] = Field(
         default=2,

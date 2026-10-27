@@ -1,11 +1,17 @@
-"""Tests for the magnetostatic Palace config (``SurfaceCurrent`` and ``PEC``)."""
+"""Tests for the magnetostatic Palace config (``SurfaceCurrent`` and ``PEC``).
+
+The first tests write configs from synthetic physical groups; the last ones
+mesh real coils with gmsh (no Palace run).
+"""
 
 from __future__ import annotations
 
 import json
 
+import gdsfactory as gf
 import pytest
 
+from gsim.palace import DrivenSim, MagnetostaticSim
 from gsim.palace.mesh.config_generator import generate_palace_config
 from gsim.palace.models import MagnetostaticConfig, MagnetostaticSolverConfig
 from gsim.palace.ports.config import PalacePort, PortGeometry, PortType
@@ -171,3 +177,114 @@ def test_a_source_without_a_mesh_sheet_is_refused(tmp_path) -> None:
 def test_an_absorbing_wall_is_refused(tmp_path) -> None:
     with pytest.raises(ValueError, match=r"Absorbing.*magnetostatic"):
         _config(tmp_path, hints={}, absorbing_boundary=True)
+
+
+# ---------------------------------------------------------------------------
+# Meshed coils (gmsh, no Palace)
+# ---------------------------------------------------------------------------
+
+COARSE = {"refined_mesh_size": 2.0, "max_mesh_size": 30.0}
+
+
+def _meshed(sim: MagnetostaticSim, output_dir) -> dict:
+    """Mesh a sim, write its config and read back what the run would use."""
+    sim.set_output_dir(output_dir)
+    result = sim.mesh(**COARSE)
+    sim.write_config()
+    return {
+        "mesh_hash": result.mesh_stats["mesh_hash"],
+        "groups": sim.mesh_groups,
+        "config": json.loads((output_dir / "config.json").read_text()),
+        "ports": json.loads((output_dir / "port_information.json").read_text())[
+            "ports"
+        ],
+    }
+
+
+@pytest.fixture(scope="module")
+def stacked_pair(tmp_path_factory) -> dict[str, dict]:
+    """The stacked IHP coil pair meshed twice, with source B one way then reversed."""
+    pytest.importorskip("ihp")
+    from tests._cloud_fixtures import inductor2_pair
+
+    runs = {}
+    for run in ("forward", "reversed"):
+        sim = MagnetostaticSim()
+        sim.set_geometry(inductor2_pair(stacked=True))
+        sim.set_stack(substrate_thickness=2.0)
+        sim.set_airbox(margin_x=20, margin_y=20, z_above=20, z_below=20)
+        sim.add_current_source("A", plus_port="A_P1", minus_port="A_P2")
+        sim.add_current_source("B", plus_port="B_P1", minus_port="B_P2")
+        if run == "reversed":
+            sim.add_current_source("B", plus_port="B_P2", minus_port="B_P1")
+        runs[run] = _meshed(sim, tmp_path_factory.mktemp(run))
+    return runs
+
+
+def test_reversing_a_source_keeps_the_mesh_and_flips_only_its_direction(
+    stacked_pair,
+) -> None:
+    forward, backward = stacked_pair["forward"], stacked_pair["reversed"]
+    assert forward["mesh_hash"] == backward["mesh_hash"]
+    a, b = forward["config"]["Boundaries"]["SurfaceCurrent"]
+    assert (a["Direction"], b["Direction"]) == ("-X", "+X")
+    expected = json.loads(json.dumps(forward["config"]))
+    expected["Boundaries"]["SurfaceCurrent"][1]["Direction"] = "-X"
+    assert backward["config"] == expected
+
+
+def test_a_meshed_pair_has_pec_conductors_and_wall_and_one_sheet_per_source(
+    stacked_pair,
+) -> None:
+    run = stacked_pair["forward"]
+    boundaries = run["config"]["Boundaries"]
+    groups = run["groups"]
+    assert set(boundaries) == {"PEC", "SurfaceCurrent"}
+    pec = set(boundaries["PEC"]["Attributes"])
+    conductors = {info["phys_group"] for info in groups["conductor_surfaces"].values()}
+    wall = set(groups["boundary_surfaces"]["absorbing"]["phys_group"])
+    assert conductors <= pec
+    assert wall <= pec
+    sheets = [s["Attributes"] for s in boundaries["SurfaceCurrent"]]
+    assert sheets == [
+        [groups["port_surfaces"]["P1"]["phys_group"]],
+        [groups["port_surfaces"]["P2"]["phys_group"]],
+    ]
+    assert not {a for (a,) in sheets} & pec
+
+
+def test_the_port_information_names_surface_currents_without_z0(
+    stacked_pair,
+) -> None:
+    ports = stacked_pair["forward"]["ports"]
+    assert [(p["name"], p["type"]) for p in ports] == [
+        ("A", "surface_current"),
+        ("B", "surface_current"),
+    ]
+    assert all("Z0" not in p for p in ports)
+    assert ports[0]["length"] == pytest.approx(2.1)  # the gap between the leads
+
+
+def test_ports_a_driven_sim_configured_on_the_component_are_not_meshed(
+    tmp_path,
+) -> None:
+    gf.gpdk.PDK.activate()
+    component = gf.Component()
+    component.add_ports((component << gf.components.inductor()).ports)
+    driven = DrivenSim()
+    driven.set_geometry(component)
+    driven.set_stack()
+    driven.add_port("o1", layer="metal3", length=2.0)
+    driven._configure_ports_on_component(driven._resolve_stack())
+    assert component.ports["o1"].info["palace_type"]  # the stale decoration
+
+    sim = MagnetostaticSim()
+    sim.set_geometry(component)
+    sim.set_stack()
+    sim.set_airbox(margin_x=20, margin_y=20, z_above=20, z_below=20)
+    sim.add_current_source("L", plus_port="P1", minus_port="P2")
+    run = _meshed(sim, tmp_path)
+    assert [p["name"] for p in run["ports"]] == ["L"]
+    assert list(run["groups"]["port_surfaces"]) == ["P1"]
+    assert len(run["config"]["Boundaries"]["SurfaceCurrent"]) == 1
+    assert "LumpedPort" not in run["config"]["Boundaries"]

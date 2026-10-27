@@ -353,3 +353,39 @@ __all__ = [
     "make_eigenmode_cavity_sim",
     "make_sbend_sim",
 ]
+
+
+def inductor2_pair(pitch: float = 39.35, stacked: bool = False) -> gf.Component:
+    """Two single-turn IHP ``inductor2`` coils, for magnetostatic tests.
+
+    Coil A is on TopMetal2 with leads ``A_P1``/``A_P2`` at y = 0. With
+    ``stacked`` coil B is a TopMetal1 copy rotated 180 degrees about the
+    octagon centre, coaxial with A (the coupled example); otherwise it is a
+    TopMetal2 copy ``pitch`` um to the right (the validation pair). Activates
+    the IHP PDK.
+
+    Args:
+        pitch: Centre-to-centre distance of the side-by-side coils, in um.
+        stacked: Stack coil B under coil A instead.
+    """
+    from ihp import PDK, cells
+
+    PDK.activate()
+
+    @gf.cell
+    def inductor2_pair_cell(pitch: float, stacked: bool) -> gf.Component:
+        c = gf.Component()
+        a = c << cells.inductor2()
+        if stacked:
+            b = c << cells.inductor2(
+                layer_metal_2="TopMetal1drawing", layer_metal_2_pin="TopMetal1pin"
+            )
+            b.rotate(180, center=(0, 44.675))
+        else:
+            b = c << cells.inductor2()
+            b.movex(pitch)
+        c.add_ports(a.ports, prefix="A_")
+        c.add_ports(b.ports, prefix="B_")
+        return c
+
+    return inductor2_pair_cell(pitch=pitch, stacked=stacked)
