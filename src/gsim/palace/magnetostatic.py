@@ -257,8 +257,8 @@ class MagnetostaticSim(_PalaceSimBase):
 
         Errors: no current source, a source that does not resolve (see
         :meth:`resolve_current_sources`), an absorbing outer wall, impedance
-        boundaries, or a linear solver other than Palace's ``Default`` with
-        the AMS preconditioner family.
+        boundaries, a direct linear solver (``solver_type`` other than
+        ``"Default"``), or the BoomerAMG preconditioner.
 
         Warnings: no airbox, or an airbox extent smaller than the larger side
         of the component; and conductors that carry no source, which screen
