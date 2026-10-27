@@ -7,6 +7,7 @@ inductance matrix between current sources.
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
@@ -46,7 +47,8 @@ class MagnetostaticSim(_PalaceSimBase):
     (``metallic_boundaries=True``), which pushes the field in and gives a
     lower bound on each inductance. ``metallic_boundaries=False`` leaves it a
     perfect magnetic conductor, an upper bound; the mean of the two runs
-    cancels the first-order wall error. Keep the walls far from the coils:
+    cancels the first-order wall error. Keep the walls far from the coils,
+    each airbox extent at least the larger side of the meshed conductors:
     ``set_airbox(margin_x=100, margin_y=100, z_above=150, z_below=150)`` suits
     coils some tens of um across.
 
@@ -261,7 +263,8 @@ class MagnetostaticSim(_PalaceSimBase):
         ``"Default"``), or the BoomerAMG preconditioner.
 
         Warnings: no airbox, or an airbox extent smaller than the larger side
-        of the component; and conductors that carry no source, which screen
+        of the meshed conductors (the layout on the stack's layers, which
+        ``mesh()`` pads); and conductors that carry no source, which screen
         any loop they close.
 
         Returns:
@@ -336,10 +339,9 @@ class MagnetostaticSim(_PalaceSimBase):
                 "No airbox: the outer wall sits on the stack and biases the "
                 f"inductance. Add room around the coils, e.g. {recipe}."
             ]
-        component = self.component
-        if component is None:
+        size = self._conductor_size()
+        if size is None:
             return []
-        size = max(float(component.xsize), float(component.ysize))
         extents = {
             key: float(airbox.get(key, 0.0))
             for key in ("margin_x", "margin_y", "z_above", "z_below")
@@ -348,11 +350,34 @@ class MagnetostaticSim(_PalaceSimBase):
         if not small:
             return []
         return [
-            f"Airbox extents {small} um are smaller than the component "
-            f"({size:.4g} um): the outer wall biases the inductance. Make them "
-            f"at least that large, e.g. {recipe} for coils some tens of um "
-            "across."
+            f"Airbox extents {small} um are smaller than the meshed conductors "
+            f"({size:.4g} um across): the outer wall biases the inductance. "
+            f"Make them at least that large, e.g. {recipe} for coils some tens "
+            "of um across."
         ]
+
+    def _conductor_size(self) -> float | None:
+        """The larger lateral side of the meshed conductors, in um.
+
+        This is the box that ``mesh()`` pads with the airbox margins, so
+        marker layers outside the stack do not count. Falls back on the
+        component bounding box when the stack does not resolve or holds none
+        of the component's layers; ``None`` without a component.
+        """
+        from gsim.palace.mesh.geometry import extract_geometry
+
+        component = self.component
+        if component is None:
+            return None
+        try:
+            xmin, ymin, xmax, ymax = extract_geometry(
+                component, self._resolve_stack()
+            ).bbox
+        except (ValueError, OSError):
+            xmin, ymin, xmax, ymax = (math.inf, math.inf, -math.inf, -math.inf)
+        if xmax >= xmin and ymax >= ymin:
+            return max(xmax - xmin, ymax - ymin)
+        return max(float(component.xsize), float(component.ysize))
 
     # -------------------------------------------------------------------------
     # Run and results
