@@ -30,6 +30,27 @@ def test_artifact_simulation_is_a_deprecated_alias(fdtd_pdk_module):
     assert legacy.geometry("straight", settings={"length": 2}).component is not None
 
 
+def test_flat_padding_arguments_reach_the_domain() -> None:
+    simulation = fdtd.Simulation(padding=0.5, padding_x=(0.2, 0.3), padding_z=2)
+
+    assert simulation.domain.padding == 0.5
+    assert simulation.domain.padding_x == (0.2, 0.3)
+    assert simulation.domain.padding_y is None
+    assert simulation.domain.padding_z == 2
+
+
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [("default_port", "source.port"), ("padding_x", "domain.padding_x")],
+)
+def test_flat_attributes_point_to_their_concern(name, target) -> None:
+    simulation = fdtd.Simulation()
+
+    with pytest.raises(AttributeError, match=f"simulation.{target}"):
+        setattr(simulation, name, "o2")
+    assert not hasattr(simulation, name)
+
+
 def test_explicit_gaussian_beam_serializes_position_and_size(tmp_path, fdtd_pdk_module):
     simulation = fdtd.Simulation(pdk=fdtd_pdk_module)
     simulation.geometry("straight", settings={"length": 2}, mesh_size_nm=750)

@@ -13,7 +13,10 @@ def __getattr__(name: str) -> Any:
     if name == "ArtifactSimulation":
         warnings.warn(
             "gsim.fdtd.simulation.ArtifactSimulation is deprecated; use "
-            "gsim.fdtd.Simulation, which accepts the same flat keyword arguments.",
+            "gsim.fdtd.Simulation. It accepts the old flat settings as keyword "
+            "arguments only; after construction, change them through the "
+            "concern objects (for example simulation.source.port, not "
+            "simulation.default_port).",
             DeprecationWarning,
             stacklevel=2,
         )
