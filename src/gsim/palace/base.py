@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from gdsfactory.component import Component
 
     from gsim.palace.mesh.nets import Nets
+    from gsim.palace.ports.config import PalacePort
     from gsim.palace.results import PalaceTextResults, SParams
 
 logger = logging.getLogger(__name__)
@@ -326,7 +327,9 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         materials: dict[str, MaterialConfig]
         refinement: RefinementConfig
         mesh_config: MeshConfig
-        simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
+        simulation_type: Literal[
+            "driven", "eigenmode", "electrostatic", "magnetostatic", "boundarymode"
+        ]
         absorbing_boundary: bool
         absorbing_order: Literal[1, 2]
         _output_dir: Path | None
@@ -845,7 +848,8 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             verify_symmetry: Check that the layout is mirror-symmetric.
 
         Raises:
-            NotImplementedError: For electrostatic and boundarymode simulations.
+            NotImplementedError: For electrostatic, magnetostatic and
+                boundarymode simulations.
             ValueError: If a plane was already added.
 
         Example:
@@ -1793,13 +1797,31 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         for line in mesh_identity_lines(stats):
             print(f"  {line}")  # noqa: T201
 
-    def _get_ports_for_preview(self, stack: LayerStack) -> list:
-        """Get ports for preview."""
+    def _palace_ports(self, stack: LayerStack) -> list[PalacePort]:
+        """The ports the mesher cuts into the model, in Palace index order.
+
+        By default these are the declared ports, written onto the gdsfactory
+        ports of the component and read back from them; a boundary-mode sim
+        has none. A sim whose excitations are not gdsfactory ports overrides
+        this.
+
+        Args:
+            stack: The resolved layer stack.
+
+        Returns:
+            The ports to mesh, in Palace index order.
+        """
         from gsim.palace.ports import extract_ports
 
+        if self.simulation_type == "boundarymode":
+            return []
         component = self.geometry.component if self.geometry else None
         self._configure_ports_on_component(stack)
         return extract_ports(component, stack)
+
+    def _get_ports_for_preview(self, stack: LayerStack) -> list:
+        """Get ports for preview."""
+        return self._palace_ports(stack)
 
     # -------------------------------------------------------------------------
     # Preview
@@ -2099,13 +2121,10 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             >>> print(f"Mesh saved to: {result.mesh_path}")
         """
         from gsim.palace.mesh.config_generator import check_model_name
-        from gsim.palace.ports import extract_ports
 
         if self._output_dir is None:
             raise ValueError("Output directory not set. Call set_output_dir() first.")
         check_model_name(model_name)
-
-        component = self.geometry.component if self.geometry else None
 
         self._apply_airbox_overrides(
             margin_x=margin_x,
@@ -2154,15 +2173,9 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
 
         output_dir = self._output_dir
 
-        # Resolve stack and configure ports
+        # Resolve stack and the ports to mesh
         stack = self._resolve_stack()
-        if self.simulation_type == "boundarymode":
-            palace_ports = []
-        else:
-            self._configure_ports_on_component(stack)
-
-            # Extract ports
-            palace_ports = extract_ports(component, stack)
+        palace_ports = self._palace_ports(stack)
 
         # Generate mesh (config is written separately by simulate() or write_config())
         result = self._generate_mesh_internal(
@@ -2186,8 +2199,10 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
 
         groups = getattr(self._last_mesh_result, "groups", None) or {}
         volumes = groups.get("volumes", {})
-        if groups.get("boundary_surfaces", {}).get("absorbing") and not any(
-            is_air_like_material(stack, name) for name in volumes
+        if (
+            self.absorbing_boundary
+            and groups.get("boundary_surfaces", {}).get("absorbing")
+            and not any(is_air_like_material(stack, name) for name in volumes)
         ):
             logger.warning(
                 "Absorbing boundary is applied to solid dielectric surfaces "
@@ -2308,6 +2323,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             electrostatic_config=electrostatic_config,
             terminals=terminals or [],
             resolved_terminals=self._config_terminals(self._last_mesh_result.groups),
+            magnetostatic_config=self._get_problem_settings("magnetostatic"),
         )
 
         # Validate mesh and config unless this is a photonic workflow.
@@ -2823,7 +2839,9 @@ class _PalaceSimBase(PalaceSimMixin, BaseModel):
     materials: dict[str, MaterialConfig] = Field(default_factory=dict)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     # Defaults set by each problem class
-    simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
+    simulation_type: Literal[
+        "driven", "eigenmode", "electrostatic", "magnetostatic", "boundarymode"
+    ]
     absorbing_boundary: bool
     absorbing_order: Literal[1, 2] = Field(
         default=2,

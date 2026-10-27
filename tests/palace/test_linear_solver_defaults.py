@@ -5,19 +5,9 @@ from __future__ import annotations
 import json
 
 import pytest
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 import gsim.palace as pa
-from gsim.palace.solver_settings import SolverSettingsMixin
-
-
-class MagnetostaticSettingsHost(SolverSettingsMixin, BaseModel):
-    """Minimal simulation owning a magnetostatic solver configuration."""
-
-    solver: pa.MagnetostaticSolverConfig = Field(
-        default_factory=pa.MagnetostaticSolverConfig
-    )
-
 
 SIMULATIONS = [
     (pa.DrivenSim, 1e-6),
@@ -249,7 +239,7 @@ def test_magnetostatic_defaults_to_ams_conjugate_gradient():
 
 @pytest.mark.parametrize("setter", ["set_solver", "set_numerical"])
 def test_setters_keep_each_class_linear_defaults(setter):
-    simulation = MagnetostaticSettingsHost()
+    simulation = pa.MagnetostaticSim()
     simulation.solver.linear.preconditioner = "Default"
     getattr(simulation, setter)(order=1)
     assert simulation.solver.order == 1
