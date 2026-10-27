@@ -4,17 +4,29 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from gsim import fdtd
 
 
 def test_historical_simulation_import_exposes_public_workflow(fdtd_pdk_module):
-    from gsim.fdtd.simulation import ArtifactSimulation, Simulation
+    from gsim.fdtd.simulation import Simulation
 
     assert Simulation is fdtd.Simulation
     simulation = Simulation(pdk=fdtd_pdk_module)
     simulation.source(port="o1")
+    assert isinstance(simulation.source, fdtd.PortSource)
     assert simulation.source.port == "o1"
-    legacy = ArtifactSimulation(pdk=fdtd_pdk_module, default_port="o1")
+
+
+def test_artifact_simulation_is_a_deprecated_alias(fdtd_pdk_module):
+    from gsim.fdtd import simulation as historical
+
+    with pytest.warns(DeprecationWarning, match="ArtifactSimulation"):
+        legacy_class = historical.ArtifactSimulation
+    assert legacy_class is fdtd.Simulation
+    legacy = legacy_class(pdk=fdtd_pdk_module, default_port="o1")
+    assert legacy.source.port == "o1"
     assert legacy.geometry("straight", settings={"length": 2}).component is not None
 
 
