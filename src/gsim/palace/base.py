@@ -4,6 +4,7 @@
 types — DrivenSim, EigenmodeSim, ElectrostaticSim and BoundaryModeSim:
 geometry and stack configuration, meshing, config generation, and the
 local run, including what a run that dies on a signal means.
+:class:`_PalaceSimBase` declares, once, the state those methods share.
 
 :class:`MeshSourceMixin` is the same surface for a simulation that does
 not mesh for itself but delegates to one that does.
@@ -18,6 +19,10 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+
+from gsim.common import Geometry, LayerStack
+from gsim.common.cloud import CloudJobMixin
 from gsim.palace.models import (
     CPWPortConfig,
     ImpedanceBoundaryConfig,
@@ -42,7 +47,6 @@ from gsim.palace.solver_settings import SolverSettingsMixin
 if TYPE_CHECKING:
     from gdsfactory.component import Component
 
-    from gsim.common import Geometry, LayerStack
     from gsim.palace.results import PalaceTextResults, SParams
 
 logger = logging.getLogger(__name__)
@@ -155,14 +159,13 @@ def _recommend_parallel(
     return max(1, recommended), num_threads
 
 
-def _wrote_solver_output(output_dir: Path) -> bool:
-    """Whether a local run left any solver output under its output dir.
+def _wrote_solver_output(postpro_dir: Path) -> bool:
+    """Whether a local run left any solver output in Palace's output dir.
 
     What separates a dead Palace runtime from a dead solve: a runtime
     that cannot start kills the binary before the solver writes
     anything.
     """
-    postpro_dir = output_dir / "output/palace/"
     if not postpro_dir.is_dir():
         return False
     return any(
@@ -309,26 +312,32 @@ class MeshSourceMixin:
         return dict(self._meshed_mesh_source().mesh_groups)
 
 
-class PalaceSimMixin(SolverSettingsMixin):
+class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
     """Mixin providing common methods for all Palace simulation classes.
 
-    Subclasses must define these attributes (typically via Pydantic fields):
-        - geometry: Geometry | None
-        - stack: LayerStack | None
-        - materials: dict[str, MaterialConfig]
-        - solver: SolverConfig
-        - refinement: RefinementConfig
-        - _output_dir: Path | None (private)
-        - _stack_kwargs: dict[str, Any] (private)
+    The state these methods use is declared once, by :class:`_PalaceSimBase`;
+    the hints below only tell the type checker about it.
     """
 
-    # Type hints for required attributes (implemented by subclasses)
-    geometry: Geometry | None
-    stack: LayerStack | None
-    materials: dict[str, MaterialConfig]
-    refinement: RefinementConfig
-    simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
     if TYPE_CHECKING:
+        geometry: Geometry | None
+        stack: LayerStack | None
+        materials: dict[str, MaterialConfig]
+        refinement: RefinementConfig
+        mesh_config: MeshConfig
+        simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
+        absorbing_boundary: bool
+        absorbing_order: Literal[1, 2]
+        _output_dir: Path | None
+        _stack_kwargs: dict[str, Any]
+        _airbox_config: dict[str, Any]
+        _pec_blocks: list
+        _symmetry_planes: list[SymmetryPlaneConfig]
+        _hints: dict[str, Any]
+        _impedance_boundaries: list[ImpedanceBoundaryConfig]
+        _configured_ports: bool
+        _last_mesh_result: Any
+        _last_ports: list
         # Declared by the sim classes that take 3D ports or terminals; a
         # boundary-mode sim has none, so these must not become fields.
         ports: list[PortConfig]
@@ -336,16 +345,7 @@ class PalaceSimMixin(SolverSettingsMixin):
         wave_ports: list[WavePortConfig]
         two_terminal_ports: list[TwoTerminalPortConfig]
         terminals: list[TerminalConfig]
-    _output_dir: Path | None
-    _job_id: str | None
-    _input_hash: str | None
-    _stack_kwargs: dict[str, Any]
-    _pec_blocks: list
-    _symmetry_planes: list[SymmetryPlaneConfig]
-    _hints: dict[str, Any]
-    _impedance_boundaries: list[ImpedanceBoundaryConfig]
-    absorbing_boundary: bool
-    _airbox_config: dict[str, Any]
+    _cloud_job_type = "palace"
 
     def _mesh_by_net(self) -> bool:
         """Whether the mesh needs one physical group per net; only some sims do."""
@@ -382,7 +382,24 @@ class PalaceSimMixin(SolverSettingsMixin):
     @property
     def has_mesh(self) -> bool:
         """Whether ``mesh()`` has run and left a mesh to read."""
-        return getattr(self, "_last_mesh_result", None) is not None
+        return self._last_mesh_result is not None
+
+    def _model_name(self) -> str:
+        """The base name mesh() gave the mesh file and Palace's output dir."""
+        result = self._last_mesh_result
+        return result.model_name if result is not None else "palace"
+
+    def _postpro_dir(self) -> Path:
+        """Where a local run's Palace tables land.
+
+        Raises:
+            ValueError: When no output directory is set.
+        """
+        from gsim.palace.mesh.config_generator import output_subdir
+
+        if self._output_dir is None:
+            raise ValueError("Output directory not set. Call set_output_dir() first.")
+        return Path(self._output_dir) / output_subdir(self._model_name())
 
     def _run_context(self) -> str:
         """What was being run, named in the first line of an abort report."""
@@ -390,7 +407,7 @@ class PalaceSimMixin(SolverSettingsMixin):
 
     def _require_mesh_result(self) -> Any:
         """Return the last mesh result, or explain that meshing is missing."""
-        result = getattr(self, "_last_mesh_result", None)
+        result = self._last_mesh_result
         if result is None:
             raise ValueError(
                 f"No mesh generated for this {type(self).__name__}. Call mesh() first."
@@ -820,7 +837,8 @@ class PalaceSimMixin(SolverSettingsMixin):
 
         Args:
             axis: Axis normal to the plane.
-            position: Plane position along ``axis`` in um (1 nm grid).
+            position: Plane position along ``axis`` in um, aligned to the
+                owning layout's database grid. Checked during geometry extraction.
             kind: ``"pmc"`` (even mode) or ``"pec"`` (odd mode).
             keep: Side of the plane that is simulated.
             verify_symmetry: Check that the layout is mirror-symmetric.
@@ -977,10 +995,9 @@ class PalaceSimMixin(SolverSettingsMixin):
         provided, ``refined_mesh_size`` is scaled down to
         ``min(preset_size, min_conductor_feature / cells_per_feature)``.
 
-        When ``auto_size`` is False (the default), presets use their literal
-        ``refined_mesh_size``. If a small conductor feature is detected that
-        may be under-resolved by the preset, a warning is emitted suggesting
-        ``auto_size=True``.
+        Explicit sizes always override the preset and bypass auto-sizing.
+        Warn when the effective size exceeds the detected feature size divided
+        by ``cells_per_feature``; this is a heuristic, not an accuracy guarantee.
         """
         if preset is None or preset == "default":
             mesh_config = MeshConfig.default()
@@ -994,83 +1011,95 @@ class PalaceSimMixin(SolverSettingsMixin):
                 "expected one of 'coarse', 'default', 'fine', or None"
             )
 
+        # Resolve the explicit size before any resolution diagnostics.
+        if refined_mesh_size is not None:
+            mesh_config.refined_mesh_size = refined_mesh_size
+
         # Auto-size is explicit opt-in. Presets are "honest" speed tiers by
         # default; when auto_size=True the refined_mesh_size shrinks to
         # min(preset, min_conductor_feature / cells_per_feature). When
         # auto_size=False we just warn if a small feature risks being
         # under-resolved.
-        if auto_size:
-            if refined_mesh_size is None:
-                component = self.geometry.component if self.geometry else None
-                if component is not None:
-                    from gsim.palace.mesh.auto_size import auto_refined_mesh_size
+        if auto_size and refined_mesh_size is None:
+            component = self.geometry.component if self.geometry else None
+            if component is not None:
+                from gsim.palace.mesh.auto_size import auto_refined_mesh_size
 
-                    stack = self._resolve_stack()
-                    scaled = auto_refined_mesh_size(
-                        component,
-                        stack,
-                        preset_size=mesh_config.refined_mesh_size,
-                        cells_per_feature=cells_per_feature,
+                stack = self._resolve_stack()
+                scaled = auto_refined_mesh_size(
+                    component,
+                    stack,
+                    preset_size=mesh_config.refined_mesh_size,
+                    cells_per_feature=cells_per_feature,
+                )
+                if scaled < mesh_config.refined_mesh_size:
+                    logger.info(
+                        "Auto-sizing refined_mesh_size: %.3f -> %.3f um "
+                        "(min conductor feature / %d)",
+                        mesh_config.refined_mesh_size,
+                        scaled,
+                        cells_per_feature,
                     )
-                    if scaled < mesh_config.refined_mesh_size:
-                        logger.info(
-                            "Auto-sizing refined_mesh_size: %.3f -> %.3f um "
-                            "(min conductor feature / %d)",
-                            mesh_config.refined_mesh_size,
-                            scaled,
-                            cells_per_feature,
-                        )
-                        mesh_config.refined_mesh_size = scaled
-        else:
+                    mesh_config.refined_mesh_size = scaled
+        if (not auto_size or refined_mesh_size is not None) and cells_per_feature > 0:
             component = self.geometry.component if self.geometry else None
             if component is not None:
                 from gsim.palace.mesh.auto_size import min_conductor_feature_size
 
                 stack = self._resolve_stack()
                 feature = min_conductor_feature_size(component, stack)
-                if (
-                    feature is not None
-                    and math.isfinite(feature)
-                    and feature < mesh_config.refined_mesh_size / 2
-                ):
-                    logger.warning(
-                        "Small conductor feature detected (%.3f um) may be "
-                        "under-resolved by refined_mesh_size=%.3f um. "
-                        "Pass auto_size=True to scale the mesh down.",
-                        feature,
-                        mesh_config.refined_mesh_size,
-                    )
+                if feature is not None and math.isfinite(feature) and feature > 0:
+                    suggested_size = feature / cells_per_feature
+                    if (
+                        mesh_config.refined_mesh_size > suggested_size
+                        and not math.isclose(
+                            mesh_config.refined_mesh_size, suggested_size, rel_tol=1e-9
+                        )
+                    ):
+                        advice = (
+                            "Reduce refined_mesh_size; auto_size=True preserves an "
+                            "explicit size."
+                            if refined_mesh_size is not None
+                            else "Pass auto_size=True to scale the mesh down."
+                        )
+                        logger.warning(
+                            "Small conductor feature detected (%.3f um) may be "
+                            "under-resolved by refined_mesh_size=%.3f um. "
+                            "The heuristic target is <= %.3f um (%d cells/feature). %s",
+                            feature,
+                            mesh_config.refined_mesh_size,
+                            suggested_size,
+                            cells_per_feature,
+                            advice,
+                        )
 
-        existing_config = getattr(self, "mesh_config", None)
+        existing_config = self.mesh_config
 
         # Preserve curve-fit settings from sim.mesh_config unless overridden.
-        if existing_config is not None:
-            mesh_config.curve_fit_mode = existing_config.curve_fit_mode
-            mesh_config.curve_fit_layers = list(existing_config.curve_fit_layers)
-            mesh_config.curve_fit_tolerance_um = existing_config.curve_fit_tolerance_um
-            mesh_config.curve_fit_min_points = existing_config.curve_fit_min_points
-            mesh_config.curve_fit_corner_angle_deg = (
-                existing_config.curve_fit_corner_angle_deg
-            )
-            mesh_config.high_order_elements = existing_config.high_order_elements
-            mesh_config.high_order_order = existing_config.high_order_order
-            mesh_config.high_order_optimize = existing_config.high_order_optimize
-            mesh_config.refinement_boxes = list(existing_config.refinement_boxes)
-            mesh_config.algorithm_3d = existing_config.algorithm_3d
-            mesh_config.threads = existing_config.threads
-            mesh_config.surface_threads = existing_config.surface_threads
+        mesh_config.curve_fit_mode = existing_config.curve_fit_mode
+        mesh_config.curve_fit_layers = list(existing_config.curve_fit_layers)
+        mesh_config.curve_fit_tolerance_um = existing_config.curve_fit_tolerance_um
+        mesh_config.curve_fit_min_points = existing_config.curve_fit_min_points
+        mesh_config.curve_fit_corner_angle_deg = (
+            existing_config.curve_fit_corner_angle_deg
+        )
+        mesh_config.high_order_elements = existing_config.high_order_elements
+        mesh_config.high_order_order = existing_config.high_order_order
+        mesh_config.high_order_optimize = existing_config.high_order_optimize
+        mesh_config.refinement_boxes = list(existing_config.refinement_boxes)
+        mesh_config.algorithm_3d = existing_config.algorithm_3d
+        mesh_config.threads = existing_config.threads
+        mesh_config.surface_threads = existing_config.surface_threads
+        mesh_config.clip_merged_vias = existing_config.clip_merged_vias
 
         # Preserve planar_conductors from sim.mesh_config if not
         # explicitly provided via sim.mesh(planar_conductors=...)
         if planar_conductors is None:
-            if existing_config is not None:
-                mesh_config.planar_conductors = existing_config.planar_conductors
+            mesh_config.planar_conductors = existing_config.planar_conductors
         else:
             mesh_config.planar_conductors = planar_conductors
 
-        # Apply overrides
-        if refined_mesh_size is not None:
-            mesh_config.refined_mesh_size = refined_mesh_size
+        # Apply remaining overrides
         if max_mesh_size is not None:
             mesh_config.max_mesh_size = max_mesh_size
         if margin is not None:
@@ -1221,7 +1250,7 @@ class PalaceSimMixin(SolverSettingsMixin):
         if self._output_dir is None:
             raise ValueError("Output directory not set. Call set_output_dir() first.")
 
-        mesh_path = self._output_dir / "palace.msh"
+        mesh_path = self._output_dir / f"{self._model_name()}.msh"
         if not mesh_path.exists():
             raise ValueError(f"Mesh file not found: {mesh_path}. Call mesh() first.")
 
@@ -1627,9 +1656,11 @@ class PalaceSimMixin(SolverSettingsMixin):
             planar_conductors=mesh_config.planar_conductors,
             pec_blocks=self._pec_blocks or None,
             absorbing_boundary=self.absorbing_boundary,
+            absorbing_order=self.absorbing_order,
             periodic_axis=periodic_axis,
             symmetry_plane=self._symmetry_planes[0] if self._symmetry_planes else None,
             merge_via_distance=mesh_config.merge_via_distance,
+            clip_merged_vias=mesh_config.clip_merged_vias,
             curve_fit_mode=mesh_config.curve_fit_mode,
             curve_fit_layers=mesh_config.curve_fit_layers,
             curve_fit_tolerance_um=mesh_config.curve_fit_tolerance_um,
@@ -1789,8 +1820,9 @@ class PalaceSimMixin(SolverSettingsMixin):
             show_gui: Show gmsh GUI for interactive preview
             auto_size: If True, scale refined_mesh_size down to the smallest
                 conductor feature / cells_per_feature. Off by default.
+                Explicit refined_mesh_size overrides bypass auto-sizing.
             cells_per_feature: Target cells across the smallest conductor
-                feature when auto_size=True. Default 2.
+                feature for auto-sizing and resolution warnings. Default 2.
             curve_fit_mode: Patterned dielectric boundary mode (line/spline/bspline).
             curve_fit_layers: Layer names where spline fitting is applied.
             curve_fit_tolerance_um: Point merge tolerance before fitting.
@@ -1889,10 +1921,12 @@ class PalaceSimMixin(SolverSettingsMixin):
                 planar_conductors=mesh_config.planar_conductors,
                 pec_blocks=self._pec_blocks or None,
                 absorbing_boundary=self.absorbing_boundary,
+                absorbing_order=self.absorbing_order,
                 symmetry_plane=(
                     self._symmetry_planes[0] if self._symmetry_planes else None
                 ),
                 merge_via_distance=mesh_config.merge_via_distance,
+                clip_merged_vias=mesh_config.clip_merged_vias,
                 curve_fit_mode=mesh_config.curve_fit_mode,
                 curve_fit_layers=mesh_config.curve_fit_layers,
                 curve_fit_tolerance_um=mesh_config.curve_fit_tolerance_um,
@@ -1935,6 +1969,7 @@ class PalaceSimMixin(SolverSettingsMixin):
         periodic_axis: str | None = None,
         decimate_tolerance: float | None = None,
         merge_via_distance: float | None = None,
+        clip_merged_vias: bool | None = None,
         curve_fit_mode: Literal["line", "spline", "bspline"] | None = None,
         curve_fit_layers: list[str] | None = None,
         curve_fit_tolerance_um: float | None = None,
@@ -1970,14 +2005,16 @@ class PalaceSimMixin(SolverSettingsMixin):
             fmax: Max frequency for mesh sizing (Hz), overrides preset
             planar_conductors: Treat conductors as 2D PEC surfaces
             show_gui: Show gmsh GUI during meshing
-            model_name: Base name for output files
+            model_name: Base name for output files: ``<model_name>.msh`` and
+                ``output/<model_name>``. A plain name, without path separators
             verbose: Print progress messages
             verbosity: Gmsh OCC verbosity level (0=silent, 1-99=increasing)
             auto_size: If True, scale refined_mesh_size down to the smallest
                 conductor feature / cells_per_feature. Off by default so presets
-                use their literal refined_mesh_size.
+                use their literal refined_mesh_size. Explicit refined_mesh_size
+                overrides always bypass auto-sizing.
             cells_per_feature: Target cells across the smallest conductor
-                feature when auto_size=True. Default 2.
+                feature for auto-sizing and resolution warnings. Default 2.
             periodic_axis: Optional periodic axis ("x" or "y") for periodic
                 meshing constraints on opposite domain sides.
             decimate_tolerance: Relative tolerance for polygon decimation
@@ -1986,7 +2023,17 @@ class PalaceSimMixin(SolverSettingsMixin):
             merge_via_distance: Max gap (um) between nearby via polygons to
                 merge before extrusion. Pass 0 to disable merging (keep
                 each via as a separate volume). Defaults to the preset's
-                value (typically 2.0 um).
+                value (typically 2.0 um). Merging fills the gaps between
+                the vias, so a dense via array can grow to several times
+                its drawn area; a warning is logged when the area grows
+                by more than 5%.
+            clip_merged_vias: Clip each merged via polygon to the overlap of
+                the conductor layers directly below and above its layer, so
+                merging adds no via area outside the metal. The drawn cuts are
+                always kept, and contacts on substrate or dielectric stay as
+                drawn. Defaults to the value in ``sim.mesh_config`` (False). A
+                slab that lies entirely between two continuous metals is left
+                unchanged; ``merge_via_distance=0`` keeps every cut there.
             curve_fit_mode: Patterned dielectric boundary mode (line/spline/bspline).
             curve_fit_layers: Layer names where spline fitting is applied.
             curve_fit_tolerance_um: Point merge tolerance before fitting.
@@ -2009,17 +2056,20 @@ class PalaceSimMixin(SolverSettingsMixin):
             SimulationResult with mesh path
 
         Raises:
-            ValueError: If output_dir not set or configuration is invalid
+            ValueError: If output_dir not set, configuration is invalid, or
+                ``model_name`` is not a plain file name
 
         Example:
             >>> sim.set_output_dir("./sim")
             >>> result = sim.mesh(preset="fine", planar_conductors=True)
             >>> print(f"Mesh saved to: {result.mesh_path}")
         """
+        from gsim.palace.mesh.config_generator import check_model_name
         from gsim.palace.ports import extract_ports
 
         if self._output_dir is None:
             raise ValueError("Output directory not set. Call set_output_dir() first.")
+        check_model_name(model_name)
 
         component = self.geometry.component if self.geometry else None
 
@@ -2060,6 +2110,8 @@ class PalaceSimMixin(SolverSettingsMixin):
 
         if merge_via_distance is not None:
             mesh_config.merge_via_distance = merge_via_distance
+        if clip_merged_vias is not None:
+            mesh_config.clip_merged_vias = clip_merged_vias
 
         # Validate configuration
         validation = self.validate_config()
@@ -2098,10 +2150,7 @@ class PalaceSimMixin(SolverSettingsMixin):
         # here so it surfaces before any run is submitted.
         from gsim.palace.mesh.geometry import is_air_like_material
 
-        mesh_result = getattr(self, "_mesh_result", None) or getattr(
-            self, "_last_mesh_result", None
-        )
-        groups = getattr(mesh_result, "groups", None) or {}
+        groups = getattr(self._last_mesh_result, "groups", None) or {}
         volumes = groups.get("volumes", {})
         if groups.get("boundary_surfaces", {}).get("absorbing") and not any(
             is_air_like_material(stack, name) for name in volumes
@@ -2133,11 +2182,6 @@ class PalaceSimMixin(SolverSettingsMixin):
                 mesh_config.refined_mesh_size,
                 mesh_config.max_mesh_size,
             )
-            if node_count > 75_000:
-                logger.warning(
-                    "Mesh has %s nodes (>75,000) \u2014 simulation may be slow.",
-                    f"{node_count:,}",
-                )
 
         return result
 
@@ -2197,6 +2241,8 @@ class PalaceSimMixin(SolverSettingsMixin):
             hints["_impedance_boundaries"] = self._impedance_boundaries
         if getattr(self, "metallic_boundaries", False):
             hints["_metallic_boundaries"] = True
+        if getattr(self, "conductor_boundary", "conductivity") == "pec":
+            hints["_conductor_boundary"] = "pec"
 
         # BoundaryMode voltage/impedance postprocessing paths. They do not
         # affect the 2D eigenproblem; the boundary-mode sim declares them.
@@ -2205,6 +2251,12 @@ class PalaceSimMixin(SolverSettingsMixin):
             postprocessing = mode_postprocessing()
             if postprocessing:
                 hints["_mode_postprocessing"] = postprocessing
+
+        # The 2D mesh of a cross-section has its own axes; the config
+        # generator writes material tensors in them (_to_section_frame).
+        cross_section = getattr(self, "cross_section", None)
+        if self.simulation_type == "boundarymode" and cross_section is not None:
+            hints["_cross_section_axis"] = cross_section.axis
 
         config_path = gen_write_config(
             mesh_result=self._last_mesh_result,
@@ -2217,6 +2269,7 @@ class PalaceSimMixin(SolverSettingsMixin):
             refinement_config=self.refinement,
             boundary_mode_config=self._get_problem_settings("boundary_mode"),
             absorbing_boundary=self.absorbing_boundary,
+            absorbing_order=self.absorbing_order,
             hints=hints,
             electrostatic_config=electrostatic_config,
             terminals=terminals or [],
@@ -2239,7 +2292,8 @@ class PalaceSimMixin(SolverSettingsMixin):
         """Prepare a temp directory with all config/mesh files for upload.
 
         Ensures ``_output_dir`` is set, ``config.json`` exists, and copies
-        everything to a fresh temp directory.
+        everything to a fresh temp directory, so neither an upload nor its
+        failure touches the user's directory.
 
         Returns:
             Path to temp directory ready for upload.
@@ -2261,167 +2315,6 @@ class PalaceSimMixin(SolverSettingsMixin):
             else:
                 shutil.copy2(item, dest)
         return tmp
-
-    def upload(self, *, verbose: bool = True) -> str:
-        """Prepare config, upload to the cloud. Does NOT start execution.
-
-        Requires :meth:`set_output_dir` and :meth:`mesh` to have been
-        called first.
-
-        Args:
-            verbose: Print progress messages.
-
-        Returns:
-            ``job_id`` string for use with :meth:`start`, :meth:`get_status`,
-            or :func:`gsim.wait_for_results`.
-        """
-        from gsim import gcloud
-        from gsim.hashing import compute_input_hash
-
-        tmp = self._prepare_upload_dir()
-        try:
-            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(tmp)
-            self._input_hash = compute_input_hash(tmp, "palace")
-            self._job_id = gcloud.upload(
-                tmp, "palace", verbose=verbose, input_hash=self._input_hash
-            )
-        except Exception:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
-            raise
-        return self._job_id
-
-    def start(self, *, verbose: bool = True) -> None:
-        """Start cloud execution for this sim's uploaded job.
-
-        Raises:
-            ValueError: If :meth:`upload` has not been called.
-        """
-        from gsim import gcloud
-
-        if self._job_id is None:
-            raise ValueError("Call upload() first")
-        gcloud.start(self._job_id, verbose=verbose)
-
-    def get_status(self) -> str:
-        """Get the current status of this sim's cloud job.
-
-        Returns:
-            Status string (``"created"``, ``"queued"``, ``"running"``,
-            ``"completed"``, ``"failed"``).
-
-        Raises:
-            ValueError: If no job has been submitted yet.
-        """
-        from gsim import gcloud
-
-        if self._job_id is None:
-            raise ValueError("No job submitted yet")
-        return gcloud.get_status(self._job_id)
-
-    def wait_for_results(
-        self,
-        *,
-        verbose: Literal["quiet", "status", "full"] = "status",
-        parent_dir: str | Path | None = None,
-    ) -> Any:
-        """Wait for this sim's cloud job, download and parse results.
-
-        Args:
-            verbose: Print progress messages.
-            parent_dir: Where to create the sim-data directory.
-
-        Returns:
-            Parsed result (typically ``dict[str, Path]`` of output files).
-
-        Raises:
-            ValueError: If no job has been submitted yet.
-        """
-        from gsim import gcloud
-
-        if self._job_id is None:
-            raise ValueError("No job submitted yet")
-        return gcloud.wait_for_results(
-            self._job_id,
-            verbose=verbose,
-            parent_dir=parent_dir,
-            estimated_runtime_seconds=getattr(self, "_estimated_runtime_seconds", None),
-        )
-
-    # -------------------------------------------------------------------------
-    # Simulation
-    # -------------------------------------------------------------------------
-
-    def run(
-        self,
-        parent_dir: str | Path | None = None,
-        *,
-        verbose: Literal["quiet", "status", "full"] = "status",
-        wait: bool = True,
-        check_cache: bool = False,
-    ) -> SParams | dict[str, Path] | str:
-        """Run simulation on GDSFactory+ cloud.
-
-        Requires mesh() to be called first. Automatically calls
-        write_config() if config.json hasn't been written yet.
-
-        Args:
-            parent_dir: Where to create the sim directory.
-                Defaults to the current working directory.
-            verbose: ``"quiet"`` no output, ``"status"`` status line,
-                ``"full"`` stream solver logs.
-            check_cache: If ``True``, look for a completed cloud job with
-                byte-identical inputs and reuse its results instead of
-                submitting. A lookup failure degrades to a normal submit.
-            wait: If ``True`` (default), block until results are ready.
-                If ``False``, upload + start and return the ``job_id``.
-
-        Returns:
-            - :class:`SParams` for :class:`DrivenSim` (driven sweeps with
-              ``port-S.csv``).
-            - ``dict[str, Path]`` of output files for eigenmode /
-              electrostatic runs.
-            - ``job_id`` string when ``wait=False``.
-
-            Subclasses narrow this annotation to the concrete type they
-            return (e.g. ``DrivenSim.run -> SParams | str``).
-
-        Raises:
-            ValueError: If output_dir not set or mesh not generated
-            RuntimeError: If simulation fails
-
-        Example:
-            >>> sp = driven_sim.run()  # returns SParams
-            >>> sp.s21.db  # dB magnitude of S21
-            >>> results = eigen_sim.run()  # returns dict[str, Path]
-            >>> print(results["eig.csv"])
-        """
-        from gsim import gcloud
-
-        if check_cache:
-            tmp = self._prepare_upload_dir()
-            self._estimated_runtime_seconds = gcloud.estimate_runtime_seconds(tmp)
-            self._input_hash, cached_job_id = gcloud.check_cache_for_dir(tmp, "palace")
-            if cached_job_id is not None:
-                self._job_id = cached_job_id
-                if verbose != "quiet":
-                    print(f"Cache hit: reusing job {cached_job_id}")  # noqa: T201
-                if not wait:
-                    return self._job_id
-                return self.wait_for_results(verbose=verbose, parent_dir=parent_dir)
-            self._job_id = gcloud.upload(
-                tmp, "palace", verbose=False, input_hash=self._input_hash
-            )
-        else:
-            self.upload(verbose=False)
-        self.start(verbose=verbose != "quiet")
-        if not wait:
-            if self._job_id is None:
-                msg = "job_id not set — call upload() first"
-                raise RuntimeError(msg)
-            return self._job_id
-        return self.wait_for_results(verbose=verbose, parent_dir=parent_dir)
 
     def run_local(
         self,
@@ -2505,19 +2398,17 @@ class PalaceSimMixin(SolverSettingsMixin):
             >>> # For DrivenSim: `results` is SParams -> results.s21.db
             >>> # For eigen / electrostatic: `results` is dict[str, Path]
         """
-        import os
-        import shutil
         import subprocess
 
-        # Will hold the bundled library directory when using palace-toolkit-cpu
-        _bundled_lib_dir: Path | None = None
+        from gsim.palace.runtime import local_abort_report, resolve_launch, run_palace
 
         if self._output_dir is None:
             raise ValueError("Output directory not set. Call set_output_dir() first.")
 
         output_dir = Path(self._output_dir)
         config_path = output_dir / "config.json"
-        mesh_path = output_dir / "palace.msh"
+        mesh_path = output_dir / f"{self._model_name()}.msh"
+        postpro_dir = self._postpro_dir()
 
         # Choose safe parallel defaults. SuperLU_DIST's 2D processor grid does
         # not scale on small problems (2D mode analysis at 8-16 ranks hangs),
@@ -2573,310 +2464,36 @@ class PalaceSimMixin(SolverSettingsMixin):
                 f"Mesh file not found: {mesh_path}. Call mesh() first."
             )
 
-        # Auto-discovery when arguments are omitted.
-        search_roots = [Path.cwd(), output_dir, output_dir.parent]
-        dedup_roots: list[Path] = []
-        for root in search_roots:
-            resolved = root.expanduser().resolve()
-            if resolved not in dedup_roots:
-                dedup_roots.append(resolved)
+        launch = resolve_launch(
+            executable=palace_executable,
+            sif=palace_sif_path,
+            use_apptainer=use_apptainer,
+            search_roots=[Path.cwd(), output_dir, output_dir.parent],
+            verbose=verbose,
+        )
 
-        if palace_sif_path is None:
-            palace_sif_path = os.environ.get("PALACE_SIF")
-            if palace_sif_path is None:
-                sif_rel_candidates = [
-                    Path("Palace.sif"),
-                    Path("palace.sif"),
-                    Path("bin/Palace.sif"),
-                    Path("bin/palace.sif"),
-                ]
-                for root in dedup_roots:
-                    for rel in sif_rel_candidates:
-                        candidate = (root / rel).resolve()
-                        if candidate.exists():
-                            palace_sif_path = str(candidate)
-                            if verbose:
-                                logger.info(
-                                    "Auto-discovered Palace SIF: %s", palace_sif_path
-                                )
-                            break
-                    if palace_sif_path is not None:
-                        break
-
-        if palace_executable is None:
-            palace_executable = os.environ.get("PALACE_EXECUTABLE")
-
-        # Prefer a local Palace executable when available, even when a SIF is
-        # configured via PALACE_SIF. This keeps local developer workflows on
-        # native binaries by default.
-        if palace_executable is None:
-            for root in dedup_roots:
-                candidate = (root / "bin" / "palace").resolve()
-                if candidate.exists() and os.access(candidate, os.X_OK):
-                    palace_executable = str(candidate)
-                    if verbose:
-                        logger.info(
-                            "Auto-discovered Palace executable: %s", palace_executable
-                        )
-                    break
-
-        # Track whether ``palace_executable`` is only a last-resort PATH
-        # fallback (rather than a user-supplied path). The bundled/cached
-        # resolver must run first in that case.
-        _path_fallback = False
-        if palace_executable is None and palace_sif_path is None:
-            palace_executable = "palace"
-            _path_fallback = True
-
-        # palace_executable takes precedence for a simpler API.
-        run_with_apptainer = use_apptainer and palace_executable is None
-
-        if palace_executable is not None and use_apptainer and verbose:
-            logger.info(
-                "Using Palace executable (%s); ignoring use_apptainer=True.",
-                palace_executable,
-            )
-
-        # Determine Palace command based on effective execution mode.
-        if run_with_apptainer:
-            # Determine Palace SIF path from environment variable or parameter
-            if palace_sif_path is None:
-                raise ValueError(
-                    "Palace SIF path not specified. Either set PALACE_SIF, pass "
-                    "palace_sif_path, or provide a Palace executable."
-                )
-
-            sif_path = Path(palace_sif_path).expanduser().resolve()
-
-            if not sif_path.exists():
-                raise FileNotFoundError(
-                    f"Palace SIF file not found: {sif_path}. "
-                    "Install Palace via Apptainer or provide correct path."
-                )
-
-            # Check that apptainer is available
-            if shutil.which("apptainer") is None:
-                raise RuntimeError(
-                    "Apptainer not found. Install Apptainer to run local simulations "
-                    "with use_apptainer=True."
-                )
-
-            # Build Apptainer command
-            cmd = [
-                "apptainer",
-                "run",
-                str(sif_path),
-                "-np",
-                str(num_processes),
-            ]
-
-        else:
-            # Direct Palace execution
-            resolved_exe: str | Path | None = None
-            lib_dir: Path | None = None
-
-            if palace_executable is not None and not _path_fallback:
-                # Explicit parameter — resolve to absolute path
-                resolved_exe = Path(palace_executable).expanduser().resolve()
-            else:
-                # Check PALACE_EXECUTABLE env var
-                env_exe = os.environ.get("PALACE_EXECUTABLE", "").strip()
-                if env_exe:
-                    resolved_exe = env_exe
-                    lib_dir = None
-                else:
-                    # Try bundled resolver (palace-toolkit-cpu, PALACE_BIN, PATH)
-                    from gsim.palace.runtime import (
-                        resolve_palace_binary,
-                        resolve_palace_library_dir,
-                    )
-
-                    bundled = resolve_palace_binary()
-                    if bundled is not None:
-                        resolved_exe = bundled
-                        lib_dir = resolve_palace_library_dir()
-                        if verbose:
-                            from gsim.palace.runtime import (
-                                _cached_binary as _cached,
-                            )
-                            from gsim.palace.runtime import (
-                                _palace_cpu_available as _cpu_avail,
-                            )
-                            from gsim.palace.runtime import (
-                                _palace_toolkit_available as _toolkit_avail,
-                            )
-
-                            source = (
-                                "palace-toolkit-cpu"
-                                if _cpu_avail()
-                                else "gsim cached runtime"
-                                if _cached() is not None
-                                else "palace-toolkit"
-                                if _toolkit_avail()
-                                else "PALACE_BIN / PATH"
-                            )
-                            logger.info(
-                                "Palace binary: %s  (source: %s)",
-                                bundled,
-                                source,
-                            )
-                            try:
-                                import subprocess as _sp
-
-                                ver = _sp.run(  # noqa: S603
-                                    [str(bundled), "--version"],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=10,
-                                    check=False,
-                                )
-                                if ver.returncode == 0:
-                                    logger.info(ver.stdout.strip())
-                            except Exception:
-                                pass
-                    else:
-                        # Last resort: "palace" in PATH
-                        resolved_exe = "palace"
-
-            if resolved_exe is None:
-                raise FileNotFoundError(
-                    "Palace executable not found. Set PALACE_BIN or "
-                    "PALACE_EXECUTABLE, install a Palace binary, or let gsim "
-                    "auto-download the prebuilt CPU runtime (Linux x86_64)."
-                )
-
-            exe_path = Path(resolved_exe)
-
-            # Check if executable exists (resolve PATH if needed)
-            if not exe_path.exists():
-                resolved = shutil.which(str(exe_path))
-                if resolved is None:
-                    raise FileNotFoundError(
-                        f"Palace executable not found: {exe_path}. "
-                        "Install Palace directly or provide correct path via "
-                        "palace_executable, or let gsim auto-download the "
-                        "prebuilt CPU runtime (Linux x86_64)."
-                    )
-                exe_path = Path(resolved)
-
-            if not os.access(exe_path, os.X_OK):
-                raise FileNotFoundError(
-                    f"Palace executable is not executable: {exe_path}. "
-                    "Update file permissions or provide a valid executable path."
-                )
-
-            cmd = [
-                str(exe_path),
-                "-np",
-                str(num_processes),
-            ]
-            # Propagate bundled lib dir out of the else scope for env setup
-            # (lib_dir is defined only inside this else branch)
-            _bundled_lib_dir = lib_dir
-
-        # Prepare environment with LD_LIBRARY_PATH for bundled Palace binary
-        _run_env = os.environ.copy()
-        if not use_apptainer and _bundled_lib_dir is not None:
-            prior = _run_env.get("LD_LIBRARY_PATH", "")
-            _run_env["LD_LIBRARY_PATH"] = (
-                f"{_bundled_lib_dir}:{prior}" if prior else str(_bundled_lib_dir)
-            )
-            logger.debug(
-                "Injected LD_LIBRARY_PATH for bundled Palace: %s",
-                _run_env["LD_LIBRARY_PATH"],
-            )
-
-        if num_threads is not None:
-            cmd.extend(["-nt", str(num_threads)])
-        cmd.extend(["config.json"])
-
-        def _emit_info(msg: str, *args: object) -> None:
+        def _emit_info(msg: str) -> None:
             if logger.isEnabledFor(logging.INFO):
-                logger.info(msg, *args)
+                logger.info("%s", msg)
             else:
-                logger.warning(msg, *args)
+                logger.warning("%s", msg)
 
-        def _emit_warning(msg: str, *args: object) -> None:
-            logger.warning(msg, *args)
-
-        if verbose:
-            if run_with_apptainer:
-                _emit_info("Running Palace simulation in %s via Apptainer", output_dir)
-            else:
-                _emit_info("Running Palace simulation in %s directly", output_dir)
-            _emit_info("Command: %s", " ".join(cmd))
-            _emit_info("Processes: %d", num_processes)
-
-        # Run simulation. Both paths report a failure the same way, so
-        # the one that streams records it rather than raising inside the
-        # block whose handler would catch it.
-        failure: subprocess.CalledProcessError | None = None
         try:
-            if verbose:
-                streamed_lines: list[str] = []
-                with subprocess.Popen(  # noqa: S603
-                    cmd,
-                    cwd=output_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    env=_run_env,
-                ) as process:
-                    if process.stdout is not None:
-                        for line in process.stdout:
-                            line = line.rstrip("\n")
-                            streamed_lines.append(line)
-                            if line:
-                                _emit_info(line)
-                    returncode = process.wait()
-
-                if returncode != 0:
-                    # The output was streamed as it arrived, so a report
-                    # quoting the decisive line loses nothing a user has
-                    # not already seen.
-                    failure = subprocess.CalledProcessError(
-                        returncode,
-                        cmd,
-                        output="",
-                        stderr="\n".join(streamed_lines[-200:]),
-                    )
-            else:
-                result = subprocess.run(  # noqa: S603
-                    cmd,
-                    cwd=output_dir,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    env=_run_env,
-                )
-                if result.stdout:
-                    logger.debug(result.stdout)
-                if result.stderr:
-                    _emit_warning(result.stderr)
-        except FileNotFoundError as e:
-            if run_with_apptainer:
-                raise RuntimeError(
-                    "Apptainer not found. Install Apptainer to run local simulations "
-                    "with use_apptainer=True."
-                ) from e
-            raise RuntimeError(
-                "Palace executable not found. Install Palace directly or provide "
-                "correct path via palace_executable parameter, "
-                "or set PALACE_EXECUTABLE environment variable."
-            ) from e
-        except subprocess.CalledProcessError as err:
-            failure = err
-
-        if failure is not None:
-            from gsim.palace.runtime import binary_that_ran, local_abort_report
-
+            run_palace(
+                launch,
+                cwd=output_dir,
+                num_processes=num_processes,
+                num_threads=num_threads,
+                verbose=verbose,
+                emit=_emit_info,
+            )
+        except subprocess.CalledProcessError as failure:
             raise RuntimeError(
                 local_abort_report(
                     failure,
-                    binary=binary_that_ran(failure, palace_executable),
+                    binary=launch.binary,
                     output_dir=output_dir,
-                    wrote_output=_wrote_solver_output(output_dir),
+                    wrote_output=_wrote_solver_output(postpro_dir),
                     during=self._run_context(),
                     remedy=remedy,
                 )
@@ -2884,11 +2501,7 @@ class PalaceSimMixin(SolverSettingsMixin):
 
         if verbose:
             _emit_info("Simulation completed successfully")
-
-        postpro_dir = output_dir / "output/palace/"
-
-        if verbose:
-            _emit_info("Results saved to %s", postpro_dir)
+            _emit_info(f"Results saved to {postpro_dir}")
 
         files = {
             file.name: file
@@ -3149,3 +2762,54 @@ class PalaceSimMixin(SolverSettingsMixin):
                 eigensolver_verbose=eigensolver_verbose,
             )
         )
+
+
+class _PalaceSimBase(PalaceSimMixin, BaseModel):
+    """The state every Palace simulation holds, declared once.
+
+    Each problem class adds only what varies: its ``simulation_type`` and
+    ``absorbing_boundary`` defaults, its ``solver`` type, and its ports or
+    terminals.
+    """
+
+    model_config = ConfigDict(
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
+    )
+
+    # Composed objects (from common)
+    geometry: Geometry | None = None
+    stack: LayerStack | None = None
+    materials: dict[str, MaterialConfig] = Field(default_factory=dict)
+    refinement: RefinementConfig = Field(default_factory=RefinementConfig)
+    # Defaults set by each problem class
+    simulation_type: Literal["driven", "eigenmode", "electrostatic", "boundarymode"]
+    absorbing_boundary: bool
+    absorbing_order: Literal[1, 2] = Field(
+        default=2,
+        description=(
+            "Order of the absorbing boundary condition on the outer walls "
+            "(Palace ``Boundaries.Absorbing.Order``). Palace releases without "
+            "awslabs/palace#1070 apply the second-order term with the wrong "
+            "sign, which makes it reflect more than first order for oblique "
+            "outgoing waves. Prefer 1 for radiating structures until the "
+            "Palace in use includes that fix."
+        ),
+    )
+    mesh_config: MeshConfig = Field(default_factory=MeshConfig.default)
+
+    # Stack configuration (stored as kwargs until resolved)
+    _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _airbox_config: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _pec_blocks: list = PrivateAttr(default_factory=list)
+    _symmetry_planes: list[SymmetryPlaneConfig] = PrivateAttr(default_factory=list)
+    _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _impedance_boundaries: list[ImpedanceBoundaryConfig] = PrivateAttr(
+        default_factory=list
+    )
+
+    # Internal state
+    _output_dir: Path | None = PrivateAttr(default=None)
+    _configured_ports: bool = PrivateAttr(default=False)
+    _last_mesh_result: Any = PrivateAttr(default=None)
+    _last_ports: list = PrivateAttr(default_factory=list)
