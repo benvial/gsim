@@ -45,9 +45,10 @@ class MagnetostaticSim(_PalaceSimBase):
 
     The outer wall of the domain is a perfect electric conductor
     (``metallic_boundaries=True``), which pushes the field in and gives a
-    lower bound on each inductance. ``metallic_boundaries=False`` leaves it a
-    perfect magnetic conductor, an upper bound; the mean of the two runs
-    cancels the first-order wall error. Keep the walls far from the coils,
+    lower bound on each self inductance. ``metallic_boundaries=False`` leaves
+    it a perfect magnetic conductor, an upper bound. For mutual inductances
+    the two runs are a first-order bracket, not a bound; the mean of the two
+    runs cancels the first-order wall error. Keep the walls far from the coils,
     each airbox extent at least the larger side of the meshed conductors:
     ``set_airbox(margin_x=100, margin_y=100, z_above=150, z_below=150)`` suits
     coils some tens of um across.
