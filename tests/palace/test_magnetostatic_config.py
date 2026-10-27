@@ -299,3 +299,16 @@ def test_ports_a_driven_sim_configured_on_the_component_are_not_meshed(
     assert list(run["groups"]["port_surfaces"]) == ["P1"]
     assert len(run["config"]["Boundaries"]["SurfaceCurrent"]) == 1
     assert "LumpedPort" not in run["config"]["Boundaries"]
+
+
+def test_planar_conductors_are_refused(tmp_path) -> None:
+    gf.gpdk.PDK.activate()
+    sim = MagnetostaticSim()
+    sim.set_geometry(gf.components.inductor())
+    sim.set_stack()
+    sim.set_airbox(margin_x=20, margin_y=20, z_above=20, z_below=20)
+    sim.add_current_source("L", plus_port="P1", minus_port="P2")
+    sim.set_output_dir(tmp_path)
+    with pytest.raises(ValueError, match="planar_conductors"):
+        sim.mesh(planar_conductors=True, **COARSE)
+    assert not (tmp_path / "palace.msh").exists()
