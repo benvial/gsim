@@ -6,21 +6,9 @@ import json
 import warnings
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 
 import gsim.palace as pa
-from gsim.palace.solver_settings import SolverSettingsMixin
-
-
-class MagnetostaticSettingsHost(SolverSettingsMixin, BaseModel):
-    """Minimal simulation owning a magnetostatic solver configuration."""
-
-    model_config = ConfigDict(validate_assignment=True, extra="forbid")
-
-    solver: pa.MagnetostaticSolverConfig = Field(
-        default_factory=pa.MagnetostaticSolverConfig
-    )
-
 
 SIMULATIONS = [
     (pa.DrivenSim, "driven", "num_points", 12),
@@ -31,7 +19,7 @@ SIMULATIONS = [
 # Grouped settings only: magnetostatic has no legacy constructor arguments.
 GROUPED_SIMULATIONS = [
     *SIMULATIONS,
-    (MagnetostaticSettingsHost, "magnetostatic", "save_fields", 2),
+    (pa.MagnetostaticSim, "magnetostatic", "save_fields", 2),
 ]
 
 
