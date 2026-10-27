@@ -110,6 +110,9 @@ from gsim.palace.fields import (
     resolve_scalar_field,
 )
 
+# Inductance matrix of magnetostatic runs
+from gsim.palace.inductance import InductanceMatrix, load_inductance
+
 # Material resolution with dispersion
 from gsim.palace.materials import resolve_palace_materials_at_frequency
 
@@ -234,6 +237,7 @@ __all__ = [
     "ElectrostaticSolverConfig",
     "Geometry",
     "GeometryConfig",
+    "InductanceMatrix",
     "Layer",
     "LayerStack",
     "LinearSolverConfig",
@@ -305,6 +309,7 @@ __all__ = [
     "load_circuit_synthesis",
     "load_field_context",
     "load_fields",
+    "load_inductance",
     "load_port_mode_fields",
     "load_refinement_history",
     "load_sparams",
