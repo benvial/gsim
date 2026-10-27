@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     import pandas as pd
     from numpy.typing import NDArray
 
+    from gsim.palace.results import PalaceTextResults
+
 
 @dataclass(frozen=True, eq=False)
 class CapacitanceMatrices:
@@ -262,15 +264,16 @@ class CapacitanceMatrices:
 
 
 def load_capacitance(
-    source: str | Path | dict,
+    source: str | Path | dict | PalaceTextResults,
     *,
     terminal_names: Sequence[str] | None = None,
 ) -> CapacitanceMatrices:
     """Load the capacitance matrices of an electrostatic Palace run.
 
     Args:
-        source: The results dict that ``run()`` returns, or the simulation or
-            Palace output directory.
+        source: The results dict that ``run()`` returns, the
+            ``PalaceTextResults`` that ``run_local()`` returns, or the
+            simulation or Palace output directory.
         terminal_names: Names for the terminals, in Palace's index order, which
             is the order they were added to the simulation. Defaults to
             ``T1``, ``T2``, ...
@@ -286,7 +289,7 @@ def load_capacitance(
     def require(name: str) -> Path:
         path = _result_file(source, name)
         if path is None:
-            where = "the results" if isinstance(source, dict) else str(source)
+            where = str(source) if isinstance(source, (str, Path)) else "the results"
             msg = f"{name} not found in {where}"
             raise FileNotFoundError(msg)
         return path

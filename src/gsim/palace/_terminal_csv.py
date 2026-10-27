@@ -13,23 +13,28 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from gsim.palace.results import _find_file
+from gsim.palace.results import PalaceTextResults, _find_file
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-def _result_file(source: str | Path | dict, name: str) -> Path | None:
+def _result_file(
+    source: str | Path | dict | PalaceTextResults, name: str
+) -> Path | None:
     """Path of one output file of a run, None if the run has no such file.
 
     Args:
-        source: The results dict that ``run()`` returns, or the simulation or
-            Palace output directory.
+        source: The results dict that ``run()`` returns, the
+            ``PalaceTextResults`` that ``run_local()`` returns, or the
+            simulation or Palace output directory.
         name: File name, e.g. ``terminal-C.csv``.
 
     Returns:
         The path of an existing file, or None.
     """
+    if isinstance(source, PalaceTextResults):
+        source = source.files
     if isinstance(source, dict):
         value = source.get(name)
         path = Path(value) if value is not None else None

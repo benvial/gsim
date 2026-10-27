@@ -25,6 +25,7 @@ from gsim.palace.models.solver import warn_legacy_solver_setting
 
 if TYPE_CHECKING:
     from gsim.palace.mesh.nets import Nets
+    from gsim.palace.results import PalaceTextResults
     from gsim.palace.terminals import ResolvedTerminal
 
 logger = logging.getLogger(__name__)
@@ -376,7 +377,7 @@ class ElectrostaticSim(_PalaceSimBase):
 
     def load_capacitance(
         self,
-        results: dict[str, Path] | str | Path,
+        results: dict[str, Path] | PalaceTextResults | str | Path,
         *,
         eliminate_floating: bool = True,
     ) -> CapacitanceMatrices:
@@ -392,8 +393,9 @@ class ElectrostaticSim(_PalaceSimBase):
         :meth:`~gsim.palace.capacitance.CapacitanceMatrices.eliminate`).
 
         Args:
-            results: The results dict that ``run()`` returns, or the output
-                directory of the simulation.
+            results: The results dict that ``run()`` returns, the
+                ``PalaceTextResults`` that ``run_local()`` returns, or the
+                output directory of the simulation.
             eliminate_floating: Remove the floating terminals from the
                 matrices. Pass False to see every solved terminal.
 
