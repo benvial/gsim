@@ -24,7 +24,6 @@ from gsim.palace.models import (
 from gsim.palace.models.solver import warn_legacy_solver_setting
 
 if TYPE_CHECKING:
-    from gsim.palace.mesh.nets import Nets
     from gsim.palace.terminals import ResolvedTerminal
 
 logger = logging.getLogger(__name__)
@@ -255,39 +254,6 @@ class ElectrostaticSim(_PalaceSimBase):
             encoding="utf-8",
         )
         return resolved
-
-    def nets(self) -> Nets:
-        """Find the electrically connected conductor shapes of the geometry.
-
-        Metal that touches on one layer, and metal on different layers that a
-        via joins, is one net; disconnected electrodes stay separate even when
-        they share a layer. Electrical ports name the nets they sit on.
-
-        Terminals select nets by these names: ``add_terminal(name, net=...)``
-        takes the name above or the name of one of its ports. A terminal given
-        only ``layer=`` still takes every shape on its layer when no terminal
-        uses nets, so two disconnected electrodes on one layer are then a single
-        terminal. This shows how many electrodes each layer holds.
-
-        Returns:
-            The nets, in the order their first shape appears in the layout.
-
-        Raises:
-            ValueError: If no geometry has been set.
-
-        Example:
-            >>> print(sim.nets())
-        """
-        from gsim.palace.mesh.geometry import extract_geometry
-        from gsim.palace.mesh.nets import extract_nets
-
-        component = self.component
-        if component is None:
-            msg = "No component set. Call set_geometry(component) first."
-            raise ValueError(msg)
-        stack = self._resolve_stack()
-        ports = [port for port in component.ports if port.port_type == "electrical"]
-        return extract_nets(extract_geometry(component, stack), stack, ports)
 
     def resolve_terminals(self) -> list[ResolvedTerminal]:
         """Show which nets each terminal drives, without meshing.
