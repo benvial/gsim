@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import Field
 
 from gsim.palace.base import _PalaceSimBase
+from gsim.palace.inductance import InductanceMatrix, load_inductance
 from gsim.palace.models import (
     CurrentSourceConfig,
     MagnetostaticConfig,
@@ -21,10 +22,13 @@ from gsim.palace.models import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from gsim.common.stack import LayerStack
     from gsim.palace.current_sources import ResolvedCurrentSource
     from gsim.palace.mesh.nets import Nets
     from gsim.palace.ports.config import PalacePort
+    from gsim.palace.results import PalaceTextResults, SParams
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +353,79 @@ class MagnetostaticSim(_PalaceSimBase):
             f"at least that large, e.g. {recipe} for coils some tens of um "
             "across."
         ]
+
+    # -------------------------------------------------------------------------
+    # Run and results
+    # -------------------------------------------------------------------------
+
+    def run_local(
+        self, *, log_path: str | Path | None = None, **kwargs: Any
+    ) -> SParams | PalaceTextResults | dict[str, Path]:
+        """Run Palace locally and keep its log with the results.
+
+        A magnetostatic solve that does not converge still exits 0 and
+        writes a plausible inductance matrix; only Palace's log says so. The
+        log is therefore kept as ``palace.log`` next to the result tables by
+        default, where :meth:`load_inductance` checks it.
+
+        Args:
+            log_path: File for Palace's output. Defaults to ``palace.log`` in
+                the Palace output directory. A file elsewhere is not among the
+                returned results, so :meth:`load_inductance` then warns that
+                convergence was not checked.
+            **kwargs: What :meth:`gsim.palace.base.PalaceSimMixin.run_local`
+                takes (``palace_executable``, ``verbose``, ...).
+
+        Returns:
+            The parsed text results, as ``PalaceSimMixin.run_local`` returns
+            them; pass them to :meth:`load_inductance`.
+
+        Example:
+            >>> inductance = sim.load_inductance(sim.run_local())
+        """
+        if log_path is None:
+            log_path = self._postpro_dir() / "palace.log"
+        return super().run_local(log_path=log_path, **kwargs)
+
+    def load_inductance(
+        self,
+        results: dict[str, Path] | PalaceTextResults | str | Path,
+        *,
+        check_convergence: bool = True,
+    ) -> InductanceMatrix:
+        """Load the inductance matrix of a run, labelled with the source names.
+
+        The rows follow the order the sources were added in, which is
+        Palace's source order. A unit current enters at each source's
+        ``plus_port`` and leaves at its ``minus_port``.
+
+        Args:
+            results: The results dict that ``run()`` returns, the
+                ``PalaceTextResults`` that ``run_local()`` returns, or the
+                output directory of the simulation.
+            check_convergence: Read the run's ``palace.log`` and refuse the
+                matrix if a solve did not converge; see
+                :func:`~gsim.palace.inductance.load_inductance`.
+
+        Returns:
+            The inductance matrix, with checks; see
+            :class:`~gsim.palace.inductance.InductanceMatrix`.
+
+        Raises:
+            RuntimeError: If ``palace.log`` shows that a solve did not
+                converge.
+
+        Example:
+            >>> inductance = sim.load_inductance(sim.run())
+            >>> inductance.self_inductance("primary")  # in H
+            >>> inductance.coupling("primary", "secondary")
+            >>> assert not inductance.problems()
+        """
+        return load_inductance(
+            results,
+            source_names=[source.name for source in self.current_sources],
+            check_convergence=check_convergence,
+        )
 
 
 __all__ = ["MagnetostaticSim"]
