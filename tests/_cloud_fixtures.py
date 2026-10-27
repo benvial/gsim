@@ -351,6 +351,7 @@ __all__ = [
     "make_driven_cpw_lumped_sim",
     "make_driven_cpw_waveport_sim",
     "make_eigenmode_cavity_sim",
+    "make_magnetostatic_pair_sim",
     "make_sbend_sim",
 ]
 
@@ -389,3 +390,38 @@ def inductor2_pair(pitch: float = 39.35, stacked: bool = False) -> gf.Component:
         return c
 
     return inductor2_pair_cell(pitch=pitch, stacked=stacked)
+
+
+def make_magnetostatic_pair_sim(
+    output_dir: str | Path,
+    *,
+    stacked: bool = False,
+    pitch: float = 39.35,
+    metallic_boundaries: bool = True,
+):
+    """MagnetostaticSim on :func:`inductor2_pair`, ready to mesh.
+
+    One current source per coil, ``A`` (``A_P1`` to ``A_P2``) and ``B``
+    (``B_P1`` to ``B_P2``); the IHP stack without substrate; and an airbox
+    whose walls sit 100 um beside and 150 um above and below the coils, so
+    the outer wall biases the mutual inductance by well under 1 %. The
+    solver order and mesh sizes are left to the caller.
+
+    Args:
+        output_dir: Simulation output directory.
+        stacked: Use the stacked coaxial pair (k ~ 0.34) instead of the
+            side-by-side validation pair (k ~ -0.020 at the default pitch).
+        pitch: Centre-to-centre distance of the side-by-side coils, in um.
+        metallic_boundaries: PEC outer wall when True, PMC when False.
+    """
+    pytest.importorskip("ihp")
+    from gsim.palace import MagnetostaticSim
+
+    sim = MagnetostaticSim(metallic_boundaries=metallic_boundaries)
+    sim.set_geometry(inductor2_pair(pitch=pitch, stacked=stacked))
+    sim.set_stack()
+    sim.set_airbox(margin_x=100, margin_y=100, z_above=150, z_below=150)
+    sim.add_current_source("A", plus_port="A_P1", minus_port="A_P2")
+    sim.add_current_source("B", plus_port="B_P1", minus_port="B_P2")
+    sim.set_output_dir(str(output_dir))
+    return sim
