@@ -48,6 +48,7 @@ from gsim.palace.models.solver import (
     EigenmodeSolverConfig,
     ElectrostaticSolverConfig,
     LinearSolverConfig,
+    MagnetostaticSolverConfig,
     SolverConfig,
 )
 from gsim.palace.models.stack import MaterialConfig
@@ -70,6 +71,7 @@ __all__ = [
     "InterfaceSpec",
     "LinearSolverConfig",
     "MagnetostaticConfig",
+    "MagnetostaticSolverConfig",
     "MaterialConfig",
     "MeshConfig",
     "NumericalConfig",
