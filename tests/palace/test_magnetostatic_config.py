@@ -198,6 +198,7 @@ def _meshed(sim: MagnetostaticSim, output_dir) -> dict:
         "ports": json.loads((output_dir / "port_information.json").read_text())[
             "ports"
         ],
+        "metadata": json.loads((output_dir / "metadata.json").read_text()),
     }
 
 
@@ -251,6 +252,16 @@ def test_a_meshed_pair_has_pec_conductors_and_wall_and_one_sheet_per_source(
         [groups["port_surfaces"]["P2"]["phys_group"]],
     ]
     assert not {a for (a,) in sheets} & pec
+
+
+def test_the_cloud_sizes_a_meshed_pair_from_its_nd_dof_estimate(
+    stacked_pair,
+) -> None:
+    metadata = stacked_pair["forward"]["metadata"]
+    estimate = metadata["mesh"]["field_dofs"]
+    assert metadata["simulation"]["problem_type"] == "Magnetostatic"
+    assert "unavailable_reason" not in estimate
+    assert estimate["estimated_field_dofs"] >= metadata["mesh"]["topology"]["edges"]
 
 
 def test_the_port_information_names_surface_currents_without_z0(
