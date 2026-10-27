@@ -18,10 +18,15 @@ The conventions, in Palace's own outputs:
   ``i`` is ``E_mag = 1/2 M[i][i] I_inc[i]**2``.
 - Palace also writes ``terminal-Mm.csv``, a current-difference form fully
   derived from ``M``; it is not read.
+
+A solve that did not converge still exits normally and writes a matrix that can
+look physical, so the loader also reads the run's ``palace.log``.
 """
 
 from __future__ import annotations
 
+import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -29,6 +34,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from gsim.palace._terminal_csv import _read_column, _read_table, _result_file
+from gsim.palace._validation_log import clean_lines
+from gsim.palace.validation import validate_solution
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -240,6 +247,7 @@ def load_inductance(
     source: str | Path | dict | PalaceTextResults,
     *,
     source_names: Sequence[str] | None = None,
+    check_convergence: bool = True,
 ) -> InductanceMatrix:
     """Load the inductance matrix of a magnetostatic Palace run.
 
@@ -250,6 +258,10 @@ def load_inductance(
         source_names: Names for the current sources, in Palace's index order,
             which is the order they were added to the simulation. Defaults to
             ``S1``, ``S2``, ...
+        check_convergence: Read the run's ``palace.log`` and refuse the
+            matrix if a solve did not converge. With no log, or no solver
+            message recognized in it, the matrix loads with a warning. Set
+            False to skip the check, e.g. for outputs saved without their log.
 
     Returns:
         The matrix, labelled by current source.
@@ -258,10 +270,11 @@ def load_inductance(
         FileNotFoundError: If ``terminal-M.csv`` is missing.
         ValueError: If the matrix is not square, an optional table does not
             have one row per source, or the names do not match the matrix.
+        RuntimeError: If ``palace.log`` shows that a solve did not converge.
     """
+    where = str(source) if isinstance(source, (str, Path)) else "the results"
     matrix_path = _result_file(source, "terminal-M.csv")
     if matrix_path is None:
-        where = str(source) if isinstance(source, (str, Path)) else "the results"
         msg = f"terminal-M.csv not found in {where}"
         raise FileNotFoundError(msg)
     matrix = _read_table(matrix_path)[:, 1:]
@@ -281,6 +294,8 @@ def load_inductance(
     if len(set(names)) != count:
         msg = f"the source names must be different: {list(names)}"
         raise ValueError(msg)
+    if check_convergence:
+        _check_convergence(source, names, where)
 
     def optional(
         name: str, read: Callable[[Path], NDArray[np.float64] | None], shape: tuple
@@ -307,6 +322,84 @@ def load_inductance(
             "domain-E.csv", lambda p: _read_column(p, "E_mag (J)"), (count,)
         ),
     )
+
+
+_SOURCE_INDEX = re.compile(r"Current Index = (\d+)|for port (\d+)")
+
+
+def _check_convergence(
+    source: str | Path | dict | PalaceTextResults,
+    names: Sequence[str],
+    where: str,
+) -> None:
+    """Raise if the run's log shows a solve that did not converge.
+
+    Warns instead when there is no log or the log has no recognized solver
+    message, since neither proves the solve failed.
+    """
+    log_path = _result_file(source, "palace.log")
+    if log_path is None:
+        warnings.warn(
+            f"convergence not checked: no palace.log in {where}, so a solve "
+            f"that did not converge cannot be told from a good one",
+            UserWarning,
+            stacklevel=3,
+        )
+        return
+    log = log_path.read_text(encoding="utf-8", errors="replace")
+    core = validate_solution(log).core
+    if core.status == "unknown":
+        warnings.warn(
+            f"convergence not confirmed: {log_path} has no solver message gsim "
+            f"recognizes",
+            UserWarning,
+            stacklevel=3,
+        )
+    if core.status != "failed":
+        return
+
+    failing = _failing_indices(clean_lines(log), core.evidence)
+    labels = [
+        f"{names[index - 1]!r} (index {index})"
+        if 1 <= index <= len(names)
+        else f"index {index}"
+        for index in failing
+    ]
+    noun = "source" if len(labels) == 1 else "sources"
+    which = f" for {noun} {', '.join(labels)}" if labels else ""
+    quoted = "\n".join(f"  {item}" for item in core.evidence[:4])
+    more = len(core.evidence) - 4
+    if more > 0:
+        quoted += f"\n  ... and {more} more"
+    msg = (
+        f"the magnetostatic solve did not converge{which}, so its inductance "
+        f"matrix is wrong even if it looks physical. {log_path} says:\n{quoted}\n"
+        f"Raise the linear solver's iteration limit "
+        f"(set_solver(max_iterations=...)), check that each current source's "
+        f"loop closes, or refine the mesh. Pass check_convergence=False to load "
+        f"the matrix anyway."
+    )
+    raise RuntimeError(msg)
+
+
+def _failing_indices(lines: Sequence[str], evidence: Sequence[str]) -> list[int]:
+    """Palace source indices that the failure evidence lines belong to.
+
+    A failure line names its source (``for port N``) or follows the
+    ``It k/n: Current Index = N`` header of its solve.
+    """
+    failed = {int(item.split(":", 1)[0].removeprefix("line ")) - 1 for item in evidence}
+    indices: list[int] = []
+    current = None
+    for number, line in enumerate(lines):
+        match = _SOURCE_INDEX.search(line)
+        if match and match[1]:
+            current = int(match[1])
+        if number in failed:
+            index = int(match[2]) if match and match[2] else current
+            if index is not None and index not in indices:
+                indices.append(index)
+    return indices
 
 
 __all__ = ["InductanceMatrix", "load_inductance"]
