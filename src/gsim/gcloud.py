@@ -545,12 +545,9 @@ def _fetch_logs(
     _get_logs = _get_job_logs_callable()
     if _get_logs is None:
         return [], position, False
-    _logs_unavailable = getattr(sim, "LogsNotAvailableError", Exception)
     try:
         page = _get_logs(job_id, cursor=position.cursor, limit=limit)
-    except _logs_unavailable:
-        return [], position, False
-    except Exception:
+    except Exception:  # includes sim.LogsNotAvailableError; retry next poll
         return [], position, False
     else:
         # Strip leading timestamps like "[2026-03-18T15:05:33.217Z] "
