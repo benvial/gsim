@@ -8,6 +8,7 @@ locally with Palace v0.18.1; see the README there.
 from __future__ import annotations
 
 import shutil
+import warnings
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,7 +18,9 @@ import pytest
 from gsim.palace import InductanceMatrix, load_inductance
 from gsim.palace.results import load_text_results
 
-RINGS = Path(__file__).parent / "fixtures" / "magnetostatic" / "rings"
+MAGNETOSTATIC = Path(__file__).parent / "fixtures" / "magnetostatic"
+RINGS = MAGNETOSTATIC / "rings"
+NOT_CONVERGED = MAGNETOSTATIC / "rings-not-converged"
 
 PICO = 1e-12
 
@@ -120,9 +123,13 @@ def test_each_broken_matrix_trips_exactly_its_check(broken, check) -> None:
 
 
 def _copy(tmp_path: Path, *names: str) -> Path:
-    """A run directory holding the named rings files (all of them by default)."""
+    """A run directory holding the rings log and the named rings tables.
+
+    All the tables by default.
+    """
     run = tmp_path / "run"
     run.mkdir()
+    shutil.copy(RINGS / "palace.log", run / "palace.log")
     for path in RINGS.glob("*.csv"):
         if not names or path.name in names:
             shutil.copy(path, run / path.name)
@@ -282,3 +289,61 @@ def test_a_weak_mutual_is_judged_on_its_own_scale() -> None:
     """20 % asymmetry on a 2 pH mutual is 0.05 % of the 714 pH self inductance."""
     lopsided = _rings_with(m01=1.2 * 1.960237936695e-12)
     assert any("not reciprocal" in text for text in lopsided.problems())
+
+
+def test_a_run_that_did_not_converge_is_refused() -> None:
+    """Its matrix looks physical; only the log shows the solve failed."""
+    unchecked = load_inductance(NOT_CONVERGED, check_convergence=False)
+    assert unchecked.problems() == []
+    with pytest.raises(RuntimeError, match="did not converge") as error:
+        load_inductance(NOT_CONVERGED, source_names=["inner", "outer"])
+    message = str(error.value)
+    assert "'inner'" in message
+    assert "'outer'" in message
+    assert "PCG solver did NOT converge in 10 iterations" in message
+    assert "max_iterations" in message
+    assert "check_convergence=False" in message
+
+
+def test_a_converged_run_loads_silently(tmp_path) -> None:
+    run = _copy(tmp_path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        load_inductance(RINGS)
+        load_inductance({path.name: path for path in run.iterdir()})
+        load_inductance(load_text_results(run))
+
+
+def test_a_run_without_its_log_loads_with_a_warning(tmp_path) -> None:
+    run = _copy(tmp_path)
+    (run / "palace.log").unlink()
+    with pytest.warns(UserWarning, match="convergence not checked"):
+        rings = load_inductance(run)
+    assert rings.matrix.shape == (2, 2)
+
+
+def test_a_log_without_solver_messages_loads_with_a_warning(tmp_path) -> None:
+    run = _copy(tmp_path)
+    (run / "palace.log").write_text("Git changeset ID: v0.18.1\n", encoding="utf-8")
+    with pytest.warns(UserWarning, match="convergence not confirmed"):
+        load_inductance(run)
+
+
+def test_the_convergence_check_can_be_skipped(tmp_path) -> None:
+    run = _copy(tmp_path)
+    (run / "palace.log").unlink()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        load_inductance(run, check_convergence=False)
+        load_inductance(NOT_CONVERGED, check_convergence=False)
+
+
+def test_the_cloud_build_failure_line_names_its_source(tmp_path) -> None:
+    run = _copy(tmp_path)
+    (run / "palace.log").write_text(
+        "PCG solver converged in 49 iterations\n"
+        "Current source solve did not converge for port 2!\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match=r"source 'outer' \(index 2\)"):
+        load_inductance(run, source_names=["inner", "outer"])
