@@ -340,6 +340,8 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         _configured_ports: bool
         _last_mesh_result: Any
         _last_ports: list
+        _mesh_fingerprint: dict[str, str] | None
+        _mesh_reused: bool
         # Declared by the sim classes that take 3D ports or terminals; a
         # boundary-mode sim has none, so these must not become fields.
         ports: list[PortConfig]
@@ -359,6 +361,32 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
     ) -> list[Any] | None:
         """Terminals resolved to nets for the config; only net-mode sims have them."""
         return None
+
+    def _can_reuse_mesh(self) -> bool:
+        """Whether this sim can give its mesh to, or take one from, another sim."""
+        return False
+
+    def _current_mesh_fingerprint(self, stack: LayerStack) -> dict[str, str]:
+        """Fingerprint of the inputs that shape this sim's mesh, as they are now.
+
+        Args:
+            stack: The resolved layer stack.
+        """
+        from gsim.palace._mesh_fingerprint import mesh_inputs_fingerprint
+
+        return mesh_inputs_fingerprint(
+            component=self.geometry.component if self.geometry else None,
+            stack=stack,
+            airbox_config=self._airbox_config or {},
+            pec_blocks=self._pec_blocks,
+            symmetry_planes=self._symmetry_planes,
+            port_configs=[
+                *self._ports,
+                *self._cpw_ports,
+                *self._wave_ports,
+                *self._two_terminal_ports,
+            ],
+        )
 
     # -------------------------------------------------------------------------
     # Output directory
@@ -2346,6 +2374,12 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             gmsh_verbosity=verbosity,
         )
 
+        # Record what the mesh was made from, after port configuration may
+        # have moved component ports, so a sim that reuses it can be checked.
+        if self._can_reuse_mesh():
+            self._mesh_fingerprint = self._current_mesh_fingerprint(stack)
+            self._mesh_reused = False
+
         # Without an airbox the absorbing boundary is applied straight to the
         # outer dielectric surface, often microns from the metal, where it acts
         # as a lossy sheet and fakes large insertion loss and reflection. Warn
@@ -3129,3 +3163,6 @@ class _PalaceSimBase(PalaceSimMixin, BaseModel):
     _configured_ports: bool = PrivateAttr(default=False)
     _last_mesh_result: Any = PrivateAttr(default=None)
     _last_ports: list = PrivateAttr(default_factory=list)
+    # What the mesh was made from, and whether it came from another sim
+    _mesh_fingerprint: dict[str, str] | None = PrivateAttr(default=None)
+    _mesh_reused: bool = PrivateAttr(default=False)
