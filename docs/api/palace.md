@@ -461,6 +461,66 @@ widths are not measured. These limitations make the estimate useful for choosing
 an initial mesh, rather than establishing simulation accuracy. Compare results
 across refinements before relying on resonance frequencies, Q, or S-parameters.
 
+### Reuse a mesh
+
+An eigenmode solve and driven sweeps of the same device can run on one mesh, so
+the resonances and the S-parameters come from the same discretization and Gmsh
+runs once. Mesh one simulation, then call `reuse_mesh` on the others instead of
+`mesh()`. Here `component` has lumped ports `o1` and `o2` on `topmetal2`, and
+each driven sweep excites one of them:
+
+```python
+from gsim.palace import DrivenSim, EigenmodeSim
+
+eigen = EigenmodeSim(absorbing_boundary=False)
+eigen.set_output_dir("./eigen")
+eigen.set_geometry(component)
+eigen.set_stack(substrate_thickness=2.0)
+eigen.add_port("o1", layer="topmetal2", length=5.0)
+eigen.add_port("o2", layer="topmetal2", length=5.0)
+eigen.set_eigenmode(num_modes=4, target=8e9)
+eigen.mesh(preset="default")
+
+for port in ("o1", "o2"):
+    driven = DrivenSim(absorbing_boundary=False)
+    driven.set_output_dir(f"./driven_{port}")
+    driven.add_port(port, layer="topmetal2", length=5.0, excited=True)
+    driven.reuse_mesh(eigen)  # copies the mesh; no Gmsh run
+    driven.set_driven(fmin=7e9, fmax=10e9)
+    driven.write_config()
+```
+
+The receiver copies the source's geometry, stack, airbox, PEC blocks, symmetry
+plane and port declarations. A port it declares itself, with the source's
+geometry, keeps its own excitation, impedance and R/L/C; the other ports keep
+the source's settings, and an eigenmode source leaves its lumped ports
+unexcited. A driven receiver needs at least one port with `excited=True`. The
+solver settings and the outer wall stay per simulation: with
+`absorbing_boundary=False` the outer boundary is Palace's natural magnetic wall
+(PMC), which reflects. Each simulation needs its own output directory, neither
+the source's nor nested with it; `reuse_mesh` copies the `.msh` into it.
+
+The copy is a snapshot. Re-meshing or editing the source does not reach the
+receiver; call `reuse_mesh(source)` again to pick up the new mesh.
+
+The mesh fixes what it was built from: the layout polygons and component ports,
+the stack layers and dielectric regions, which materials are air-like, the
+airbox, PEC blocks, the symmetry plane and the port geometry (kind, layers,
+length, offset). Each `write_config()` of a receiver checks these and raises
+`ValueError` naming what changed. Undo the change, call `mesh()` on the
+receiver to mesh its current state, or call `reuse_mesh(source)` again.
+Port settings, solver settings, mesh sizes (`mesh_config`) and material values
+(permittivity, loss tangent, conductor conductivity) stay free. The mesh was
+sized for the source's values, so check that it still resolves the new ones,
+for example against a fresh `mesh()`.
+
+Only driven and eigenmode simulations share meshes, in either direction.
+`ElectrostaticSim` and `BoundaryModeSim` raise `ValueError`, and a mesh file or
+`MeshResult` raises `TypeError`: a file alone has no physical-group or port
+mappings. See
+[`DrivenSim.reuse_mesh`][gsim.palace.driven.DrivenSim.reuse_mesh] and
+[`EigenmodeSim.reuse_mesh`][gsim.palace.eigenmode.EigenmodeSim.reuse_mesh].
+
 ## Nets
 
 - [`Nets`][gsim.palace.Nets]
