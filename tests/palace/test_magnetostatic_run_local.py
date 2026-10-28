@@ -6,6 +6,7 @@ run's log and writes its tables, and exits 0, as Palace does.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,10 @@ from types import SimpleNamespace
 import pytest
 
 from gsim.palace import MagnetostaticSim
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt", reason="the fake Palace is a POSIX script"
+)
 
 NOT_CONVERGED = (
     Path(__file__).parent / "fixtures" / "magnetostatic" / "rings-not-converged"
