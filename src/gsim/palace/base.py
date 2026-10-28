@@ -427,13 +427,17 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             airbox_config=self._airbox_config or {},
             pec_blocks=self._pec_blocks,
             symmetry_planes=self._symmetry_planes,
-            port_configs=[
-                *self._ports,
-                *self._cpw_ports,
-                *self._wave_ports,
-                *self._two_terminal_ports,
-            ],
+            port_configs=[cfg for cfgs in self._port_lists().values() for cfg in cfgs],
         )
+
+    def _port_lists(self) -> dict[str, list[Any]]:
+        """The declared ports by list: lumped, CPW, wave and two-terminal."""
+        return {
+            "ports": self._ports,
+            "cpw_ports": self._cpw_ports,
+            "wave_ports": self._wave_ports,
+            "two_terminal_ports": self._two_terminal_ports,
+        }
 
     # -------------------------------------------------------------------------
     # Output directory
@@ -2442,6 +2446,271 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             )
 
         return result
+
+    def reuse_mesh(self, source: PalaceSimMixin) -> SimulationResult:
+        """Take the mesh of another meshed simulation instead of meshing.
+
+        Driven and eigenmode simulations can share a mesh, in either
+        direction. The call takes a snapshot of the source: it copies the
+        source's ``.msh`` into this simulation's output directory, under the
+        source's model name, and writes a new ``metadata.json`` there. It
+        never meshes, never writes to the source, and keeps no link to it.
+        To pick up a newer mesh of the source, call ``reuse_mesh`` again.
+
+        Copied from the source, as independent copies that replace what this
+        simulation had: the geometry, the stack and its settings, the
+        material overrides, the airbox, the PEC blocks, the symmetry plane,
+        ``mesh_config`` and the port declarations. Kept per simulation: the
+        simulation type, the solver and problem settings, the absorbing
+        boundary, refinement, impedance boundaries and the output directory.
+
+        Ports are matched by name. A port this simulation declared with the
+        source's kind and geometry keeps its own settings; that is how a
+        driven simulation chooses its excited ports (``excited=True``),
+        before or after this call. Every other source port is copied with
+        its settings, so the ports copied from an eigenmode source are not
+        excited.
+
+        Give each simulation its own output directory. The mesh fixes the
+        geometry, stack, airbox, PEC, symmetry and port geometry; change one
+        of them and call ``mesh()`` on this simulation instead.
+
+        Args:
+            source: A meshed ``DrivenSim`` or ``EigenmodeSim``.
+
+        Returns:
+            SimulationResult of this simulation's mesh: its mesh path and
+            output directory, no config path, and copies of the source's port
+            info, mesh statistics and metadata.
+
+        Raises:
+            TypeError: If ``source`` is not a simulation, for example a mesh
+                file or a ``MeshResult``: a mesh file alone has no
+                physical-group or port mappings.
+            ValueError: If this simulation or the source is not a driven or
+                eigenmode simulation; if the source has no mesh, is this
+                simulation, or changed after its mesh was made; if no output
+                directory is set, or it is, contains or lies inside one of
+                the source's; if a declared port does not match the mesh; or
+                if this is a driven simulation and the mesh has no port
+                surfaces.
+            FileNotFoundError: If the source's mesh file is missing.
+
+        Example:
+            >>> eigen.set_output_dir("./eigen")
+            >>> eigen.mesh(preset="default")
+            >>> driven = DrivenSim(absorbing_boundary=False)
+            >>> driven.set_output_dir("./driven")
+            >>> driven.add_port("o1", layer="topmetal2", length=5.0, excited=True)
+            >>> driven.reuse_mesh(eigen)
+            >>> driven.set_driven(fmin=7e9, fmax=10e9)
+            >>> driven.write_config()
+        """
+        import copy
+        import shutil
+
+        from gsim.palace._mesh_fingerprint import (
+            describe_changes,
+            mesh_inputs_fingerprint,
+        )
+        from gsim.palace._mesh_reuse import (
+            merge_port_declarations,
+            sync_port_settings,
+        )
+        from gsim.palace.mesh.generator import MeshResult
+        from gsim.palace.mesh.metadata import (
+            METADATA_FILENAME,
+            update_field_dofs,
+            write_metadata,
+        )
+
+        # 1. Every check, before anything changes
+        name = type(self).__name__
+        if not self._can_reuse_mesh():
+            raise ValueError(
+                f"This {name} cannot reuse a mesh; only driven and eigenmode "
+                f"simulations share meshes. Call mesh() on it instead."
+            )
+        if not isinstance(source, PalaceSimMixin):
+            raise TypeError(
+                "reuse_mesh() takes a meshed DrivenSim or EigenmodeSim, not a "
+                f"{type(source).__name__}: a mesh file alone has no "
+                "physical-group or port mappings."
+            )
+        source_name = type(source).__name__
+        if not source._can_reuse_mesh():
+            raise ValueError(
+                f"The mesh of the source {source_name} cannot be reused; only "
+                "driven and eigenmode simulations share meshes. Call mesh() on "
+                f"this {name} instead."
+            )
+        if not source.has_mesh:
+            raise ValueError(
+                f"The source {source_name} has no mesh. Call mesh() on it first."
+            )
+        if source is self:
+            raise ValueError(
+                f"This {name} cannot reuse its own mesh. Pass another meshed "
+                "simulation."
+            )
+        if self._output_dir is None:
+            raise ValueError("Output directory not set. Call set_output_dir() first.")
+
+        source_result = source._last_mesh_result
+        output_dir = Path(self._output_dir)
+        resolved = output_dir.resolve()
+        for folder in (source._output_dir, source_result.output_dir):
+            if folder is None:
+                continue
+            other = Path(folder).resolve()
+            if resolved == other:
+                relation = "is"
+            elif resolved.is_relative_to(other):
+                relation = "is inside"
+            elif other.is_relative_to(resolved):
+                relation = "contains"
+            else:
+                continue
+            raise ValueError(
+                f"The output directory {output_dir} of this {name} {relation} "
+                f"the output directory {folder} of the source {source_name}. "
+                "Call set_output_dir() with a separate folder; reuse_mesh "
+                "copies the mesh into it."
+            )
+
+        source_mesh = Path(source_result.mesh_path)
+        if not source_mesh.is_file():
+            raise FileNotFoundError(
+                f"The mesh file {source_mesh} of the source {source_name} does "
+                "not exist. Call mesh() on the source again."
+            )
+
+        groups = source_result.groups or {}
+        if self.simulation_type == "driven" and not groups.get("port_surfaces"):
+            raise ValueError(
+                f"The mesh of the source {source_name} has no port surfaces, so "
+                f"this {name} would have no port to excite. Declare ports on the "
+                f"source and call mesh() on it again, or call mesh() on this "
+                f"{name}."
+            )
+
+        ports = merge_port_declarations(
+            source._port_lists(),
+            self._port_lists(),
+            source_name=source_name,
+            receiver_name=name,
+        )
+        port_configs = [cfg for cfgs in ports.values() for cfg in cfgs]
+
+        # 2. Independent copies of every mesh input, in locals
+        component = source.component
+        geometry = None if component is None else Geometry(component=component.copy())
+        stack = None if source.stack is None else source.stack.model_copy(deep=True)
+        stack_kwargs = copy.deepcopy(source._stack_kwargs)
+        materials = {k: v.model_copy(deep=True) for k, v in source.materials.items()}
+        airbox_config = copy.deepcopy(source._airbox_config)
+        mesh_config = source.mesh_config.model_copy(deep=True)
+        pec_blocks = [block.model_copy(deep=True) for block in source._pec_blocks]
+        symmetry_planes = [p.model_copy(deep=True) for p in source._symmetry_planes]
+
+        last_ports = copy.deepcopy(source._last_ports)
+        port_info = copy.deepcopy(source_result.port_info)
+        sync_port_settings(
+            last_ports,
+            port_info,
+            port_configs,
+            simulation_type=self.simulation_type,
+        )
+        mesh_stats = copy.deepcopy(source_result.mesh_stats)
+        update_field_dofs(
+            mesh_stats,
+            field_order=self.solver.order if self.solver else 2,
+            problem_type=self.simulation_type,
+        )
+
+        # 3. The copies must still be what the source's mesh was made from
+        recorded = source._mesh_fingerprint
+        if recorded is None:
+            raise ValueError(
+                f"The source {source_name} has no record of the inputs its mesh "
+                "was made from. Call mesh() on it first."
+            )
+        current = mesh_inputs_fingerprint(
+            component=None if geometry is None else geometry.component,
+            stack=resolve_layer_stack(stack, stack_kwargs, materials),
+            airbox_config=airbox_config or {},
+            pec_blocks=pec_blocks,
+            symmetry_planes=symmetry_planes,
+            port_configs=port_configs,
+        )
+        if changes := describe_changes(recorded, current):
+            raise ValueError(
+                f"The source {source_name} changed after its mesh was made "
+                f"({', '.join(changes)}), so its mesh no longer matches it. "
+                "Call mesh() on the source again, or undo the change, before "
+                "reuse_mesh()."
+            )
+
+        # 4. Files: staged in this folder, then moved into place
+        mesh_path = output_dir / f"{source_result.model_name}.msh"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".reuse_mesh-", dir=output_dir))
+        try:
+            shutil.copy2(source_mesh, staging / mesh_path.name)
+            metadata = write_metadata(mesh_stats, staging, None)
+            (staging / mesh_path.name).replace(mesh_path)
+            (staging / METADATA_FILENAME).replace(output_dir / METADATA_FILENAME)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        mesh_result = MeshResult(
+            mesh_path=mesh_path,
+            config_path=None,
+            port_info=port_info,
+            mesh_stats=mesh_stats,
+            metadata=metadata,
+            groups=copy.deepcopy(source_result.groups),
+            output_dir=output_dir,
+            model_name=source_result.model_name,
+            fmax=source_result.fmax,
+            periodic_axis=source_result.periodic_axis,
+            periodic_translation=source_result.periodic_translation,
+            symmetry_plane=copy.deepcopy(source_result.symmetry_plane),
+        )
+
+        # 5. One assignment block; every value is a validated model already
+        self.geometry = geometry
+        self.stack = stack
+        self.materials = materials
+        self.mesh_config = mesh_config
+        for kind, cfgs in ports.items():
+            setattr(self, kind, cfgs)
+        self._stack_kwargs = stack_kwargs
+        self._airbox_config = airbox_config
+        self._pec_blocks = pec_blocks
+        self._symmetry_planes = symmetry_planes
+        self._configured_ports = True
+        self._last_ports = last_ports
+        self._last_mesh_result = mesh_result
+        self._mesh_fingerprint = dict(recorded)
+        self._mesh_reused = True
+
+        logger.info(
+            "Reusing mesh of %s (%s): %s nodes \u00b7 %s tets",
+            source_name,
+            source_result.mesh_path,
+            f"{mesh_stats.get('nodes', 0):,}",
+            f"{mesh_stats.get('tetrahedra', 0):,}",
+        )
+
+        return SimulationResult(
+            mesh_path=mesh_path,
+            output_dir=output_dir,
+            config_path=None,
+            port_info=port_info,
+            mesh_stats=mesh_stats,
+            metadata=metadata,
+        )
 
     def write_config(
         self,
