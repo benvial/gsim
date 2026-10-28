@@ -1462,9 +1462,12 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         # Validate excitation port if specified
         driven = self._get_problem_settings("driven")
         if driven is not None and driven.excitation_port is not None:
-            port_names = [p.name for p in self.ports]
-            cpw_names = [cpw.name for cpw in self.cpw_ports]
-            all_port_names = port_names + cpw_names
+            all_port_names = [
+                *(p.name for p in ports),
+                *(cpw.name for cpw in cpw_ports),
+                *(wp.name for wp in wave_ports),
+                *(tt.plus_port for tt in self._two_terminal_ports),
+            ]
             if driven.excitation_port not in all_port_names:
                 errors.append(
                     f"Excitation port '{driven.excitation_port}' not found. "
@@ -1668,8 +1671,6 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
 
         # Configure regular ports
         for port_config in self._ports:
-            if self.simulation_type != "driven":
-                port_config.excited = False
             if port_config.name is None:
                 continue
 
