@@ -385,3 +385,31 @@ def test_a_config_without_surface_currents_is_an_error(tmp_path) -> None:
     )
     errors = validate_mesh(sim).errors
     assert any("SurfaceCurrent" in e for e in errors), errors
+
+
+def test_a_missing_mesh_file_reports_the_contact_check_as_not_run(tmp_path) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "Boundaries": {
+                    "PEC": {"Attributes": [4]},
+                    "SurfaceCurrent": [{"Index": 1, "Attributes": [5]}],
+                }
+            }
+        )
+    )
+    sim = SimpleNamespace(
+        simulation_type="magnetostatic",
+        _last_mesh_result=SimpleNamespace(
+            groups={"volumes": {"air": {}}, "conductor_surfaces": {"m": {}}},
+            mesh_path=tmp_path / "missing.msh",
+        ),
+        _output_dir=tmp_path,
+        write_config=lambda **_kwargs: None,
+    )
+    result = validate_mesh(sim)
+    assert not any("PEC" in e for e in result.errors), result.errors
+    assert any(
+        "contact with PEC not checked" in w and "missing.msh" in w
+        for w in result.warnings
+    ), result.warnings
