@@ -97,8 +97,9 @@ def test_a_log_kept_elsewhere_leaves_convergence_unchecked(
     )
     assert "PCG solver did NOT converge" in elsewhere.read_text(encoding="utf-8")
     assert "palace.log" not in results.files
-    with pytest.warns(UserWarning, match="convergence not checked"):
+    with pytest.warns(UserWarning, match="convergence not checked") as record:
         sim.load_inductance(results)
+    assert [w.filename for w in record] == [__file__]  # points at this call
 
 
 def test_the_check_flag_is_passed_through(sim, monkeypatch) -> None:
