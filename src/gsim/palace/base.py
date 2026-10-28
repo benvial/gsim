@@ -2712,6 +2712,80 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             metadata=metadata,
         )
 
+    def _check_reused_mesh(self, stack: LayerStack) -> None:
+        """Check that a reused mesh still holds this sim, and sync its ports.
+
+        Runs first in every ``write_config`` of a sim whose mesh came from
+        ``reuse_mesh``, in this order: the mesh inputs must equal the ones the
+        mesh was made from; the current Port settings are written into the
+        extracted ports; the configuration must be valid, as ``mesh()``
+        requires; and a driven sim must excite at least one port, each with
+        its surface in the mesh.
+
+        Args:
+            stack: The resolved layer stack.
+
+        Raises:
+            ValueError: If a mesh input changed after ``reuse_mesh``, the
+                configuration is invalid, or a driven sim has no excited port
+                or excites a port without a surface in the mesh.
+        """
+        from gsim.palace._mesh_fingerprint import describe_changes
+        from gsim.palace._mesh_reuse import sync_port_settings
+
+        name = type(self).__name__
+        current = self._current_mesh_fingerprint(stack)
+        if changes := describe_changes(self._mesh_fingerprint or {}, current):
+            raise ValueError(
+                f"This {name} reuses a mesh, and its mesh inputs changed after "
+                f"reuse_mesh(): {', '.join(changes)}. A reused mesh cannot follow "
+                "geometry, stack, airbox, PEC, symmetry or Port geometry changes. "
+                "Undo the change, call mesh() to mesh this simulation from its "
+                "current state, or call reuse_mesh(source) again to take the "
+                "source's inputs back. Port settings and solver settings can be "
+                "changed without a new mesh."
+            )
+
+        mesh_result = self._last_mesh_result
+        sync_port_settings(
+            self._last_ports,
+            mesh_result.port_info,
+            [cfg for cfgs in self._port_lists().values() for cfg in cfgs],
+            simulation_type=self.simulation_type,
+        )
+
+        validation = self.validate_config()
+        if not validation.valid:
+            raise ValueError("Invalid configuration:\n" + "\n".join(validation.errors))
+
+        if self.simulation_type != "driven":
+            return
+        surfaces = mesh_result.groups.get("port_surfaces") or {}
+        excited = [
+            (number, port.name)
+            for number, port in enumerate(self._last_ports, start=1)
+            if port.excited
+        ]
+        if not excited:
+            raise ValueError(
+                f"This {name} reuses a mesh but excites none of its ports; ports "
+                "copied from an eigenmode source are not excited. Declare the "
+                "port to excite on this simulation with excited=True and the "
+                "source's geometry (before or after reuse_mesh), or set "
+                "excited=True on its copied port config, for example "
+                "sim.ports[0].excited = True."
+            )
+        missing = [
+            (number, port) for number, port in excited if f"P{number}" not in surfaces
+        ]
+        if missing:
+            names = ", ".join(f"'{port}' (P{number})" for number, port in missing)
+            raise ValueError(
+                f"This {name} excites ports with no surface in the reused mesh: "
+                f"{names}. Set excited=False on them and excite a port of the "
+                "mesh, or call mesh() on this simulation."
+            )
+
     def write_config(
         self,
         *,
@@ -2733,7 +2807,10 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             Path to the generated config.json
 
         Raises:
-            ValueError: If mesh() hasn't been called yet
+            ValueError: If mesh() hasn't been called yet. For a mesh taken
+                with reuse_mesh(), also if a mesh input changed since, the
+                configuration is invalid, or a driven simulation excites no
+                port of the mesh.
 
         Example:
             >>> result = sim.mesh("./sim")
@@ -2759,6 +2836,9 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             )
 
         stack = self._resolve_stack()
+        if self._mesh_reused:
+            # A mesh from another sim: check it still fits, sync Port settings
+            self._check_reused_mesh(stack)
         electrostatic_config = self._get_problem_settings("electrostatic")
         terminals = getattr(self, "terminals", None)
 

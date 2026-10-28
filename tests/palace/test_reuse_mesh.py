@@ -12,11 +12,14 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 from pathlib import Path
+from unittest.mock import Mock
 
 import gdsfactory as gf
 import pytest
 
+from gsim import gcloud
 from gsim.common.stack import LayerStack
 from gsim.hashing import compute_dir_digest, compute_input_hash
 from gsim.palace import BoundaryModeSim, DrivenSim, EigenmodeSim, ElectrostaticSim
@@ -37,8 +40,8 @@ class FakeGmsh:
     """Stands in for ``generate_mesh``; counts its calls.
 
     Writes ``<model_name>.msh`` (bytes that change with every call) and
-    ``metadata.json``, and returns a real ``MeshResult`` with one lumped
-    ``P{i}`` port surface per extracted port.
+    ``metadata.json``, and returns a real ``MeshResult`` with one ``P{i}``
+    port surface per extracted port, of the port's type (lumped or wave).
     """
 
     def __init__(self) -> None:
@@ -63,8 +66,8 @@ class FakeGmsh:
             "volumes": {"airbox": {"phys_group": 1}, "sio2": {"phys_group": 2}},
             "conductor_surfaces": {"m1_xy": {"phys_group": 3}},
             "port_surfaces": {
-                f"P{i}": {"phys_group": 10 + i, "type": "lumped"}
-                for i, _ in enumerate(ports, start=1)
+                f"P{i}": {"phys_group": 10 + i, "type": port.port_type.value}
+                for i, port in enumerate(ports, start=1)
             },
             "boundary_surfaces": {"absorbing": {"phys_group": 4}},
         }
@@ -79,7 +82,12 @@ class FakeGmsh:
             }
             groups["boundary_surfaces"]["symmetry"] = dict(symmetry)
         port_info = [
-            {"portnumber": i, "name": port.name, "Z0": port.impedance, "type": "lumped"}
+            {
+                "portnumber": i,
+                "name": port.name,
+                "Z0": port.impedance,
+                "type": port.port_type.value,
+            }
             for i, port in enumerate(ports, start=1)
         ]
         stats = {"nodes": NODES, "elements": 5000, "tetrahedra": TETS}
@@ -109,12 +117,11 @@ def stack() -> LayerStack:
     return generic_stack()
 
 
-@pytest.fixture
-def component() -> gf.Component:
+def _layout(m1_height: float = 1.0) -> gf.Component:
     """A strip on m1 and one on m2, with ports o1 and o2 at the ends of m1."""
     gf.gpdk.PDK.activate()
     c = gf.Component()
-    c.add_polygon([(0, 0), (10, 0), (10, 1), (0, 1)], layer=(1, 0))
+    c.add_polygon([(0, 0), (10, 0), (10, m1_height), (0, m1_height)], layer=(1, 0))
     c.add_polygon([(0, 3), (10, 3), (10, 4), (0, 4)], layer=(2, 0))
     for name, x, orientation in (("o1", 0, 180), ("o2", 10, 0)):
         c.add_port(
@@ -126,6 +133,12 @@ def component() -> gf.Component:
             port_type="electrical",
         )
     return c
+
+
+@pytest.fixture
+def component() -> gf.Component:
+    """A strip on m1 and one on m2, with ports o1 and o2 at the ends of m1."""
+    return _layout()
 
 
 @pytest.fixture
@@ -210,6 +223,65 @@ def _state(sim) -> dict:
         "fingerprint": dict(sim._mesh_fingerprint or {}),
         "flags": (sim._mesh_reused, sim._configured_ports),
     }
+
+
+def _excitations(config: dict) -> list:
+    """The ``Excitation`` of each lumped port of a config, in index order."""
+    return [port["Excitation"] for port in config["Boundaries"]["LumpedPort"]]
+
+
+# ----- case 1: the issue's eigenmode-to-driven workflow ------------------------------
+
+
+def test_one_eigenmode_mesh_drives_two_receivers_with_their_own_excitations(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    """gsim#389: independent excitations and reflecting outer walls, no Gmsh."""
+    source_config = json.loads(
+        meshed_eigen.write_config(validate_mesh=False).read_text()
+    )
+    source_digest = compute_dir_digest(tmp_path / "eigen")
+    fake_gmsh.allowed = False
+
+    configs = {}
+    for excite, other in (("o1", "o2"), ("o2", "o1")):
+        receiver = make_sim(
+            DrivenSim,
+            tmp_path / excite,
+            ports={
+                excite: {"layer": "m1", "length": 1.0, "excited": True},
+                other: {"layer": "m1", "length": 1.0, "excited": False},
+            },
+        )
+        receiver.set_driven(fmin=7e9, fmax=10e9, excitation_port=excite)
+        receiver.reuse_mesh(meshed_eigen)
+        config_path = receiver.write_config(validate_mesh=False)
+        assert config_path == tmp_path / excite / "config.json"
+        configs[excite] = json.loads(config_path.read_text())
+
+    assert fake_gmsh.calls == 1
+    assert _excitations(configs["o1"]) == [1, False]
+    assert _excitations(configs["o2"]) == [False, 2]
+    for config in configs.values():
+        assert config["Problem"]["Type"] == "Driven"
+        # absorbing_boundary=False: no Absorbing block and no outer PEC wall
+        assert "Absorbing" not in config["Boundaries"]
+        assert "PEC" not in config["Boundaries"]
+    # the two configs differ only in which port is excited
+    for config in configs.values():
+        for port in config["Boundaries"]["LumpedPort"]:
+            del port["Excitation"]
+    assert configs["o1"] == configs["o2"]
+
+    # the source keeps its config and its folder
+    assert compute_dir_digest(tmp_path / "eigen") == source_digest
+    assert source_config["Problem"]["Type"] == "Eigenmode"
+    assert _excitations(source_config) == [False, False]
+    hashes = {
+        compute_input_hash(tmp_path / folder, "palace")
+        for folder in ("eigen", "o1", "o2")
+    }
+    assert len(hashes) == 3
 
 
 # ----- case 2: the four allowed pairs ------------------------------------------------
@@ -649,6 +721,108 @@ def test_port_merge_gives_an_empty_receiver_the_source_ports(
     )
 
 
+# ----- case 9: Port settings reach the config ----------------------------------------
+
+
+def _excite_o2_before_reuse(receiver, source) -> None:
+    receiver.add_port("o2", layer="m1", length=1.0, excited=True)
+    receiver.reuse_mesh(source)
+
+
+def _excite_the_copied_o2_after_reuse(receiver, source) -> None:
+    receiver.reuse_mesh(source)
+    receiver.ports[1].excited = True
+
+
+def _declare_o2_again_after_reuse(receiver, source) -> None:
+    receiver.reuse_mesh(source)
+    receiver.add_port("o2", layer="m1", length=1.0, excited=True)
+
+
+@pytest.mark.parametrize(
+    "excite",
+    [
+        _excite_o2_before_reuse,
+        _excite_the_copied_o2_after_reuse,
+        _declare_o2_again_after_reuse,
+    ],
+    ids=lambda value: value.__name__,
+)
+def test_excitation_set_before_or_after_reuse_reaches_the_config(
+    excite, meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven", ports={})
+
+    excite(receiver, meshed_eigen)
+    config = json.loads(receiver.write_config(validate_mesh=False).read_text())
+
+    assert _excitations(config) == [False, 2]
+    assert [(p.name, p.excited) for p in receiver._last_ports] == [
+        ("o1", False),
+        ("o2", True),
+    ]
+    assert not any(p.excited for p in meshed_eigen._last_ports)
+
+
+def test_impedance_change_after_reuse_reaches_port_information(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven")
+    receiver.reuse_mesh(meshed_eigen)
+
+    receiver.ports[1].impedance = 25.0
+    config = json.loads(receiver.write_config(validate_mesh=False).read_text())
+
+    info = json.loads((tmp_path / "driven" / "port_information.json").read_text())
+    assert [(p["name"], p["Z0"]) for p in info["ports"]] == [
+        ("o1", 50.0),
+        ("o2", 25.0),
+    ]
+    assert [p["R"] for p in config["Boundaries"]["LumpedPort"]] == [50.0, 25.0]
+    assert [e["Z0"] for e in meshed_eigen._last_mesh_result.port_info] == [50.0, 50.0]
+
+
+def test_lumped_offset_never_reaches_the_de_embedding_offset(
+    make_sim, fake_gmsh, tmp_path
+) -> None:
+    ports = {
+        "o1": {"layer": "m1", "length": 1.0, "offset": 0.5},
+        "o2": {"layer": "m1", "length": 1.0},
+    }
+    source = make_sim(EigenmodeSim, tmp_path / "eigen", ports=ports)
+    source.mesh(verbose=False)
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven", ports=ports)
+
+    receiver.reuse_mesh(source)
+    receiver.write_config(validate_mesh=False)
+
+    assert receiver.ports[0].offset == 0.5
+    # the offset moved the port surface; it is no de-embedding distance
+    assert [p.offset for p in receiver._last_ports] == [0.0, 0.0]
+    assert receiver._last_ports[0].center == source._last_ports[0].center
+
+
+@pytest.mark.parametrize("cls", [DrivenSim, EigenmodeSim])
+def test_settings_sync_changes_nothing_for_equal_declarations(
+    cls, make_sim, fake_gmsh, tmp_path
+) -> None:
+    source = make_sim(cls, tmp_path / "source")
+    source.mesh(verbose=False)
+    source_config = json.loads(source.write_config(validate_mesh=False).read_text())
+    fake_gmsh.allowed = False
+    receiver = make_sim(cls, tmp_path / "receiver")
+
+    receiver.reuse_mesh(source)
+    config = json.loads(receiver.write_config(validate_mesh=False).read_text())
+
+    assert receiver._last_ports == source._last_ports
+    assert receiver._last_mesh_result.port_info == source._last_mesh_result.port_info
+    assert config == source_config
+
+
 # ----- case 10: files ----------------------------------------------------------------
 
 
@@ -703,3 +877,350 @@ def test_files_of_identical_receivers_hash_equal(
     assert compute_input_hash(tmp_path / "a", "palace") == compute_input_hash(
         tmp_path / "b", "palace"
     )
+
+
+# ----- case 11: run on the cloud, mocked ---------------------------------------------
+
+
+def test_run_with_cache_check_uploads_only_the_receiver_folder(
+    meshed_eigen, make_sim, fake_gmsh, monkeypatch, tmp_path
+) -> None:
+    meshed_eigen.write_config(validate_mesh=False)
+    source_digest = compute_dir_digest(tmp_path / "eigen")
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven")
+    receiver.reuse_mesh(meshed_eigen)
+    # the fake .msh is no Gmsh mesh: skip the two checks that open it
+    for check in ("check_port_surfaces_in_domain", "check_lumped_port_geometry"):
+        monkeypatch.setattr(
+            f"gsim.palace.mesh.validation.{check}", lambda **_kwargs: []
+        )
+    staging = tmp_path / "upload"
+    staging.mkdir()
+    monkeypatch.setattr(
+        "gsim.palace.base.tempfile.mkdtemp", lambda **_kwargs: str(staging)
+    )
+    hashed: list[Path] = []
+
+    def check_cache_for_dir(directory, job_type):
+        hashed.append(Path(directory))
+        return compute_input_hash(directory, job_type), None
+
+    upload = Mock(return_value="new-job")
+    monkeypatch.setattr(gcloud, "check_cache_for_dir", check_cache_for_dir)
+    monkeypatch.setattr(gcloud, "upload", upload)
+    monkeypatch.setattr(gcloud, "start", Mock())
+
+    job_id = receiver.run(check_cache=True, wait=False, verbose="quiet")
+
+    folder = tmp_path / "driven"
+    assert job_id == "new-job"
+    assert hashed == [staging]
+    assert upload.call_args.args[0] == staging
+    assert upload.call_args.kwargs["input_hash"] == compute_input_hash(folder, "palace")
+    # the upload is a copy of the receiver's folder, and only of it
+    assert _listing(staging) == _listing(folder)
+    assert compute_dir_digest(staging) == compute_dir_digest(folder)
+    assert json.loads((staging / "config.json").read_text())["Problem"]["Type"] == (
+        "Driven"
+    )
+    assert (staging / "palace.msh").read_bytes() == meshed_eigen.mesh_path.read_bytes()
+    assert compute_dir_digest(tmp_path / "eigen") == source_digest
+
+
+# ----- case 12: the guard ------------------------------------------------------------
+
+
+def _edit_a_polygon(sim) -> None:
+    sim.component.add_polygon([(0, 6), (2, 6), (2, 7), (0, 7)], layer=(1, 0))
+
+
+def _set_other_shapes(sim) -> None:
+    sim.set_geometry(_layout(m1_height=2.0))
+
+
+def _move_a_component_port(sim) -> None:
+    sim.component.ports["o2"].center = (9.0, 0.5)
+
+
+def _raise_a_layer(sim) -> None:
+    sim.stack.layers["m2"].zmax = 3.5
+
+
+def _change_the_dielectric(sim) -> None:
+    sim.stack.dielectrics[0]["zmax"] = 6.0
+
+
+def _make_the_oxide_air_like(sim) -> None:
+    sim.set_material("sio2", permittivity=1.0)
+
+
+def _make_the_via_insulating(sim) -> None:
+    sim.set_material("tungsten", material_type="conductor", conductivity=0.0)
+
+
+def _set_an_airbox(sim) -> None:
+    sim.set_airbox(margin_x=5, margin_y=5, z_above=5, z_below=0)
+
+
+def _add_a_pec_block(sim) -> None:
+    sim.add_pec(gds_layer=(9, 0), from_layer="m1", to_layer="m2")
+
+
+def _add_a_symmetry_plane(sim) -> None:
+    sim.add_symmetry_plane(axis="x", position=5.0, verify_symmetry=False)
+
+
+def _change_a_port_layer(sim) -> None:
+    sim.ports[0].layer = "m2"
+
+
+def _change_a_port_length(sim) -> None:
+    sim.ports[0].length = 2.0
+
+
+def _change_a_port_offset(sim) -> None:
+    sim.ports[0].offset = 0.5
+
+
+def _add_a_port(sim) -> None:
+    sim.add_port("o3", layer="m1", length=1.0)
+
+
+def _remove_a_port(sim) -> None:
+    sim.ports = sim.ports[:1]
+
+
+@pytest.mark.parametrize(
+    ("change", "label"),
+    [
+        (_edit_a_polygon, "geometry (layout polygons)"),
+        (_set_other_shapes, "geometry (layout polygons)"),
+        (
+            _move_a_component_port,
+            "component ports (names, positions, orientations, widths)",
+        ),
+        (_raise_a_layer, "stack layer 'm2'"),
+        (_change_the_dielectric, "stack dielectric regions"),
+        (_make_the_oxide_air_like, "material 'sio2' (air-like or not)"),
+        (_make_the_via_insulating, "stack layer 'v1'"),
+        (_set_an_airbox, "airbox (set_airbox)"),
+        (_add_a_pec_block, "PEC blocks (add_pec)"),
+        (_add_a_symmetry_plane, "symmetry plane"),
+        (_change_a_port_layer, "port 'o1' geometry"),
+        (_change_a_port_length, "port 'o1' geometry"),
+        (_change_a_port_offset, "port 'o1' geometry"),
+        (_add_a_port, "port 'o3' (added)"),
+        (_remove_a_port, "port 'o2' (removed)"),
+    ],
+    ids=lambda value: getattr(value, "__name__", None),
+)
+def test_guarded_change_is_refused_at_write_config(
+    change, label, meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven")
+    receiver.reuse_mesh(meshed_eigen)
+    assert receiver._current_mesh_fingerprint(receiver._resolve_stack()) == (
+        receiver._mesh_fingerprint
+    )
+
+    change(receiver)  # the setter itself stays quiet
+
+    with pytest.raises(ValueError, match=re.escape(label)) as error:
+        receiver.write_config(validate_mesh=False)
+    message = str(error.value)
+    assert message.startswith("This DrivenSim reuses a mesh")
+    assert "call mesh()" in message
+    assert "reuse_mesh(source) again" in message
+    assert not (tmp_path / "driven" / "config.json").exists()
+
+
+def _unexcite_a_port(sim) -> None:
+    sim.ports[1].excited = False
+
+
+def _change_an_impedance(sim) -> None:
+    sim.ports[1].impedance = 25.0
+
+
+def _set_r_l_c(sim) -> None:
+    sim.ports[1].resistance = 10.0
+    sim.ports[1].inductance = 1e-9
+    sim.ports[1].capacitance = 1e-15
+
+
+def _raise_the_oxide_permittivity(sim) -> None:
+    sim.set_material("sio2", permittivity=4.1)
+
+
+def _set_a_loss_tangent(sim) -> None:
+    sim.set_material("sio2", permittivity=3.9, loss_tangent=1e-3)
+
+
+def _change_a_conductor_conductivity(sim) -> None:
+    sim.set_material("aluminum", conductivity=3.0e7)
+
+
+def _change_the_mesh_settings(sim) -> None:
+    sim.mesh_config.refined_mesh_size = 0.5
+
+
+def _declare_a_port_again(sim) -> None:
+    sim.add_port("o1", layer="m1", length=1.0, excited=True)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        _unexcite_a_port,
+        _change_an_impedance,
+        _set_r_l_c,
+        _raise_the_oxide_permittivity,
+        _set_a_loss_tangent,
+        _change_a_conductor_conductivity,
+        _change_the_mesh_settings,
+        _declare_a_port_again,
+    ],
+    ids=lambda value: value.__name__,
+)
+def test_allowed_change_passes_the_guard(
+    change, meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven")
+    receiver.reuse_mesh(meshed_eigen)
+
+    change(receiver)
+
+    assert receiver.write_config(validate_mesh=False).is_file()
+
+
+# ----- case 13: the mesh must hold the receiver's settings ---------------------------
+
+
+def test_driven_receiver_with_no_excited_port_is_refused(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    """R2: ports copied from an eigenmode source are not excited."""
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven", ports={})
+    receiver.reuse_mesh(meshed_eigen)
+
+    with pytest.raises(ValueError, match="excites none of its ports") as error:
+        receiver.write_config(validate_mesh=False)
+
+    message = str(error.value)
+    assert "with excited=True" in message
+    assert "set excited=True on its copied port config" in message
+    assert not (tmp_path / "driven" / "config.json").exists()
+
+
+def test_driven_receiver_exciting_a_port_without_surface_is_refused(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    """R2: every excited port needs its P{i} surface in the mesh."""
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven")
+    receiver.reuse_mesh(meshed_eigen)
+    del receiver._last_mesh_result.groups["port_surfaces"]["P2"]
+
+    with pytest.raises(ValueError, match=r"no surface in the reused mesh: 'o2' \(P2\)"):
+        receiver.write_config(validate_mesh=False)
+
+
+def test_eigenmode_receiver_without_target_is_refused(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(EigenmodeSim, tmp_path / "eigen2")
+    receiver.set_eigenmode()
+    receiver.reuse_mesh(meshed_eigen)
+
+    with pytest.raises(ValueError, match="target frequency is required") as error:
+        receiver.write_config(validate_mesh=False)
+
+    assert str(error.value).startswith("Invalid configuration:\n")
+
+
+def test_floquet_receiver_of_a_mesh_that_is_not_periodic_is_refused(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(EigenmodeSim, tmp_path / "floquet")
+    receiver.set_eigenmode(target=5e9, floquet=True)
+    receiver.reuse_mesh(meshed_eigen)
+
+    with pytest.raises(ValueError, match="Floquet eigenmode requires a periodic axis"):
+        receiver.write_config(validate_mesh=False)
+
+
+def _meshed_wave_source(make_sim, folder: Path, *, multimode: bool) -> DrivenSim:
+    """A driven sim with wave ports o1 and o2, meshed by the fake."""
+    sim = make_sim(DrivenSim, folder, ports={})
+    if multimode:
+        sim.add_multimode_wave_port("o1", modes=(1, 2), layer="m1")
+    else:
+        sim.add_wave_port("o1", layer="m1")
+    sim.add_wave_port("o2", layer="m1")
+    sim.mesh(verbose=False)
+    assert set(sim.mesh_groups["port_surfaces"]) == {"P1", "P2"}
+    return sim
+
+
+def test_eigenmode_receiver_of_multimode_wave_ports_is_refused(
+    make_sim, fake_gmsh, tmp_path
+) -> None:
+    source = _meshed_wave_source(make_sim, tmp_path / "driven", multimode=True)
+    fake_gmsh.allowed = False
+    receiver = make_sim(EigenmodeSim, tmp_path / "eigen", ports={})
+    receiver.reuse_mesh(source)
+    assert list(receiver.wave_ports[0].modes) == [1, 2]
+
+    with pytest.raises(
+        ValueError, match="Multimode wave ports are only supported for driven"
+    ) as error:
+        receiver.write_config(validate_mesh=False)
+
+    assert str(error.value).startswith("Invalid configuration:\n")
+
+
+def test_wave_port_modes_can_change_on_a_reused_mesh(
+    make_sim, fake_gmsh, tmp_path
+) -> None:
+    source = _meshed_wave_source(make_sim, tmp_path / "source", multimode=False)
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven", ports={})
+    receiver.reuse_mesh(source)
+
+    receiver.add_multimode_wave_port("o1", modes=(1, 2), layer="m1")
+    config = json.loads(receiver.write_config(validate_mesh=False).read_text())
+
+    assert [
+        (entry["Index"], entry["Mode"], entry.get("Active", True))
+        for entry in config["Boundaries"]["WavePort"]
+    ] == [(1, 1, True), (2, 1, True), (3, 2, False)]
+    by_name = {port.name: port for port in receiver._last_ports}
+    assert by_name["o1"].modes == (1, 2)
+    assert by_name["o2"].modes == ()
+    assert [port.modes for port in source._last_ports] == [(), ()]
+
+
+def test_default_driven_receiver_writes_an_absorbing_boundary(
+    meshed_eigen, fake_gmsh, tmp_path
+) -> None:
+    """absorbing_boundary is not copied: DrivenSim's default True applies."""
+    fake_gmsh.allowed = False
+    receiver = DrivenSim()
+    receiver.set_output_dir(tmp_path / "driven")
+    receiver.add_port("o1", layer="m1", length=1.0, excited=True)
+    receiver.reuse_mesh(meshed_eigen)
+    receiver.set_driven(fmin=7e9, fmax=10e9)
+
+    config = json.loads(receiver.write_config(validate_mesh=False).read_text())
+
+    assert meshed_eigen.absorbing_boundary is False
+    assert receiver.absorbing_boundary is True
+    outer = meshed_eigen.mesh_groups["boundary_surfaces"]["absorbing"]["phys_group"]
+    assert config["Boundaries"]["Absorbing"]["Attributes"] == [outer]
+    assert _excitations(config) == [1, False]
