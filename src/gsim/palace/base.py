@@ -2451,11 +2451,14 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         """Take the mesh of another meshed simulation instead of meshing.
 
         Driven and eigenmode simulations can share a mesh, in either
-        direction. The call takes a snapshot of the source: it copies the
-        source's ``.msh`` into this simulation's output directory, under the
-        source's model name, and writes a new ``metadata.json`` there. It
-        never meshes, never writes to the source, and keeps no link to it.
-        To pick up a newer mesh of the source, call ``reuse_mesh`` again.
+        direction, so an eigenmode solve and driven sweeps with different
+        excitations run on one discretization. The call takes a snapshot of
+        the source: it copies the source's ``.msh`` into this simulation's
+        output directory, under the source's model name, and writes a new
+        ``metadata.json`` there. It never meshes, never writes to the source,
+        and keeps no link to it. To pick up a newer mesh of the source, call
+        ``reuse_mesh`` again. A later ``mesh()`` or ``reuse_mesh`` on this
+        simulation replaces the mesh.
 
         Copied from the source, as independent copies that replace what this
         simulation had: the geometry, the stack and its settings, the
@@ -2465,15 +2468,27 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         boundary, refinement, impedance boundaries and the output directory.
 
         Ports are matched by name. A port this simulation declared with the
-        source's kind and geometry keeps its own settings; that is how a
-        driven simulation chooses its excited ports (``excited=True``),
-        before or after this call. Every other source port is copied with
-        its settings, so the ports copied from an eigenmode source are not
-        excited.
+        source's kind and geometry keeps its own Port settings: excitation,
+        impedance, R/L/C and wave-port mode options. That is how a driven
+        simulation chooses its excited ports: declare them with
+        ``excited=True``, before or after this call, or set ``excited`` on
+        the copied port config. Every other source port is copied with the
+        source's settings; an eigenmode source leaves its lumped ports
+        unexcited.
 
         Give each simulation its own output directory. The mesh fixes the
-        geometry, stack, airbox, PEC, symmetry and port geometry; change one
-        of them and call ``mesh()`` on this simulation instead.
+        layout and component ports, the stack layers and dielectric regions,
+        which materials are air-like, the airbox, the PEC blocks, the
+        symmetry plane and the port geometry. Each ``write_config()`` checks
+        them first and raises ``ValueError`` naming what changed; call
+        ``mesh()`` on this simulation to mesh its current state, or
+        ``reuse_mesh(source)`` again to take the source's inputs back.
+        ``write_config()`` then re-applies the Port settings and validates
+        the configuration; a driven simulation needs at least one port with
+        ``excited=True``. Mesh sizes, Port settings,
+        solver settings and material values such as permittivity, loss
+        tangent and conductor conductivity can change freely; check that the
+        mesh still resolves the new values.
 
         Args:
             source: A meshed ``DrivenSim`` or ``EigenmodeSim``.
@@ -2497,12 +2512,17 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             FileNotFoundError: If the source's mesh file is missing.
 
         Example:
+            ``eigen`` is an ``EigenmodeSim`` with lumped ports ``o1`` and
+            ``o2``, each declared with ``layer="topmetal2", length=5.0``. A
+            driven sweep excites ``o1`` on its mesh, with a reflecting outer
+            wall; ``o2`` is copied from ``eigen``, not excited.
+
             >>> eigen.set_output_dir("./eigen")
             >>> eigen.mesh(preset="default")
             >>> driven = DrivenSim(absorbing_boundary=False)
             >>> driven.set_output_dir("./driven")
             >>> driven.add_port("o1", layer="topmetal2", length=5.0, excited=True)
-            >>> driven.reuse_mesh(eigen)
+            >>> result = driven.reuse_mesh(eigen)
             >>> driven.set_driven(fmin=7e9, fmax=10e9)
             >>> driven.write_config()
         """
