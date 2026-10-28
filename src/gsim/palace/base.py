@@ -176,6 +176,53 @@ def _wrote_solver_output(postpro_dir: Path) -> bool:
     )
 
 
+def resolve_layer_stack(
+    stack: LayerStack | None,
+    stack_kwargs: Mapping[str, Any],
+    materials: Mapping[str, MaterialConfig],
+) -> LayerStack:
+    """Resolve the layer stack from PDK, YAML, or custom object.
+
+    A prebuilt stack (``stack_kwargs`` marked ``_prebuilt``) is returned
+    as is, with the material overrides written into it in place. Otherwise
+    the stack is built from ``stack_kwargs``, the overrides are applied and
+    dielectric air regions are dropped. ``stack_kwargs`` is never modified.
+
+    Args:
+        stack: Stack given via ``set_stack(layer_stack)``, or None.
+        stack_kwargs: Arguments recorded by ``set_stack``.
+        materials: Material overrides recorded by ``set_material``.
+
+    Returns:
+        LayerStack object for mesh generation
+    """
+    # If a custom stack was given via set_stack(layer_stack), use it
+    if stack is not None and stack_kwargs.get("_prebuilt"):
+        # Apply material overrides
+        for name, props in materials.items():
+            stack.materials[name] = props.to_dict()
+        return stack
+
+    from gsim.common.stack import get_stack
+
+    kwargs = {k: v for k, v in stack_kwargs.items() if k != "yaml_path"}
+    legacy_stack = get_stack(yaml_path=stack_kwargs.get("yaml_path"), **kwargs)
+
+    # Apply material overrides
+    for name, props in materials.items():
+        legacy_stack.materials[name] = props.to_dict()
+
+    # Keep stack free of synthetic air regions; Palace airboxes are
+    # generated explicitly from set_airbox().
+    legacy_stack.dielectrics = [
+        d
+        for d in legacy_stack.dielectrics
+        if str(d.get("material", "")).lower() != "air"
+    ]
+
+    return legacy_stack
+
+
 class MeshSourceMixin:
     """The configuration and mesh reads of whoever holds the mesh.
 
@@ -1042,37 +1089,12 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         Returns:
             LayerStack object for mesh generation
         """
-        # If a custom stack was given via set_stack(layer_stack), use it
-        if self.stack is not None and self._stack_kwargs.get("_prebuilt"):
-            # Apply material overrides
-            for name, props in self.materials.items():
-                self.stack.materials[name] = props.to_dict()
-            return self.stack
-
-        from gsim.common.stack import get_stack
-
-        yaml_path = self._stack_kwargs.pop("yaml_path", None)
-        legacy_stack = get_stack(yaml_path=yaml_path, **self._stack_kwargs)
-
-        # Restore yaml_path for potential re-resolution
-        self._stack_kwargs["yaml_path"] = yaml_path
-
-        # Apply material overrides
-        for name, props in self.materials.items():
-            legacy_stack.materials[name] = props.to_dict()
-
-        # Keep stack free of synthetic air regions; Palace airboxes are
-        # generated explicitly from set_airbox().
-        legacy_stack.dielectrics = [
-            d
-            for d in legacy_stack.dielectrics
-            if str(d.get("material", "")).lower() != "air"
-        ]
-
-        # Store the LayerStack
-        self.stack = legacy_stack
-
-        return legacy_stack
+        stack = resolve_layer_stack(self.stack, self._stack_kwargs, self.materials)
+        # A prebuilt stack comes back as the same object; store only a newly
+        # built one, so the prebuilt path triggers no assignment validation.
+        if stack is not self.stack:
+            self.stack = stack
+        return stack
 
     def _build_mesh_config(
         self,
