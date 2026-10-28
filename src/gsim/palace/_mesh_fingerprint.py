@@ -28,6 +28,9 @@ from gsim.palace.models.ports import (
 if TYPE_CHECKING:
     from gsim.common import LayerStack
 
+# A port declaration of any kind: lumped, CPW, wave or two-terminal
+PortDeclaration = PortConfig | CPWPortConfig | WavePortConfig | TwoTerminalPortConfig
+
 # Sections of a fingerprint in the order describe_changes() lists them, with
 # the label of each. A trailing ":" marks a section keyed per name.
 _SECTIONS: tuple[tuple[str, str], ...] = (
@@ -48,9 +51,7 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def port_geometry(
-    cfg: PortConfig | CPWPortConfig | WavePortConfig | TwoTerminalPortConfig,
-) -> tuple[str, tuple]:
+def port_geometry(cfg: PortDeclaration) -> tuple[str, tuple]:
     """The name of a port declaration and the fields that shape its surface.
 
     Args:
@@ -163,9 +164,7 @@ def mesh_inputs_fingerprint(
     airbox_config: Mapping[str, Any],
     pec_blocks: Iterable[Any],
     symmetry_planes: Iterable[Any],
-    port_configs: Iterable[
-        PortConfig | CPWPortConfig | WavePortConfig | TwoTerminalPortConfig
-    ],
+    port_configs: Iterable[PortDeclaration],
 ) -> dict[str, str]:
     """Record the inputs that shape a mesh, one canonical string per input.
 

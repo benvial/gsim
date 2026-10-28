@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from gsim.common import Geometry, LayerStack
 from gsim.common.cloud import CloudJobMixin
+from gsim.palace._mesh_reuse import PORT_LISTS
 from gsim.palace.models import (
     CPWPortConfig,
     ImpedanceBoundaryConfig,
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
 
     from gdsfactory.component import Component
 
+    from gsim.palace._mesh_fingerprint import PortDeclaration
     from gsim.palace.results import PalaceTextResults, SParams
 
 logger = logging.getLogger(__name__)
@@ -176,7 +178,7 @@ def _wrote_solver_output(postpro_dir: Path) -> bool:
     )
 
 
-def resolve_layer_stack(
+def _resolve_layer_stack(
     stack: LayerStack | None,
     stack_kwargs: Mapping[str, Any],
     materials: Mapping[str, MaterialConfig],
@@ -206,21 +208,57 @@ def resolve_layer_stack(
     from gsim.common.stack import get_stack
 
     kwargs = {k: v for k, v in stack_kwargs.items() if k != "yaml_path"}
-    legacy_stack = get_stack(yaml_path=stack_kwargs.get("yaml_path"), **kwargs)
+    built = get_stack(yaml_path=stack_kwargs.get("yaml_path"), **kwargs)
 
     # Apply material overrides
     for name, props in materials.items():
-        legacy_stack.materials[name] = props.to_dict()
+        built.materials[name] = props.to_dict()
 
     # Keep stack free of synthetic air regions; Palace airboxes are
     # generated explicitly from set_airbox().
-    legacy_stack.dielectrics = [
-        d
-        for d in legacy_stack.dielectrics
-        if str(d.get("material", "")).lower() != "air"
+    built.dielectrics = [
+        d for d in built.dielectrics if str(d.get("material", "")).lower() != "air"
     ]
 
-    return legacy_stack
+    return built
+
+
+def _all_ports(
+    port_lists: Mapping[str, Sequence[PortDeclaration]],
+) -> list[PortDeclaration]:
+    """Every port declaration of a sim's port lists, list after list."""
+    return [cfg for cfgs in port_lists.values() for cfg in cfgs]
+
+
+def _same_existing_folder(a: Path, b: Path) -> bool:
+    """Whether two existing paths are one folder, whatever the case rules."""
+    try:
+        return os.path.samefile(a, b)  # noqa: PTH121 - tests patch os.path.samefile
+    except OSError:
+        return False
+
+
+def _folder_relation(folder: Path, other: Path) -> str | None:
+    """How ``folder`` lies to ``other``: ``"is"``, ``"is inside"``, ``"contains"``.
+
+    Resolved paths are compared first. ``os.path.samefile`` then compares the
+    existing folders and their parents, in both directions, so ``./EIGEN`` is
+    ``./eigen`` on a case-insensitive file system. ``None`` if neither holds.
+    """
+    folder, other = folder.resolve(), other.resolve()
+    if folder == other:
+        return "is"
+    if folder.is_relative_to(other):
+        return "is inside"
+    if other.is_relative_to(folder):
+        return "contains"
+    if _same_existing_folder(folder, other):
+        return "is"
+    if any(_same_existing_folder(parent, other) for parent in folder.parents):
+        return "is inside"
+    if any(_same_existing_folder(parent, folder) for parent in other.parents):
+        return "contains"
+    return None
 
 
 class MeshSourceMixin:
@@ -427,17 +465,12 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             airbox_config=self._airbox_config or {},
             pec_blocks=self._pec_blocks,
             symmetry_planes=self._symmetry_planes,
-            port_configs=[cfg for cfgs in self._port_lists().values() for cfg in cfgs],
+            port_configs=_all_ports(self._port_lists()),
         )
 
-    def _port_lists(self) -> dict[str, list[Any]]:
+    def _port_lists(self) -> dict[str, list[PortDeclaration]]:
         """The declared ports by list: lumped, CPW, wave and two-terminal."""
-        return {
-            "ports": self._ports,
-            "cpw_ports": self._cpw_ports,
-            "wave_ports": self._wave_ports,
-            "two_terminal_ports": self._two_terminal_ports,
-        }
+        return {kind: list(getattr(self, kind, None) or []) for kind in PORT_LISTS}
 
     # -------------------------------------------------------------------------
     # Output directory
@@ -1093,7 +1126,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         Returns:
             LayerStack object for mesh generation
         """
-        stack = resolve_layer_stack(self.stack, self._stack_kwargs, self.materials)
+        stack = _resolve_layer_stack(self.stack, self._stack_kwargs, self.materials)
         # A prebuilt stack comes back as the same object; store only a newly
         # built one, so the prebuilt path triggers no assignment validation.
         if stack is not self.stack:
@@ -2474,7 +2507,13 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         ``excited=True``, before or after this call, or set ``excited`` on
         the copied port config. Every other source port is copied with the
         source's settings; an eigenmode source leaves its lumped ports
-        unexcited.
+        unexcited. A declared port of another kind or geometry, or one the
+        source does not declare, is refused.
+
+        On a simulation that already holds a reused mesh, its ports came from
+        a source, so the call takes the Port geometry and kind back from the
+        source for every port instead: a port the source declares keeps this
+        simulation's Port settings, a port the source lacks is dropped.
 
         Give each simulation its own output directory. The mesh fixes the
         layout and component ports, the stack layers and dielectric regions,
@@ -2482,7 +2521,8 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         symmetry plane and the port geometry. Each ``write_config()`` checks
         them first and raises ``ValueError`` naming what changed; call
         ``mesh()`` on this simulation to mesh its current state, or
-        ``reuse_mesh(source)`` again to take the source's inputs back.
+        ``reuse_mesh(source)`` again to take the source's inputs back,
+        Port geometry included.
         ``write_config()`` then re-applies the Port settings and validates
         the configuration; a driven simulation needs at least one port with
         ``excited=True``. Mesh sizes, Port settings,
@@ -2506,9 +2546,9 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
                 eigenmode simulation; if the source has no mesh, is this
                 simulation, or changed after its mesh was made; if no output
                 directory is set, or it is, contains or lies inside one of
-                the source's; if a declared port does not match the mesh; or
-                if this is a driven simulation and the mesh has no port
-                surfaces.
+                the source's; if this simulation does not hold a reused mesh
+                and a declared port does not match the mesh; or if this is a
+                driven simulation and the mesh has no port surfaces.
             FileNotFoundError: If the source's mesh file is missing.
 
         Example:
@@ -2578,18 +2618,11 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
 
         source_result = source._last_mesh_result
         output_dir = Path(self._output_dir)
-        resolved = output_dir.resolve()
         for folder in (source._output_dir, source_result.output_dir):
             if folder is None:
                 continue
-            other = Path(folder).resolve()
-            if resolved == other:
-                relation = "is"
-            elif resolved.is_relative_to(other):
-                relation = "is inside"
-            elif other.is_relative_to(resolved):
-                relation = "contains"
-            else:
+            relation = _folder_relation(output_dir, Path(folder))
+            if relation is None:
                 continue
             raise ValueError(
                 f"The output directory {output_dir} of this {name} {relation} "
@@ -2619,8 +2652,9 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             self._port_lists(),
             source_name=source_name,
             receiver_name=name,
+            take_geometry_back=self._mesh_reused,
         )
-        port_configs = [cfg for cfgs in ports.values() for cfg in cfgs]
+        port_configs = _all_ports(ports)
 
         # 2. Independent copies of every mesh input, in locals
         component = source.component
@@ -2657,7 +2691,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             )
         current = mesh_inputs_fingerprint(
             component=None if geometry is None else geometry.component,
-            stack=resolve_layer_stack(stack, stack_kwargs, materials),
+            stack=_resolve_layer_stack(stack, stack_kwargs, materials),
             airbox_config=airbox_config or {},
             pec_blocks=pec_blocks,
             symmetry_planes=symmetry_planes,
@@ -2762,7 +2796,9 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
                 "geometry, stack, airbox, PEC, symmetry or Port geometry changes. "
                 "Undo the change, call mesh() to mesh this simulation from its "
                 "current state, or call reuse_mesh(source) again to take the "
-                "source's inputs back. Port settings and solver settings can be "
+                "source's inputs back: every port gets the source's Port "
+                "geometry and keeps its Port settings, and ports the source "
+                "lacks are dropped. Port settings and solver settings can be "
                 "changed without a new mesh."
             )
 
@@ -2770,7 +2806,7 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
         sync_port_settings(
             self._last_ports,
             mesh_result.port_info,
-            [cfg for cfgs in self._port_lists().values() for cfg in cfgs],
+            _all_ports(self._port_lists()),
             simulation_type=self.simulation_type,
         )
 

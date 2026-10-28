@@ -6,7 +6,7 @@ import pytest
 
 from gsim.common.stack import LayerStack
 from gsim.palace import DrivenSim
-from gsim.palace.base import resolve_layer_stack
+from gsim.palace.base import _resolve_layer_stack
 from gsim.palace.models import MaterialConfig
 
 
@@ -51,7 +51,7 @@ def test_prebuilt_stack_gets_material_overrides_in_place(overrides):
     """F4: a prebuilt stack comes back as the same object, with overrides written in."""
     stack = _prebuilt_stack()
 
-    resolved = resolve_layer_stack(stack, {"_prebuilt": True}, overrides)
+    resolved = _resolve_layer_stack(stack, {"_prebuilt": True}, overrides)
 
     assert resolved is stack
     assert stack.materials == {
@@ -88,7 +88,7 @@ def test_pdk_stack_drops_air_and_leaves_kwargs_untouched(fake_get_stack, overrid
         "add_oxide_dielectric": True,
     }
 
-    resolved = resolve_layer_stack(None, stack_kwargs, overrides)
+    resolved = _resolve_layer_stack(None, stack_kwargs, overrides)
 
     assert stack_kwargs == {
         "yaml_path": "custom.yaml",
@@ -115,7 +115,7 @@ def test_pdk_stack_without_yaml_path_leaves_kwargs_untouched(fake_get_stack):
     """Kwargs without ``yaml_path`` gain no key and reach the builder as None."""
     stack_kwargs: dict = {}
 
-    resolve_layer_stack(None, stack_kwargs, {})
+    _resolve_layer_stack(None, stack_kwargs, {})
 
     assert stack_kwargs == {}
     assert fake_get_stack == [{"yaml_path": None}]

@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from unittest.mock import Mock
@@ -508,6 +509,41 @@ def test_refused_call_leaves_the_receiver_unchanged(
     assert _listing(receiver.output_dir) == listing
 
 
+def _case_blind_samefile(a, b) -> bool:
+    """``os.path.samefile`` as a case-insensitive file system answers it."""
+    return str(Path(a)).casefold() == str(Path(b)).casefold()
+
+
+@pytest.mark.parametrize(
+    ("folder", "match"),
+    [
+        (("OUTER", "EIGEN"), "is the output directory"),
+        (("OUTER", "EIGEN", "driven"), "is inside the output"),
+        (("OUTER",), "contains the output"),
+    ],
+    ids=["same", "inside", "contains"],
+)
+def test_reuse_refuses_the_source_folder_spelled_another_way(
+    folder, match, make_sim, fake_gmsh, monkeypatch, tmp_path
+) -> None:
+    """``./EIGEN`` is ``./eigen`` on macOS and Windows, though not equal paths."""
+    source = make_sim(EigenmodeSim, tmp_path / "outer" / "eigen")
+    source.mesh(verbose=False)
+    receiver = make_sim(DrivenSim, tmp_path / "driven")
+    receiver.mesh(verbose=False)
+    receiver.set_output_dir(tmp_path.joinpath(*folder))
+    fake_gmsh.allowed = False
+    before = _state(receiver)
+    source_listing = _listing(source.output_dir)
+    monkeypatch.setattr(os.path, "samefile", _case_blind_samefile)
+
+    with pytest.raises(ValueError, match=match):
+        receiver.reuse_mesh(source)
+
+    assert _state(receiver) == before
+    assert _listing(source.output_dir) == source_listing
+
+
 # ----- case 5: last call wins, chaining ----------------------------------------------
 
 
@@ -719,6 +755,85 @@ def test_port_merge_gives_an_empty_receiver_the_source_ports(
     assert (
         receiver._last_mesh_result.port_info == meshed_eigen._last_mesh_result.port_info
     )
+
+
+def test_reuse_again_takes_a_drifted_port_geometry_back_and_keeps_its_settings(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven", ports={})
+    receiver.reuse_mesh(meshed_eigen)
+    receiver.ports[1].excited = True
+    receiver.ports[1].impedance = 25.0
+    receiver.ports[1].length = 2.0
+    with pytest.raises(ValueError, match=re.escape("port 'o2' geometry")):
+        receiver.write_config(validate_mesh=False)
+
+    receiver.reuse_mesh(meshed_eigen)
+
+    o2 = receiver.ports[1]
+    assert (o2.name, o2.length, o2.excited, o2.impedance) == ("o2", 1.0, True, 25.0)
+    config = json.loads(receiver.write_config(validate_mesh=False).read_text())
+    assert _excitations(config) == [False, 2]
+    assert [p["R"] for p in config["Boundaries"]["LumpedPort"]] == [50.0, 25.0]
+    assert meshed_eigen.ports[1].length == 1.0
+
+
+def test_reuse_again_takes_the_port_kind_back_and_keeps_shared_settings(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven", ports={})
+    receiver.reuse_mesh(meshed_eigen)
+    receiver.ports = receiver.ports[:1]
+    receiver.add_cpw_port(
+        "o2", layer="m1", s_width=1.0, gap_width=1.0, impedance=30.0, excited=True
+    )
+
+    receiver.reuse_mesh(meshed_eigen)
+
+    # o2 is a lumped port again, as in the mesh, with the CPW port's settings
+    assert receiver.cpw_ports == []
+    o2 = receiver.ports[1]
+    assert o2.model_dump() == {
+        **meshed_eigen.ports[1].model_dump(),
+        "excited": True,
+        "impedance": 30.0,
+    }
+    config = json.loads(receiver.write_config(validate_mesh=False).read_text())
+    assert _excitations(config) == [False, 2]
+
+
+def test_reuse_again_drops_a_port_added_after_reuse(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    fake_gmsh.allowed = False
+    receiver = make_sim(DrivenSim, tmp_path / "driven")
+    receiver.reuse_mesh(meshed_eigen)
+    receiver.add_port("o3", layer="m1", length=1.0)
+    with pytest.raises(ValueError, match=re.escape("port 'o3' (added)")):
+        receiver.write_config(validate_mesh=False)
+
+    receiver.reuse_mesh(meshed_eigen)
+
+    assert [p.name for p in receiver.ports] == ["o1", "o2"]
+    assert receiver.write_config(validate_mesh=False).is_file()
+
+
+def test_self_meshed_receiver_with_a_mismatching_port_is_still_refused(
+    meshed_eigen, make_sim, fake_gmsh, tmp_path
+) -> None:
+    receiver = make_sim(DrivenSim, tmp_path / "driven")
+    receiver.mesh(verbose=False)
+    receiver.ports[0].length = 2.0
+    fake_gmsh.allowed = False
+    before = _state(receiver)
+
+    with pytest.raises(ValueError, match=r"Port 'o1' .*does not match"):
+        receiver.reuse_mesh(meshed_eigen)
+
+    assert receiver._mesh_reused is False
+    assert _state(receiver) == before
 
 
 # ----- case 9: Port settings reach the config ----------------------------------------

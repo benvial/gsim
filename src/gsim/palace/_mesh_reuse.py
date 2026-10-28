@@ -4,12 +4,15 @@ A reused mesh fixes the kind and geometry of every port: the surfaces are in
 the mesh. What each simulation may still choose are the Port settings
 (excitation, impedance, R/L/C, wave-port mode solve).
 :func:`merge_port_declarations` combines the source's port declarations with
-the ones the receiver made itself, and :func:`sync_port_settings` writes the
-receiver's Port settings into its copy of the extracted ports.
+the ones the receiver made itself (or, on a receiver that already reuses a
+mesh, gives its ports the source's Port geometry back), and
+:func:`sync_port_settings` writes the receiver's Port settings into its copy of
+the extracted ports.
 """
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING, Any
 
 from gsim.palace._mesh_fingerprint import port_geometry
@@ -23,12 +26,44 @@ from gsim.palace.models.ports import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
+    from gsim.palace._mesh_fingerprint import PortDeclaration
     from gsim.palace.ports.config import PalacePort
-
-PortDeclaration = PortConfig | CPWPortConfig | WavePortConfig | TwoTerminalPortConfig
 
 # The port lists of a simulation, in the order the mesh inputs list them
 PORT_LISTS = ("ports", "cpw_ports", "wave_ports", "two_terminal_ports")
+
+# The fields of each port kind that port_geometry() reads, and the name; every
+# other field is a Port setting
+_GEOMETRY_FIELDS: dict[type, frozenset[str]] = {
+    PortConfig: frozenset(
+        ("name", "geometry", "layer", "from_layer", "to_layer", "length", "offset")
+    ),
+    CPWPortConfig: frozenset(
+        ("name", "geometry", "layer", "s_width", "gap_width", "length", "offset")
+    ),
+    WavePortConfig: frozenset(
+        ("name", "layer", "z_margin", "lateral_margin", "max_size")
+    ),
+    TwoTerminalPortConfig: frozenset(("plus_port", "minus_port", "layer")),
+}
+
+
+def _port_settings(cfg: PortDeclaration) -> set[str]:
+    """The names of the Port settings of a port declaration."""
+    return set(type(cfg).model_fields) - _GEOMETRY_FIELDS[type(cfg)]
+
+
+def _with_settings_of(cfg: PortDeclaration, own: PortDeclaration) -> PortDeclaration:
+    """A copy of ``cfg`` that takes the Port settings ``own`` shares with it.
+
+    The kind and geometry are the ones of ``cfg``. A setting the two kinds do
+    not share keeps the value of ``cfg``.
+    """
+    shared = _port_settings(cfg) & _port_settings(own)
+    return cfg.model_copy(
+        deep=True,
+        update={field: copy.deepcopy(getattr(own, field)) for field in shared},
+    )
 
 
 def merge_port_declarations(
@@ -37,6 +72,7 @@ def merge_port_declarations(
     *,
     source_name: str,
     receiver_name: str,
+    take_geometry_back: bool = False,
 ) -> dict[str, list[PortDeclaration]]:
     """Merge the receiver's port declarations into the source's, by name.
 
@@ -45,6 +81,11 @@ def merge_port_declarations(
         receiver: The receiver's port lists, keyed the same way.
         source_name: Class name of the source, for the messages.
         receiver_name: Class name of the receiver, for the messages.
+        take_geometry_back: True when the receiver already holds a reused
+            mesh, so its ports came from a source. A receiver port with
+            another kind or geometry then becomes a copy of the source's
+            declaration with the receiver's Port settings, and a receiver
+            port the source lacks is dropped; nothing is refused.
 
     Returns:
         The receiver's new port lists, in the source's order. A port the
@@ -53,8 +94,9 @@ def merge_port_declarations(
         the source's declaration.
 
     Raises:
-        ValueError: If a receiver port has the name of a source port but
-            another kind or geometry, or if it has no source port at all.
+        ValueError: Unless ``take_geometry_back``: if a receiver port has the
+            name of a source port but another kind or geometry, or if it has
+            no source port at all.
     """
     declared: dict[str, list[PortDeclaration]] = {}
     for kind in PORT_LISTS:
@@ -69,7 +111,11 @@ def merge_port_declarations(
             match = None
             for own in declared.get(key, ()):
                 own_geometry = port_geometry(own)[1]
-                if own_geometry != geometry:
+                if own_geometry == geometry:
+                    match = own
+                elif take_geometry_back:
+                    match = _with_settings_of(cfg, own)
+                else:
                     raise ValueError(
                         f"Port '{key}' of this {receiver_name} does not match "
                         f"the reused mesh: it is declared as {own_geometry}, "
@@ -78,7 +124,6 @@ def merge_port_declarations(
                         "port. Declare the port with the source's geometry, or "
                         "call mesh() on this simulation instead."
                     )
-                match = own
             if match is None:
                 merged[kind].append(cfg.model_copy(deep=True))
             else:
@@ -88,7 +133,7 @@ def merge_port_declarations(
     extra = [
         key for key, cfgs in declared.items() for cfg in cfgs if id(cfg) not in kept
     ]
-    if extra:
+    if extra and not take_geometry_back:
         names = ", ".join(f"'{key}'" for key in extra)
         port, has, it = (
             ("Ports", "have", "them") if len(extra) > 1 else ("Port", "has", "it")
