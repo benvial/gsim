@@ -403,14 +403,15 @@ def make_magnetostatic_pair_sim(
 
     One current source per coil, ``A`` (``A_P1`` to ``A_P2``) and ``B``
     (``B_P1`` to ``B_P2``); the IHP stack without substrate; and an airbox
-    whose walls sit 100 um beside and 150 um above and below the coils, so
-    the outer wall biases the mutual inductance by well under 1 %. The
-    solver order and mesh sizes are left to the caller.
+    whose walls sit 100 um beside and 150 um above and below the coils. For
+    the side-by-side pair that outer wall biases the mutual inductance by
+    about 1.74 %: a PEC wall enlarges |M| by that much, a PMC wall shrinks it
+    by about as much. The solver order and mesh sizes are left to the caller.
 
     Args:
         output_dir: Simulation output directory.
         stacked: Use the stacked coaxial pair (k ~ 0.34) instead of the
-            side-by-side validation pair (k ~ -0.020 at the default pitch).
+            side-by-side validation pair (k ~ -0.0186 at the default pitch).
         pitch: Centre-to-centre distance of the side-by-side coils, in um.
         metallic_boundaries: PEC outer wall when True, PMC when False.
     """

@@ -27,7 +27,8 @@ if TYPE_CHECKING:
 
     from gsim.common.stack import LayerStack
     from gsim.palace.current_sources import ResolvedCurrentSource
-    from gsim.palace.mesh.nets import Nets
+    from gsim.palace.mesh.geometry import GeometryData
+    from gsim.palace.mesh.nets import Net, Nets
     from gsim.palace.ports.config import PalacePort
     from gsim.palace.results import PalaceTextResults, SParams
 
@@ -146,12 +147,17 @@ class MagnetostaticSim(_PalaceSimBase):
         )
 
     def _resolve_with_nets(
-        self, stack: LayerStack
+        self, stack: LayerStack, geometry: GeometryData | None = None
     ) -> tuple[list[ResolvedCurrentSource], Nets]:
         """The resolved sources, and the nets they were resolved on.
 
         The nets are built from all component ports, whatever their type, so
         that a source on optical ports finds its net too.
+
+        Args:
+            stack: The resolved layer stack.
+            geometry: The component's geometry extracted on ``stack``, when
+                the caller already has it; extracted here otherwise.
 
         Raises:
             ValueError: If no geometry has been set, or a source breaks a
@@ -164,9 +170,9 @@ class MagnetostaticSim(_PalaceSimBase):
         component = self.component
         if component is None:
             raise ValueError("No component set. Call set_geometry(component) first.")
-        nets = extract_nets(
-            extract_geometry(component, stack), stack, list(component.ports)
-        )
+        if geometry is None:
+            geometry = extract_geometry(component, stack)
+        nets = extract_nets(geometry, stack, list(component.ports))
         resolved = resolve_current_sources(self.current_sources, component, stack, nets)
         return resolved, nets
 
@@ -238,7 +244,10 @@ class MagnetostaticSim(_PalaceSimBase):
 
     def add_impedance_boundary(self, *_args: Any, **_kwargs: Any) -> None:
         """Palace ignores impedance boundaries in a magnetostatic solve; refused."""
-        raise self._no_ports("impedance boundaries")
+        raise ValueError(
+            "Impedance boundaries do not apply to a magnetostatic simulation: "
+            "Palace ignores them in a magnetostatic solve."
+        )
 
     # -------------------------------------------------------------------------
     # Magnetostatic configuration
@@ -259,9 +268,9 @@ class MagnetostaticSim(_PalaceSimBase):
         """Validate the magnetostatic simulation configuration.
 
         Errors: no current source, a source that does not resolve (see
-        :meth:`resolve_current_sources`), an absorbing outer wall, impedance
-        boundaries, a direct linear solver (``solver_type`` other than
-        ``"Default"``), or the BoomerAMG preconditioner.
+        :meth:`resolve_current_sources`), an absorbing outer wall, a direct
+        linear solver (``solver_type`` other than ``"Default"``), or the
+        BoomerAMG preconditioner.
 
         Warnings: no airbox, or an airbox extent smaller than the larger side
         of the meshed conductors (the layout on the stack's layers, which
@@ -271,29 +280,43 @@ class MagnetostaticSim(_PalaceSimBase):
         Returns:
             ValidationResult with validation status and messages
         """
+        from gsim.palace.mesh.geometry import extract_geometry
+
         base = super().validate_config()
         errors = list(base.errors)
         warnings = list(base.warnings)
+
+        # The geometry is extracted once, for the sources, the screening
+        # warning and the airbox warning.
+        component = self.component
+        extracted: tuple[LayerStack, GeometryData] | ValueError | OSError | None = None
+        if component is not None:
+            try:
+                stack = self._resolve_stack()
+                extracted = (stack, extract_geometry(component, stack))
+            except (ValueError, OSError) as error:
+                extracted = error
 
         if not self.current_sources:
             errors.append(
                 "No current source. Add one per conductor loop with "
                 "add_current_source(name, plus_port=..., minus_port=...)."
             )
-        elif self.geometry is not None:
+        elif isinstance(extracted, OSError):
+            raise extracted
+        elif isinstance(extracted, ValueError):
+            errors.append(str(extracted))
+        elif extracted is not None:
+            stack, geometry = extracted
             try:
-                resolved, nets = self._resolve_with_nets(self._resolve_stack())
+                resolved, nets = self._resolve_with_nets(stack, geometry)
             except ValueError as error:
                 errors.append(str(error))
             else:
-                # Named as nets() names them: the nets above also take
-                # non-electrical ports, which only changes their names.
                 driven = {source.net for source in resolved}
-                screening = [
-                    named.name
-                    for net, named in zip(nets, self.nets(), strict=True)
-                    if net.name not in driven
-                ]
+                screening = self._screening_names(
+                    [net for net in nets if net.name not in driven], geometry, stack
+                )
                 if screening:
                     warnings.append(
                         f"Conductors {screening} carry no current source. They "
@@ -309,12 +332,6 @@ class MagnetostaticSim(_PalaceSimBase):
                 "Choose the outer wall with metallic_boundaries (True: PEC, "
                 "False: PMC)."
             )
-        if self._impedance_boundaries:
-            errors.append(
-                "Impedance boundaries are not supported: Palace ignores them "
-                "in a magnetostatic solve."
-            )
-
         linear = self.solver.linear
         if linear.solver_type != "Default":
             errors.append(
@@ -328,10 +345,25 @@ class MagnetostaticSim(_PalaceSimBase):
                 "the magnetostatic curl-curl operator. Use 'AMS' (or 'Default')."
             )
 
-        warnings.extend(self._airbox_warnings())
+        geometry = extracted[1] if isinstance(extracted, tuple) else None
+        warnings.extend(self._airbox_warnings(geometry))
         return ValidationResult(valid=not errors, errors=errors, warnings=warnings)
 
-    def _airbox_warnings(self) -> list[str]:
+    def _screening_names(
+        self, screening: list[Net], geometry: GeometryData, stack: LayerStack
+    ) -> list[str]:
+        """Name the nets that carry no source as :meth:`nets` names them.
+
+        The nets the sources resolve on also take non-electrical ports, which
+        only changes their names; a net is matched by its shapes, and keeps
+        its all-port name when :meth:`nets` has no net with the same shapes.
+        """
+        named = {
+            net.members: net.name for net in self._electrical_nets(geometry, stack)
+        }
+        return [named.get(net.members, net.name) for net in screening]
+
+    def _airbox_warnings(self, geometry: GeometryData | None) -> list[str]:
         """Warn when the outer wall is close enough to bias the inductance."""
         recipe = "set_airbox(margin_x=100, margin_y=100, z_above=150, z_below=150)"
         airbox = self._airbox_config
@@ -340,7 +372,7 @@ class MagnetostaticSim(_PalaceSimBase):
                 "No airbox: the outer wall sits on the stack and biases the "
                 f"inductance. Add room around the coils, e.g. {recipe}."
             ]
-        size = self._conductor_size()
+        size = self._conductor_size(geometry)
         if size is None:
             return []
         extents = {
@@ -357,24 +389,21 @@ class MagnetostaticSim(_PalaceSimBase):
             "of um across."
         ]
 
-    def _conductor_size(self) -> float | None:
+    def _conductor_size(self, geometry: GeometryData | None) -> float | None:
         """The larger lateral side of the meshed conductors, in um.
 
         This is the box that ``mesh()`` pads with the airbox margins, so
         marker layers outside the stack do not count. Falls back on the
-        component bounding box when the stack does not resolve or holds none
-        of the component's layers; ``None`` without a component.
+        component bounding box when the geometry could not be extracted
+        (``geometry`` is None) or holds none of the stack's layers; ``None``
+        without a component.
         """
-        from gsim.palace.mesh.geometry import extract_geometry
-
         component = self.component
         if component is None:
             return None
-        try:
-            xmin, ymin, xmax, ymax = extract_geometry(
-                component, self._resolve_stack()
-            ).bbox
-        except (ValueError, OSError):
+        if geometry is not None:
+            xmin, ymin, xmax, ymax = geometry.bbox
+        else:
             xmin, ymin, xmax, ymax = (math.inf, math.inf, -math.inf, -math.inf)
         if xmax >= xmin and ymax >= ymin:
             return max(xmax - xmin, ymax - ymin)
@@ -385,7 +414,16 @@ class MagnetostaticSim(_PalaceSimBase):
     # -------------------------------------------------------------------------
 
     def run_local(
-        self, *, log_path: str | Path | None = None, **kwargs: Any
+        self,
+        *,
+        palace_sif_path: str | Path | None = None,
+        palace_executable: str | Path | None = None,
+        use_apptainer: bool = False,
+        num_processes: int | None = None,
+        num_threads: int | None = None,
+        verbose: bool = True,
+        remedy: str | None = None,
+        log_path: str | Path | None = None,
     ) -> SParams | PalaceTextResults | dict[str, Path]:
         """Run Palace locally and keep its log with the results.
 
@@ -395,12 +433,20 @@ class MagnetostaticSim(_PalaceSimBase):
         default, where :meth:`load_inductance` checks it.
 
         Args:
+            palace_sif_path: Palace Apptainer SIF file; see
+                :meth:`gsim.palace.base.PalaceSimMixin.run_local`.
+            palace_executable: Palace executable; overrides ``use_apptainer``.
+            use_apptainer: Run Palace through Apptainer.
+            num_processes: Number of MPI processes; a size-aware default when
+                None.
+            num_threads: Number of OpenMP threads.
+            verbose: Print progress and stream Palace's output.
+            remedy: A second way out of a dead Palace runtime, named in the
+                abort report.
             log_path: File for Palace's output. Defaults to ``palace.log`` in
                 the Palace output directory. A file elsewhere is not among the
                 returned results, so :meth:`load_inductance` then warns that
                 convergence was not checked.
-            **kwargs: What :meth:`gsim.palace.base.PalaceSimMixin.run_local`
-                takes (``palace_executable``, ``verbose``, ...).
 
         Returns:
             The parsed text results, as ``PalaceSimMixin.run_local`` returns
@@ -411,7 +457,16 @@ class MagnetostaticSim(_PalaceSimBase):
         """
         if log_path is None:
             log_path = self._postpro_dir() / "palace.log"
-        return super().run_local(log_path=log_path, **kwargs)
+        return super().run_local(
+            palace_sif_path=palace_sif_path,
+            palace_executable=palace_executable,
+            use_apptainer=use_apptainer,
+            num_processes=num_processes,
+            num_threads=num_threads,
+            verbose=verbose,
+            remedy=remedy,
+            log_path=log_path,
+        )
 
     def load_inductance(
         self,

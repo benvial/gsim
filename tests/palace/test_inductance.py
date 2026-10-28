@@ -83,6 +83,7 @@ CHECKS = {
     "coupling": "coupling coefficient above 1",
     "inverse": "does not invert",
     "stored energy": "stored energy does not match",
+    "zero current": "zero excitation current",
 }
 
 
@@ -102,6 +103,10 @@ CHECKS = {
         (lambda: _rings_scaled("stored_energy", np.array([1.0, 1.2])), "stored energy"),
         (lambda: _rings_with(m01=np.nan), "not finite"),
         (lambda: _rings_with(m11=0.0), "self inductance"),
+        (
+            lambda: _rings_scaled("excitation_current", np.array([1.0, 0.0])),
+            "zero current",
+        ),
     ],
     ids=[
         "asymmetric",
@@ -111,6 +116,7 @@ CHECKS = {
         "bad-energy",
         "nan",
         "no-self-inductance",
+        "zero-current",
     ],
 )
 def test_each_broken_matrix_trips_exactly_its_check(broken, check) -> None:
@@ -317,16 +323,18 @@ def test_a_converged_run_loads_silently(tmp_path) -> None:
 def test_a_run_without_its_log_loads_with_a_warning(tmp_path) -> None:
     run = _copy(tmp_path)
     (run / "palace.log").unlink()
-    with pytest.warns(UserWarning, match="convergence not checked"):
+    with pytest.warns(UserWarning, match="convergence not checked") as record:
         rings = load_inductance(run)
     assert rings.matrix.shape == (2, 2)
+    assert [w.filename for w in record] == [__file__]  # points at this call
 
 
 def test_a_log_without_solver_messages_loads_with_a_warning(tmp_path) -> None:
     run = _copy(tmp_path)
     (run / "palace.log").write_text("Git changeset ID: v0.18.1\n", encoding="utf-8")
-    with pytest.warns(UserWarning, match="convergence not confirmed"):
+    with pytest.warns(UserWarning, match="convergence not confirmed") as record:
         load_inductance(run)
+    assert [w.filename for w in record] == [__file__]
 
 
 def test_the_convergence_check_can_be_skipped(tmp_path) -> None:

@@ -546,20 +546,29 @@ def _check_symmetry_config(symmetry: dict, boundaries: dict) -> list[str]:
     return errors
 
 
-def _check_source_contact(boundaries: dict, mesh_path: Path) -> list[str]:
-    """Check that the config has current sources and each one touches PEC."""
+def _check_source_contact(
+    boundaries: dict, mesh_path: Path
+) -> tuple[list[str], list[str]]:
+    """Check that the config has current sources and each one touches PEC.
+
+    Returns:
+        The errors, and the warnings: without the mesh file the contact of
+        the sheets is not checked, and a warning says so.
+    """
     if not boundaries.get("SurfaceCurrent"):
-        return ["config.json has no SurfaceCurrent entries."]
+        return ["config.json has no SurfaceCurrent entries."], []
     if not mesh_path.exists():
-        return []
+        return [], [
+            f"Current-source contact with PEC not checked: {mesh_path} does not exist."
+        ]
     try:
         _sheet_contacts(boundaries, mesh_path)
     except ValueError as e:
         return [
             f"{e}. A current-source sheet must end on PEC at both edges to "
             "close its loop; check that the source's leads survive meshing."
-        ]
-    return []
+        ], []
+    return [], []
 
 
 def validate_mesh(sim) -> ValidationResult:
@@ -673,9 +682,11 @@ def validate_mesh(sim) -> ValidationResult:
                 ):
                     errors.append("config.json has no LumpedPort nor Waveport entries.")
                 if sim.simulation_type == "magnetostatic":
-                    errors.extend(
-                        _check_source_contact(boundaries, mesh_result.mesh_path)
+                    contact_errors, contact_warnings = _check_source_contact(
+                        boundaries, mesh_result.mesh_path
                     )
+                    errors.extend(contact_errors)
+                    warnings_list.extend(contact_warnings)
                 if symmetry:
                     errors.extend(_check_symmetry_config(symmetry, boundaries))
             except json.JSONDecodeError as e:

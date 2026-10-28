@@ -47,6 +47,7 @@ from gsim.palace.solver_settings import SolverSettingsMixin
 if TYPE_CHECKING:
     from gdsfactory.component import Component
 
+    from gsim.palace.mesh.geometry import GeometryData
     from gsim.palace.mesh.nets import Nets
     from gsim.palace.ports.config import PalacePort
     from gsim.palace.results import PalaceTextResults, SParams
@@ -988,15 +989,25 @@ class PalaceSimMixin(CloudJobMixin, SolverSettingsMixin):
             >>> print(sim.nets())
         """
         from gsim.palace.mesh.geometry import extract_geometry
-        from gsim.palace.mesh.nets import extract_nets
 
         component = self.component
         if component is None:
             msg = "No component set. Call set_geometry(component) first."
             raise ValueError(msg)
         stack = self._resolve_stack()
-        ports = [port for port in component.ports if port.port_type == "electrical"]
-        return extract_nets(extract_geometry(component, stack), stack, ports)
+        return self._electrical_nets(extract_geometry(component, stack), stack)
+
+    def _electrical_nets(self, geometry: GeometryData, stack: LayerStack) -> Nets:
+        """The nets of extracted geometry, named by the electrical ports."""
+        from gsim.palace.mesh.nets import extract_nets
+
+        component = self.component
+        ports = [
+            port
+            for port in (component.ports if component is not None else [])
+            if port.port_type == "electrical"
+        ]
+        return extract_nets(geometry, stack, ports)
 
     def _build_mesh_config(
         self,

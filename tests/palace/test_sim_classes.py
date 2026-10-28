@@ -6,6 +6,7 @@ the ``gsim.palace.runtime`` binary resolver (``resolve_palace_binary`` etc.).
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 import warnings
@@ -22,7 +23,7 @@ from gsim.palace import (
     ElectrostaticSim,
     MagnetostaticSim,
 )
-from gsim.palace.models import ImpedanceBoundaryConfig, MeshConfig
+from gsim.palace.models import MeshConfig
 
 
 class TestDrivenSimValidation:
@@ -326,7 +327,6 @@ class TestMagnetostaticSim:
             ("add_wave_port", "wave ports"),
             ("add_two_terminal_port", "two-terminal ports"),
             ("add_terminal", "terminals"),
-            ("add_impedance_boundary", "impedance boundaries"),
         ],
     )
     def test_port_like_declarations_point_to_current_sources(self, method, kind):
@@ -365,14 +365,11 @@ class TestMagnetostaticSim:
             for e in result.errors
         )
 
-    def test_impedance_boundaries_are_an_error(self):
-        sim = _loop_sim()
-        sim.add_current_source("L", plus_port="P", minus_port="M")
-        sim._impedance_boundaries.append(
-            ImpedanceBoundaryConfig(attributes=[1], inductance=1e-12)
-        )
-        result = sim.validate_config()
-        assert any("Impedance boundaries" in e for e in result.errors)
+    def test_impedance_boundaries_are_refused(self):
+        with pytest.raises(
+            ValueError, match=r"do not apply to a magnetostatic.*Palace ignores"
+        ):
+            MagnetostaticSim().add_impedance_boundary("P1", inductance=1e-12)
 
     @pytest.mark.parametrize("solver_type", ["MUMPS", "SuperLU", "STRUMPACK"])
     def test_a_direct_solver_is_an_error(self, solver_type):
@@ -447,6 +444,22 @@ class TestMagnetostaticSim:
         coil, island = names
         assert repr(island) in warning
         assert repr(coil) not in warning
+
+    def test_the_screen_warning_survives_nets_that_do_not_pair_up(self, monkeypatch):
+        """A net nets() does not list keeps its name from all the ports."""
+        sim = _loop_sim(island=True)
+        sim.add_current_source("L", plus_port="P", minus_port="M")
+        electrical_nets = MagnetostaticSim._electrical_nets
+
+        def without_the_island(self, geometry, stack):
+            nets = electrical_nets(self, geometry, stack)
+            return dataclasses.replace(nets, nets=nets.nets[:1])
+
+        monkeypatch.setattr(MagnetostaticSim, "_electrical_nets", without_the_island)
+        result = sim.validate_config()
+        assert result.valid, result.errors
+        (warning,) = result.warnings
+        assert "Conductors ['net2'] carry no current source" in warning
 
 
 class TestModePaths:

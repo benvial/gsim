@@ -148,7 +148,8 @@ class InductanceMatrix:
         positive; the matrix is reciprocal; the magnetic energy is not negative
         for any set of currents; no coupling coefficient exceeds 1 in
         magnitude; and, when Palace wrote them, the inverse inverts the matrix
-        and each excitation's stored energy is ``1/2 M_ii I_i**2``. The first
+        and each excitation's stored energy is ``1/2 M_ii I_i**2``, which
+        needs a nonzero excitation current for every source. The first
         two stop the checks, since the others are meaningless without them.
         A coupling above 1 is the visible sign of a negative energy, so the
         energy is only reported when every coupling is within bounds.
@@ -222,8 +223,16 @@ class InductanceMatrix:
                     f"max |M M^-1 - I| = {error:.3g}"
                 )
 
-        if self.excitation_current is not None and self.stored_energy is not None:
-            expected = 0.5 * diagonal * self.excitation_current**2
+        currents = self.excitation_current
+        if currents is not None and (currents == 0).any():
+            name = self.sources[int(np.flatnonzero(currents == 0)[0])]
+            found.append(
+                f"source {name!r} has a zero excitation current, so its stored "
+                f"energy cannot be checked against 1/2 M_ii I_i^2; Palace drives "
+                f"every source with a nonzero current"
+            )
+        elif currents is not None and self.stored_energy is not None:
+            expected = 0.5 * diagonal * currents**2
             error = np.abs(self.stored_energy - expected) / expected
             if error.max() > rtol:
                 name = self.sources[int(error.argmax())]
@@ -324,6 +333,14 @@ def load_inductance(
     )
 
 
+# Frames the convergence warnings skip, so that they point at the user's call
+# whether it went through load_inductance() or MagnetostaticSim.load_inductance().
+# Path prefixes without ".py": CPython 3.12 does not skip a frame whose file
+# name equals a prefix exactly.
+_GSIM_CALLERS = tuple(
+    str(Path(__file__).with_name(module)) for module in ("inductance", "magnetostatic")
+)
+
 _SOURCE_INDEX = re.compile(r"Current Index = (\d+)|for port (\d+)")
 
 
@@ -343,7 +360,7 @@ def _check_convergence(
             f"convergence not checked: no palace.log in {where}, so a solve "
             f"that did not converge cannot be told from a good one",
             UserWarning,
-            stacklevel=3,
+            skip_file_prefixes=_GSIM_CALLERS,
         )
         return
     log = log_path.read_text(encoding="utf-8", errors="replace")
@@ -353,7 +370,7 @@ def _check_convergence(
             f"convergence not confirmed: {log_path} has no solver message gsim "
             f"recognizes",
             UserWarning,
-            stacklevel=3,
+            skip_file_prefixes=_GSIM_CALLERS,
         )
     if core.status != "failed":
         return
