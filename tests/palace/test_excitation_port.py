@@ -24,6 +24,7 @@ from gsim.palace.mesh.generator import MeshResult
 from gsim.palace.mesh.metadata import update_field_dofs, write_metadata
 from gsim.palace.models import DrivenConfig, EigenmodeConfig
 from gsim.palace.ports.config import PalacePort, PortType
+from gsim.palace.ports.modes import read_port_modes
 from tests._electrode_layouts import stack as generic_stack
 
 # Config-level: o1 of the given kind, o2 always a lumped port on m1.
@@ -37,7 +38,7 @@ def _first_port(kind: str) -> tuple[PalacePort, dict]:
             "phys_group": 10,
             "type": "lumped",
         }
-    if kind == "wave":
+    if kind in ("wave", "multimode"):
         return PalacePort(name="o1", port_type=PortType.WAVEPORT, layer="m1"), {
             "phys_group": 10,
         }
@@ -63,6 +64,9 @@ def _generate(
 ) -> tuple[dict, list[PalacePort]]:
     """Write the config of ports o1 (``kind``) and o2 (lumped), both excited."""
     first, first_group = _first_port(kind)
+    if kind == "multimode":
+        first.modes = (1, 2)
+        first.excite_modes = "all"
     ports = [first, PalacePort(name="o2", layer="m1", length=1.0)]
     groups = {
         "volumes": {"airbox": {"phys_group": 1}},
@@ -113,6 +117,30 @@ def test_excitation_port_excites_only_the_named_port(
     assert _excited_indices(config) == expected
     # The ports passed in keep the flags they were declared with.
     assert [p.excited for p in ports] == [True, True]
+
+
+@pytest.mark.parametrize(
+    ("excitation_port", "expected"),
+    [("o1", [1, 3]), ("o2", [2]), (None, [1, 2, 3])],
+)
+def test_excitation_port_on_a_multimode_port(tmp_path, excitation_port, expected):
+    """Every excited mode of a multimode o1 follows ``excitation_port``.
+
+    o1 follows modes 1 and 2 with ``excite_modes="all"``: mode 1 keeps
+    index 1, mode 2 becomes index 3, after both ports.
+    """
+    config, _ = _generate(tmp_path, "multimode", excitation_port)
+    assert _excited_indices(config) == expected
+    rows = read_port_modes(tmp_path)
+    assert sorted(row.index for row in rows if row.excited) == [
+        i for i in expected if i != 2
+    ]
+
+
+def test_unknown_excitation_port_fails_in_the_config(tmp_path):
+    """A name that is no port is refused instead of exciting nothing."""
+    with pytest.raises(ValueError, match="Excitation port 'nope' not found"):
+        _generate(tmp_path, "lumped", "nope")
 
 
 def test_eigenmode_config_writes_no_excitation(tmp_path):

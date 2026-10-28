@@ -392,13 +392,20 @@ def _apply_excitation(
         driven_config: The driven settings, if any.
 
     Returns:
-        One copy per port, in the same order.
+        One copy per port, in the same order (the ports themselves when the
+        flags are kept).
+
+    Raises:
+        ValueError: If ``excitation_port`` names none of the ports.
     """
     if simulation_type != "driven":
         return [replace(port, excited=False) for port in ports]
     name = driven_config.excitation_port if driven_config is not None else None
     if name is None:
-        return [replace(port) for port in ports]
+        return list(ports)
+    names = [port.name for port in ports]
+    if name not in names:
+        raise ValueError(f"Excitation port '{name}' not found. Available: {names}")
     return [replace(port, excited=port.name == name) for port in ports]
 
 
