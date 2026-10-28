@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -371,6 +372,41 @@ def _multimode_entries(
             )
             next_index += 1
     return sorted([*rows, *extras], key=lambda row: row.index)
+
+
+def _apply_excitation(
+    ports: list[PalacePort],
+    simulation_type: str,
+    driven_config: DrivenConfig | None,
+) -> list[PalacePort]:
+    """Return copies of ``ports`` carrying the excitation the config writes.
+
+    Only driven simulations excite ports. When ``driven_config`` names an
+    ``excitation_port``, exactly that port is excited; otherwise each port
+    keeps its own ``excited`` flag. The given ports are not changed, so the
+    flags the user declared survive for the next ``write_config``.
+
+    Args:
+        ports: Every port of the simulation.
+        simulation_type: The Palace problem type.
+        driven_config: The driven settings, if any.
+
+    Returns:
+        One copy per port, in the same order (the ports themselves when the
+        flags are kept).
+
+    Raises:
+        ValueError: If ``excitation_port`` names none of the ports.
+    """
+    if simulation_type != "driven":
+        return [replace(port, excited=False) for port in ports]
+    name = driven_config.excitation_port if driven_config is not None else None
+    if name is None:
+        return list(ports)
+    names = [port.name for port in ports]
+    if name not in names:
+        raise ValueError(f"Excitation port '{name}' not found. Available: {names}")
+    return [replace(port, excited=port.name == name) for port in ports]
 
 
 # Without AMR nothing reads the indicator precisely, so a loose tolerance is
@@ -831,9 +867,8 @@ def generate_palace_config(
         multimode: list[tuple[int, PalacePort, int]] = []
         port_idx = 1
 
+        ports = _apply_excitation(ports, simulation_type, driven_config)
         for port in ports:
-            if simulation_type != "driven":
-                port.excited = False
             port_key = f"P{port_idx}"
             if port_key in groups["port_surfaces"]:
                 port_group = groups["port_surfaces"][port_key]
