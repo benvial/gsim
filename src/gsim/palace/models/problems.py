@@ -47,7 +47,9 @@ class DrivenConfig(BaseModel):
         compute_s_params: Whether to compute S-parameters.
         reference_impedance: Reference impedance for S-parameter normalization
             in Ohms. Standard is 50 Ohm.
-        excitation_port: Name of port to excite. None = first port.
+        excitation_port: Name of the one port to excite; every other port
+            is only terminated. A two-terminal port is named by its
+            ``plus_port``. None keeps each port's own ``excited`` flag.
         waveport_boundary: ``"pec"`` replaces Robin boundaries by PEC in the
             numeric port eigenproblem (default). ``"inherit"`` retains their
             physical conductivity, impedance and absorbing conditions.
@@ -101,7 +103,8 @@ class DrivenConfig(BaseModel):
     )
 
     excitation_port: str | None = Field(
-        default=None, description="Port to excite (None = first port)"
+        default=None,
+        description="The one port to excite (None = each port's excited flag)",
     )
 
     waveport_boundary: Literal["pec", "inherit"] = Field(

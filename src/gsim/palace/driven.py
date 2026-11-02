@@ -177,7 +177,9 @@ class DrivenSim(_PalaceSimBase):
                 Requires Palace >= 0.17 (local runtime default is >= 0.18).
             compute_s_params: Compute S-parameters
             reference_impedance: Reference impedance for S-params (Ohms)
-            excitation_port: Port to excite (None = first port)
+            excitation_port: Name of the one port to excite; the others
+                are only terminated. None keeps each port's ``excited``
+                flag.
             waveport_boundary: Numeric port boundary policy: ``"pec"``
                 (default) approximates conductivity, impedance and absorbing
                 boundaries as PEC in the port eigenproblem; ``"inherit"``
