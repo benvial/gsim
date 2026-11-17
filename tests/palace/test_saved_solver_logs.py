@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from gsim.palace import ElectrostaticSim
+from gsim.palace import ElectrostaticSim, runtime
 from gsim.palace.runtime import PalaceLaunch, run_palace
 
 
@@ -47,6 +47,46 @@ def test_saved_log_preserves_utf8_solver_output(tmp_path: Path) -> None:
     run_palace(launch, cwd=tmp_path, num_processes=1, verbose=False, log_path=target)
 
     assert target.read_bytes() == "\u03c9/2\u03c0 k\u2099\n".encode()
+
+
+def test_unwritable_log_destination_is_not_reported_as_a_missing_executable(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "solver.py"
+    script.write_text("print('field solve')\n")
+    launch = PalaceLaunch((sys.executable, str(script)), dict(os.environ))
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("")
+
+    with pytest.raises(OSError) as error:
+        run_palace(
+            launch,
+            cwd=tmp_path,
+            num_processes=1,
+            verbose=False,
+            log_path=blocker / "solver.log",
+        )
+
+    assert "Palace executable not found" not in str(error.value)
+
+
+def test_failure_report_keeps_only_the_output_tail(tmp_path: Path) -> None:
+    script = tmp_path / "solver.py"
+    script.write_text(
+        "import sys\nfor i in range(500):\n    print(f'line {i}')\nsys.exit(3)\n"
+    )
+    launch = PalaceLaunch((sys.executable, str(script)), dict(os.environ))
+    target = tmp_path / "solver.log"
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        run_palace(
+            launch, cwd=tmp_path, num_processes=1, verbose=False, log_path=target
+        )
+
+    tail = error.value.stderr.splitlines()
+    assert len(tail) == runtime._FAILURE_OUTPUT_TAIL_LINES
+    assert tail[-1] == "line 499"
+    assert len(target.read_text().splitlines()) == 500
 
 
 @pytest.mark.parametrize("initial_guess", [None, False, True])

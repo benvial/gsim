@@ -1,5 +1,7 @@
 """Separate static field convergence from auxiliary error-estimator solves."""
 
+from pathlib import Path
+
 import pytest
 
 from gsim.palace.results import load_static_solver_metrics
@@ -30,7 +32,12 @@ def test_metrics_preserve_indices_and_exclude_estimator():
     assert metrics[0]["initial_residual"] == 300
     assert metrics[0]["final_residual"] == 1.5e-7
     assert metrics[1]["relative_residual"] == pytest.approx(8e-10)
-    assert load_static_solver_metrics("GMRES solver converged in 1 iteration") == []
+
+
+@pytest.mark.parametrize("log", ["", "GMRES solver converged in 1 iteration"])
+def test_log_without_indexed_electrostatic_solve_is_rejected(log):
+    with pytest.raises(ValueError, match="No indexed electrostatic solve"):
+        load_static_solver_metrics(log)
 
 
 @pytest.mark.parametrize(
@@ -107,3 +114,21 @@ def test_magnetostatic_excitations_are_reported_as_unsupported():
     )
     with pytest.raises(ValueError, match="Magnetostatic"):
         load_static_solver_metrics(log)
+
+
+def test_recorded_palace_electrostatic_log_is_parsed():
+    # Excerpt of a real Palace v0.19.0 run of a gsim-built config; see the
+    # fixture README for provenance.
+    log = (
+        Path(__file__).parent / "fixtures/validation/electrostatic-residual-monitor.txt"
+    ).read_text(encoding="utf-8")
+
+    metrics = load_static_solver_metrics(log)
+
+    assert [item["index"] for item in metrics] == [1, 2]
+    assert [item["iterations"] for item in metrics] == [6, 6]
+    assert metrics[0]["initial_residual"] == pytest.approx(1.873140e01)
+    assert metrics[0]["final_residual"] == pytest.approx(2.192893e-06)
+    assert metrics[1]["initial_residual"] == pytest.approx(2.098916e01)
+    assert metrics[1]["final_residual"] == pytest.approx(4.520333e-06)
+    assert metrics[1]["relative_residual"] == pytest.approx(4.520333e-06 / 2.098916e01)

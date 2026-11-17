@@ -372,7 +372,8 @@ metrics = load_static_solver_metrics(Path("run/solver.log").read_text())
 `log_path` is resolved against the current working directory, not the simulation
 directory, and the file is written as UTF-8. The parser reads electrostatic
 logs; magnetostatic excitations are rejected
-because their estimator solves have no separating marker. The log needs Palace's
+because their estimator solves have no separating marker, and a log with no
+indexed electrostatic solve raises `ValueError` instead of returning an empty list. The log needs Palace's
 per-iteration residual output, which `Problem.Verbose = 3` in the generated
 config provides. Each metric contains
 the terminal index, initial and final residual norms, their ratio, and the

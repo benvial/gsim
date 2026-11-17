@@ -75,14 +75,15 @@ def load_static_solver_metrics(log: str) -> list[StaticSolverMetrics]:
         log: Complete verbose log containing indexed static excitations.
 
     Returns:
-        Metrics in log order, including repeated indices. Logs without indexed
-        electrostatic excitations return an empty list.
+        Metrics in log order, including repeated indices.
 
     Raises:
         ValueError: An indexed field solve is incomplete, failed, ambiguous, or
             lacks finite residuals with a positive initial norm. A solve that
             converges at iteration 0 has no initial-to-final pair and is
-            rejected. Magnetostatic excitations are reported as unsupported.
+            rejected. A log without any indexed electrostatic excitation is
+            rejected, so a wrong or truncated log cannot pass as converged.
+            Magnetostatic excitations are reported as unsupported.
     """
     lines = clean_lines(log)
     if any(
@@ -95,6 +96,10 @@ def load_static_solver_metrics(log: str) -> list[StaticSolverMetrics]:
         "\n".join(lines) + "\n",
         flags=re.MULTILINE,
     )
+    if len(blocks) < 3:
+        raise ValueError(
+            "No indexed electrostatic solve ('It n/N: Index = ...') in the log"
+        )
     metrics = []
     for index, block in zip(blocks[1::2], blocks[2::2], strict=True):
         field_log = block.split("Updating solution error estimates")[0]

@@ -45,6 +45,7 @@ import signal
 import stat
 import subprocess
 import tempfile
+from collections import deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -826,6 +827,20 @@ def _log_runtime(found: PalaceRuntime) -> None:
             logger.info(version.stdout.strip())
 
 
+def _launcher_not_found(launch: PalaceLaunch) -> RuntimeError:
+    """Explain a launcher that could not be started."""
+    if launch.apptainer:
+        return RuntimeError(
+            "Apptainer not found. Install Apptainer to run local simulations "
+            "with use_apptainer=True."
+        )
+    return RuntimeError(
+        "Palace executable not found. Install Palace directly or provide "
+        "correct path via palace_executable parameter, "
+        "or set PALACE_EXECUTABLE environment variable."
+    )
+
+
 def run_palace(
     launch: PalaceLaunch,
     *,
@@ -857,6 +872,9 @@ def run_palace(
     Raises:
         subprocess.CalledProcessError: If Palace exits nonzero, carrying the
             tail of its output on ``stderr``.
+        FileNotFoundError: If ``cwd`` is not an existing directory.
+        OSError: If ``log_path`` cannot be created or opened for writing,
+            raised unchanged after the started process is killed.
         RuntimeError: If the launcher itself cannot be found.
     """
     emit = emit or logger.info
@@ -870,24 +888,35 @@ def run_palace(
         emit(f"Command: {' '.join(cmd)}")
         emit(f"Processes: {num_processes}")
 
+    if not Path(cwd).is_dir():
+        msg = f"Simulation directory not found: {cwd}"
+        raise FileNotFoundError(msg)
+
     log_file = None
     log_file_path = Path(log_path) if log_path is not None else None
     try:
         if verbose or log_file_path is not None:
-            streamed_lines: list[str] = []
-            with subprocess.Popen(  # noqa: S603
-                cmd,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                env=launch.env,
-            ) as process:
+            # Only the tail is reported on failure; the full output is already
+            # streamed to ``emit`` or the log file.
+            tail: deque[str] = deque(maxlen=_FAILURE_OUTPUT_TAIL_LINES)
+            try:
+                launched = subprocess.Popen(  # noqa: S603
+                    cmd,
+                    cwd=cwd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    env=launch.env,
+                )
+            except FileNotFoundError as e:
+                raise _launcher_not_found(launch) from e
+            with launched as process:
                 # Open only once the launcher has started, so a launch that
-                # fails cannot truncate a log from an earlier run.
+                # fails cannot truncate a log from an earlier run. An error
+                # here concerns the log destination and propagates unchanged.
                 if log_file_path is not None:
                     try:
                         log_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -900,10 +929,11 @@ def run_palace(
                 if process.stdout is not None:
                     for line in process.stdout:
                         if log_file is not None:
+                            # Flushed per line so a long run can be followed live.
                             log_file.write(line)
                             log_file.flush()
                         line = line.rstrip("\n")
-                        streamed_lines.append(line)
+                        tail.append(line)
                         if verbose and line:
                             emit(line)
                 returncode = process.wait()
@@ -914,34 +944,26 @@ def run_palace(
                     returncode,
                     cmd,
                     output="",
-                    stderr="\n".join(streamed_lines[-_FAILURE_OUTPUT_TAIL_LINES:]),
+                    stderr="\n".join(tail),
                 )
         else:
-            result = subprocess.run(  # noqa: S603
-                cmd,
-                cwd=cwd,
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=launch.env,
-            )
+            try:
+                result = subprocess.run(  # noqa: S603
+                    cmd,
+                    cwd=cwd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=launch.env,
+                )
+            except FileNotFoundError as e:
+                raise _launcher_not_found(launch) from e
             if result.stdout:
                 logger.debug(result.stdout)
             if result.stderr:
                 logger.warning(result.stderr)
-    except FileNotFoundError as e:
-        if launch.apptainer:
-            raise RuntimeError(
-                "Apptainer not found. Install Apptainer to run local simulations "
-                "with use_apptainer=True."
-            ) from e
-        raise RuntimeError(
-            "Palace executable not found. Install Palace directly or provide "
-            "correct path via palace_executable parameter, "
-            "or set PALACE_EXECUTABLE environment variable."
-        ) from e
     finally:
         if log_file is not None:
             log_file.close()
