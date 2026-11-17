@@ -18,6 +18,11 @@ Unicode mode symbols are retained.
   boundary-mode config with `Solver.Linear.EstimatorMaxIts=0`. Original lines: 240–241, 247–278.
 - `electrostatic-disabled-estimator.txt`: recorded GitTag `v0.18.1`. Source: local Palace v0.18.1 run of a gsim-built
   electrostatic config with `Solver.Linear.EstimatorMaxIts=0`. Original lines: 66, 148–158, 193–203.
+- `electrostatic-residual-monitor.txt`: recorded GitTag `v0.19.0`. Source: local Palace v0.19.0 run (single rank, four
+  threads) of a gsim-built electrostatic config for the IHP `cmim` 10 um x 10 um capacitor of
+  `nbs/palace_electrostatic.ipynb`, coarse mesh, `Problem.Verbose=3`, `Solver.Linear.InitialGuess=false`. Keeps the
+  per-iteration GMRES residual lines and one interleaved MUMPS coarse-solve report. Original lines: 178–214, 244–245,
+  275–276, 306–307, 337–338, 368–369, 399–408, 438–439, 469–470, 500–501, 531–532, 562–563, 593–594, 624–629.
 - `magnetostatic-converged.txt`: recorded GitTag `v0.18.1`. Source: local Palace v0.18.1 run (single rank) of Palace's
   `examples/rings` magnetostatic example, kept as `tests/palace/fixtures/magnetostatic/rings/palace.log`. Original
   lines: 61–65, 113–119, 168–180.

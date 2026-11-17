@@ -1,0 +1,74 @@
+Computing electrostatic fields for 2 terminal boundaries
+
+It 1/2: Index = 1 (elapsed time = 2.90e-07 s)
+
+  Residual norms for GMRES solve
+
+Entering DMUMPS 5.9.1 from C interface with JOB, N =   3         158
+      executing #MPI =      1 and #OMP =      4
+
+
+
+ ****** SOLVE & CHECK STEP ********
+
+ GLOBAL STATISTICS PRIOR SOLVE PHASE ...........
+ Number of right-hand-sides                    =           1
+ Blocking factor for multiple rhs              =           1
+ ICNTL (9)                                     =           1
+  --- (10)                                     =           0
+  --- (11)                                     =           0
+  --- (20)                                     =          10
+  --- (21)                                     =           1
+  --- (30)                                     =           0
+  --- (35)                                     =           0
+  --- (48) (effective)                         =           1
+ ** Space in MBYTES used for solve                        :         4
+
+ Leaving solve with ...
+ Time to build/scatter RHS        =       0.001199
+ Time in solution step (fwd/bwd)  =       0.000987
+  .. Time in forward (fwd) step   =          0.000138
+  .. Time in backward (bwd) step  =          0.000046
+ Time to gather solution(cent.sol)=       0.000000
+ Time for distributed solution    =       0.000008
+
+ Elapsed time in solve driver=       0.0024
+  0 (restart 0) KSP residual norm 1.873140e+01
+
+  1 (restart 0) KSP residual norm 1.899819e+00
+
+  2 (restart 0) KSP residual norm 2.075951e-01
+
+  3 (restart 0) KSP residual norm 1.173070e-02
+
+  4 (restart 0) KSP residual norm 6.256921e-04
+
+  5 (restart 0) KSP residual norm 3.535864e-05
+
+  6 (restart 0) KSP residual norm 2.192893e-06
+GMRES solver converged in 6 iterations (avg. reduction factor: 6.994e-02)
+ Sol. ||V|| = 2.074769e+01 (||RHS|| = 3.493391e+02)
+ Field energy E = 3.733e-11 J
+ Updating solution error estimates
+
+It 2/2: Index = 2 (elapsed time = 4.50e-01 s)
+
+  Residual norms for GMRES solve
+
+  0 (restart 0) KSP residual norm 2.098916e+01
+
+  1 (restart 0) KSP residual norm 1.901791e+00
+
+  2 (restart 0) KSP residual norm 1.976473e-01
+
+  3 (restart 0) KSP residual norm 1.486927e-02
+
+  4 (restart 0) KSP residual norm 9.237324e-04
+
+  5 (restart 0) KSP residual norm 5.465143e-05
+
+  6 (restart 0) KSP residual norm 4.520333e-06
+GMRES solver converged in 6 iterations (avg. reduction factor: 7.742e-02)
+ Sol. ||V|| = 2.305165e+01 (||RHS|| = 3.654116e+02)
+ Field energy E = 3.733e-11 J
+ Updating solution error estimates

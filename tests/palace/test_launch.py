@@ -148,12 +148,24 @@ def test_existing_log_survives_a_launch_that_never_starts(tmp_path, failure):
     if failure == "launcher":
         launch = PalaceLaunch((str(tmp_path / "missing-palace"),), {})
         cwd = tmp_path
+        expected = (RuntimeError, "Palace executable not found")
     else:
         launch = PalaceLaunch((sys.executable,), {})
         cwd = tmp_path / "missing"
+        expected = (FileNotFoundError, "Simulation directory not found")
 
-    # A missing cwd raises NotADirectoryError on Windows, not FileNotFoundError.
-    with pytest.raises((RuntimeError, NotADirectoryError)):
+    with pytest.raises(expected[0], match=expected[1]):
         run_palace(launch, cwd=cwd, num_processes=1, verbose=True, log_path=target)
 
     assert target.read_text(encoding="utf-8") == "previous run\n"
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_missing_run_directory_is_not_reported_as_a_missing_executable(
+    tmp_path, verbose
+):
+    launch = PalaceLaunch((sys.executable,), {})
+    cwd = tmp_path / "missing"
+
+    with pytest.raises(FileNotFoundError, match="Simulation directory not found"):
+        run_palace(launch, cwd=cwd, num_processes=1, verbose=verbose)
