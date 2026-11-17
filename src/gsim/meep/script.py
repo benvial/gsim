@@ -197,6 +197,23 @@ def triangulate_polygon_with_holes(polygon):
     return triangles if triangles else [list(polygon.exterior.coords[:-1])]
 
 
+def order_physical_layers(layer_stack):
+    """Emit lower PDK mesh_order last, where Meep gives it precedence.
+
+    Equal priorities retain their input order. Legacy entries without a
+    priority keep their relative order and precede explicitly ranked layers.
+    """
+    return sorted(
+        layer_stack,
+        key=lambda entry: (
+            float("inf")
+            if entry.get("mesh_order") is None
+            else entry["mesh_order"]
+        ),
+        reverse=True,
+    )
+
+
 def extract_xz_rectangles_runner(component, layer_stack, y_cut, eps=1e-9):
     """Inlined XZ cross-section cutter (mirrors gsim.common.cross_section)."""
     from shapely.geometry import LineString
@@ -205,7 +222,7 @@ def extract_xz_rectangles_runner(component, layer_stack, y_cut, eps=1e-9):
     dbu = getattr(getattr(component, "kcl", None), "dbu", 0.001)
 
     rects = []
-    for layer_entry in layer_stack:
+    for layer_entry in order_physical_layers(layer_stack):
         gds_layer_tuple = tuple(layer_entry["gds_layer"])
         shapely_polys = _xz_runner_layer_polys(component, gds_layer_tuple, dbu)
         if not shapely_polys:
@@ -492,7 +509,7 @@ def build_geometry(config, materials):
     geometry = []
     total_vertices = 0
 
-    for layer_entry in config["layer_stack"]:
+    for layer_entry in order_physical_layers(config["layer_stack"]):
         material_name = layer_entry["material"]
         mat = materials.get(material_name, mp.Medium())
         zmin = layer_entry["zmin"] if is_3d else 0
@@ -1968,6 +1985,47 @@ def _make_medium(mat_data):
     return mp.Medium(epsilon=eps)
 
 
+def _order_mode_entries(entries, mesh_orders=None):
+    def priority(entry):
+        value = entry.get("mesh_order")
+        if value is None:
+            value = (mesh_orders or {}).get(entry.get("name"))
+        return float("inf") if value is None else value
+    return sorted(entries, key=priority, reverse=True)
+
+
+def _is_ideal_air(name, materials=None):
+    \"\"\"Identify unit-index Air, retaining custom responses with the same name.\"\"\"
+    if name not in {"Air", "air"}:
+        return False
+    material = (materials or {}).get(name)
+    if material is None:
+        return True
+    data = material if isinstance(material, dict) else getattr(material, "__dict__", {})
+    return (
+        data.get("epsilon_diag") in (None, [1, 1, 1])
+        and data.get("mu_diag") in (None, [1, 1, 1])
+        and not any(data.get("epsilon_offdiag") or [])
+        and not data.get("D_conductivity")
+        and not any(data.get("D_conductivity_diag") or [])
+        and not data.get("epsilon_susceptibilities")
+    )
+
+def _mode_stack_z_extent(config):
+    entries = list(config["layer_stack"]) + list(config.get("dielectrics", []))
+    active = [
+        entry for entry in entries
+        if not (
+            _is_ideal_air(entry["material"], config.get("materials"))
+            and entry.get("name") in {"air_box", "air_box_bottom"}
+        )
+    ] or entries
+    return (
+        min(entry["zmin"] for entry in active),
+        max(entry["zmax"] for entry in active),
+    )
+
+
 def build_slab_cell(config):
     \"""Build a 2D XZ MEEP cell for 1D slab eigenmode solving.\"""
     z_margin = config.get("z_margin", 0.0)
@@ -1982,8 +2040,7 @@ def build_slab_cell(config):
     materials = config["materials"]
     bg_mat = config.get("background_material", "air")
 
-    z_min = min(entry["zmin"] for entry in layer_stack)
-    z_max = max(entry["zmax"] for entry in layer_stack)
+    z_min, z_max = _mode_stack_z_extent(config)
     z_center = (z_min + z_max) / 2.0 + (zm_top - zm_bottom) / 2.0
 
     x_span = 2.0 / resolution
@@ -1996,16 +2053,17 @@ def build_slab_cell(config):
     cell_size = mp.Vector3(x_span, 0.0, z_span)
 
     geometry = []
-    for entry in layer_stack:
-        if entry["material"] == "air":
-            continue
+    for entry in _order_mode_entries(layer_stack, config.get("layer_mesh_orders")):
         mat_data = materials.get(entry["material"])
         if mat_data is None:
             continue
         medium = _make_medium(mat_data)
         z_lo = entry["zmin"] - z_center
         z_hi = entry["zmax"] - z_center
-        if abs(entry["zmin"] - z_min) < 1e-12:
+        if (
+            not _is_ideal_air(entry["material"], materials)
+            and abs(entry["zmin"] - z_min) < 1e-12
+        ):
             z_lo = -z_span / 2.0
         z_size = z_hi - z_lo
         if z_size <= 0:
@@ -2056,7 +2114,7 @@ def build_cross_section_cell(config):
         cell_size = mp.Vector3(h_span, 0.0, z_span)
 
     geometry = []
-    for blk in geom["blocks"]:
+    for blk in _order_mode_entries(geom["blocks"]):
         mat_data = materials.get(blk["material"])
         if mat_data is None:
             continue
@@ -2229,8 +2287,7 @@ def main():
         else:
             zm_bottom = zm_top = z_margin
         layer_stack = config["layer_stack"]
-        z_min = min(entry["zmin"] for entry in layer_stack)
-        z_max = max(entry["zmax"] for entry in layer_stack)
+        z_min, z_max = _mode_stack_z_extent(config)
         z_center = (z_min + z_max) / 2.0 + (zm_top - zm_bottom) / 2.0
         z_span = (z_max - z_min) + zm_bottom + zm_top
         if pml_thickness > 0:

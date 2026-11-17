@@ -1,6 +1,7 @@
 # Palace guide
 
-Use [`gsim.palace`][gsim.palace] for driven RF and microwave simulations, eigenmodes, electrostatics, and boundary modes.
+Use [`gsim.palace`][gsim.palace] for driven RF and microwave simulations, eigenmodes, electrostatics, magnetostatics, and
+boundary modes.
 This guide covers solver configuration, meshing, and result processing. Class and function links open the API reference.
 
 ## Solver settings
@@ -26,6 +27,10 @@ eigenvalue convergence. They are independent. All Palace simulation types defaul
 to **GMRES with complex MUMPS multigrid**, field order **2**, **400** maximum linear
 iterations, and `"CPU"`. Linear tolerance defaults to **1e-6**, except for
 `EigenmodeSim`, whose linear and eigenvalue tolerances both default to **1e-9**.
+`MagnetostaticSim` is the exception to the solver: its curl-curl operator is singular, so
+it defaults to Palace's iterative choice, the **AMS** preconditioner with **conjugate
+gradients** at a linear tolerance of **1e-8**, and refuses a direct `solver_type` or the
+BoomerAMG preconditioner.
 An omitted linear tolerance uses the simulation-specific default through grouped
 dictionaries, settings models, and legacy `numerical` constructors or assignments.
 An explicitly supplied tolerance, including `1e-6`, is preserved.
@@ -103,9 +108,12 @@ electrostatic.solver.electrostatic.save_fields = 2
 boundary = pa.BoundaryModeSim()
 boundary.solver.boundary_mode.freq = 5e9
 boundary.solver.boundary_mode.num_modes = 2
+
+magnetostatic = pa.MagnetostaticSim()
+magnetostatic.solver.magnetostatic.save_fields = 1
 ```
 
-All four share thirteen controls: `order`, `device`, and
+All five share thirteen controls: `order`, `device`, and
 `linear.{solver_type, preconditioner, tolerance, max_iterations, mg_max_levels,
 pc_mat_real, complex_coarse_solve, estimator_tolerance, estimator_max_iterations,
 estimator_mg, initial_guess}`.
@@ -116,6 +124,7 @@ estimator_mg, initial_guess}`.
 | EigenmodeSim | `solver.eigenmode` | 8 | 21 |
 | ElectrostaticSim | `solver.electrostatic` | 1 | 14 |
 | BoundaryModeSim | `solver.boundary_mode` | 7 | 20 |
+| MagnetostaticSim | `solver.magnetostatic` | 1 | 14 |
 
 `sim.set_solver(...)` replaces the common controls using the same defaults as
 the simulation constructor, including its linear tolerance, while preserving the problem-specific settings. Assign individual
@@ -139,6 +148,70 @@ inputs still load; simulation serialization uses the grouped `solver` field.
 | `sim.driven.fmin` | `sim.solver.driven.fmin` |
 | `sim.electrostatic.save_fields` | `sim.solver.electrostatic.save_fields` |
 | `sim.boundary_mode.freq` | `sim.solver.boundary_mode.freq` |
+
+### Boundary-mode path integration
+
+Starting with gsim **0.9.0**, coordinate-path voltage and impedance postprocessing
+omits `NSamples`. Element-wise integration was introduced in the cloud runtime with Palace commit
+`0dd8d015034c0fc1f0cf4c9ff952b533f9cb91d5`, which provides element-wise line
+integration and contains
+[the removal](https://github.com/awslabs/palace/commit/565658498048fbca9499c80d54b56b6683fcdb25):
+
+```python
+from gsim.palace import BoundaryModeSim
+
+sim = BoundaryModeSim()
+sim.add_impedance_path("gap", voltage=[[0.0, 0.0], [1.0, 0.0]])
+```
+
+This omits `NSamples` from both `Boundaries.Postprocessing.Impedance` and
+`Boundaries.Postprocessing.Voltage`. The paths, indices, and current loops are
+unchanged. Palace controls the integration rule; no replacement sample count is
+required.
+
+Beginning in gsim **0.9.0**, `ModePath.nsamples` and the `nsamples=` argument to
+`add_impedance_path`, `declare_impedance_paths`, and `declare_terminal_paths`
+are deprecated. Existing calls still work, but an explicit count emits
+`DeprecationWarning` and is ignored. Calls that omit the count do not warn.
+Old saved `mode_paths` records also load with a warning for explicit `nsamples`
+values; the field is omitted when saved again. Remove the field or argument to
+migrate. No replacement setting is needed because Palace determines the
+integration rule. The deprecated inputs will be retained for at least two
+feature releases and roughly 12 months after the first released warning, then
+removed only in a release designated for incompatible changes.
+
+The local auto-download remains pinned to Palace **0.18.0**. It accepts these
+configurations, but uses its old sampled integration with the default count of
+**100**; gsim no longer exposes a control for that count. The local runtime does
+not gain the cloud runtime's element-wise integration. There is no
+version-dependent configuration switch.
+
+The `nsamples` settings on local field-integration routines such as
+`voltage_line_integral` remain available; they control Python-side quadrature,
+which is separate from Palace's path declarations.
+
+### Complex boundary-mode impedance output
+
+Palace [PR #1119](https://github.com/awslabs/palace/pull/1119) replaces the scalar
+`Z_PV[i]` and `Z_VI[i]` columns in `mode-Z.csv` with real and imaginary components.
+`load_text_results` reads both formats. Existing `characteristic_impedance(...)`
+calls still return a float: the legacy scalar, or the real part of a newer value.
+Use `complex_characteristic_impedance(...)` to retain the full complex value:
+
+```python
+from gsim.palace.results import load_text_results
+
+results = load_text_results("path/to/palace/output")
+z_pv = results.complex_characteristic_impedance(index=1, mode=1, quantity="Z_PV")
+z_vi = results.complex_characteristic_impedance(index=1, mode=1, quantity="Z_VI")
+```
+
+Both components must be finite; missing or invalid components return `None`.
+Legacy files return a complex number with zero imaginary part; their missing
+phase cannot be recovered. Per-unit-length L/C columns remain real. New output
+uses corrected lossy impedance definitions, so old lossy values are not numerical
+equality references. The line-impedance workflow keeps using saved fields for
+lossy conductors, and reads the complex tables for its mode diagnostic.
 
 ### MUMPS behavior change
 
@@ -186,6 +259,8 @@ For new code, use `sim.solver.model_copy(deep=True)` to copy all solver settings
 - [`EigenmodeConfig`][gsim.palace.EigenmodeConfig]
 - [`ElectrostaticConfig`][gsim.palace.ElectrostaticConfig]
 - [`BoundaryModeConfig`][gsim.palace.BoundaryModeConfig]
+- [`MagnetostaticConfig`][gsim.palace.MagnetostaticConfig]
+- [`MagnetostaticSolverConfig`][gsim.palace.MagnetostaticSolverConfig]
 
 See [result validation](../palace-validation.md) for independent solver,
 adaptive sampling, mode identity, wave-port mode continuity, and
@@ -218,6 +293,21 @@ exist; without these Robin terms, both omit `WavePortPEC`. A later `set_driven()
 call rebuilds the driven settings, so repeat `waveport_boundary="inherit"` when
 updating other sweep options if you want to retain it.
 
+With wave ports, `DrivenSim` makes the outer wall of the 3D domain PEC
+(`Boundaries.PEC`, no `Absorbing`) unless you set `absorbing_boundary` yourself;
+pass `absorbing_boundary=True` to keep the absorbing wall. Lumped-port-only runs
+stay absorbing by default.
+
+!!! note "Default change in 0.9.0"
+    Earlier releases left an unset `absorbing_boundary` absorbing even with wave
+    ports. The PEC default starts with 0.9.0. Saved
+    configurations and notebooks that relied on the old behavior should pass
+    `absorbing_boundary=True`.
+
+The reason, the table of what each `absorbing_boundary` and `metallic_boundaries`
+setting writes, and the other wave-port options are on
+[Wave ports in Palace](../palace_wave_ports.md).
+
 Material override precedence is separate; see [PR #277](https://github.com/gdsfactory/gsim/pull/277).
 
 ## Result validation
@@ -230,6 +320,7 @@ Material override precedence is separate; see [PR #277](https://github.com/gdsfa
 - [`EigenmodeSim`][gsim.palace.EigenmodeSim]
 - [`ElectrostaticSim`][gsim.palace.ElectrostaticSim]
 - [`BoundaryModeSim`][gsim.palace.BoundaryModeSim]
+- [`MagnetostaticSim`][gsim.palace.MagnetostaticSim]
 
 ## Floquet eigenmodes
 
@@ -352,6 +443,86 @@ cap.pairs()  # every pair and every terminal-to-ground value, as a table
 
 - [`CapacitanceMatrices`][gsim.palace.CapacitanceMatrices]
 - [`load_capacitance`][gsim.palace.load_capacitance]
+
+## Magnetostatic current sources
+
+A [`MagnetostaticSim`][gsim.palace.MagnetostaticSim] drives a unit current around each
+conductor loop in turn and returns the inductance matrix between the loops. Declare one
+current source per loop between two ports on the same conductor:
+
+```python
+from gsim.palace import MagnetostaticSim
+
+sim = MagnetostaticSim()  # PEC outer wall; metallic_boundaries=False for PMC
+sim.set_geometry(transformer)  # ports P1/P2 and S1/S2
+sim.set_stack()
+sim.set_airbox(margin_x=100, margin_y=100, z_above=150, z_below=150)
+sim.add_current_source("primary", plus_port="P1", minus_port="P2")
+sim.add_current_source("secondary", plus_port="S1", minus_port="S2")
+print(sim.resolve_current_sources())  # sheet, Direction and net, before meshing
+sim.set_output_dir("./palace-sim")
+sim.mesh(refined_mesh_size=1.0, max_mesh_size=30)
+inductance = sim.load_inductance(sim.run())
+inductance.mutual_inductance("primary", "secondary")  # in H, signed
+inductance.coupling("primary", "secondary")
+inductance.pairs()  # every self and mutual inductance, as a table
+assert not inductance.problems()
+```
+
+- **Where the current enters.** gsim bridges the gap between the two port faces with a
+  vertical sheet through the thickness of the conductor layer, which carries the source
+  current. The ports either face each other across a gap (a cut in a trace), or are
+  side-by-side leads that point the same way (the two leads of a coil); the sheet then
+  spans the gap between the inner edges of the leads. Both ports sit on one conductor
+  layer, inferred from their GDS layer unless `layer=` is given.
+- **The gap is part of the loop.** The sheet takes the place of the metal across the
+  gap, so the gap width changes the inductance. Keep it small against the loop.
+- **Sign convention.** A unit current enters the conductor at `plus_port` and leaves it
+  at `minus_port`. A mutual inductance is positive when the two loops' fluxes add.
+  Swapping `plus_port` and `minus_port` of one source flips the sign of its row and
+  column; the self inductances do not change. The rows follow the order the sources
+  were added in.
+- **Return path.** The drawn metal that joins the two ports closes the loop; it must be
+  one connected net, or `resolve_current_sources()` reports an open loop. Every other
+  conductor is a perfect conductor with no source, so a closed one (a ground ring, a
+  patterned shield, an unconnected underpass) screens the field; `validate_config()`
+  warns about each and the component should leave it out. The generic
+  `gf.components.inductor` has an unconnected metal1 underpass that triggers this
+  warning.
+- **Net names.** `ResolvedCurrentSource.net` is the name `sim.nets()` gives that metal,
+  so it is named by the electrical ports only, even when a source sits on optical ports.
+- **External inductance.** Conductors are perfect conductors, as Palace's magnetostatic
+  solver requires: the current flows on their surfaces, so the matrix is the
+  high-frequency external inductance, without internal or kinetic inductance.
+  Conductivities are not used. A perfect conductor crowds the current towards the
+  inside of each loop, so filament formulas along the trace centrelines overestimate
+  the |M| of nearby loops by about 10 %.
+- **Outer wall.** The outer wall of the domain is a perfect electric conductor by
+  default (`metallic_boundaries=True`). `metallic_boundaries=False` makes it a perfect
+  magnetic conductor. The two runs bracket the open-space value: an energy bound for
+  the self inductances, a first-order bracket for the mutual inductances. Their mean
+  cancels the first-order wall error. An absorbing wall is refused, since Palace
+  ignores it in a magnetostatic solve.
+- **Airbox and mesh.** Keep every airbox extent (`margin_x`, `margin_y`, `z_above`,
+  `z_below`) at least as large as the larger lateral side of the meshed conductors;
+  marker layers that are not meshed do not count. `validate_config()` warns
+  otherwise. Set `refined_mesh_size` to at most half the trace width, or pass
+  `auto_size=True`, and keep `max_mesh_size` coarse in the large airbox. `fmax` has no
+  effect on a static solve.
+- **Convergence.** A magnetostatic solve that did not converge still exits normally
+  and writes a plausible matrix. `load_inductance` reads the run's `palace.log` and
+  raises if a solve did not converge; `problems()` checks physics only (reciprocity,
+  energy, |k| ≤ 1). Local runs keep `palace.log` next to the result tables.
+- **Solver.** The linear solve is AMS-preconditioned conjugate gradients at a
+  tolerance of 1e-8 (see [Solver settings](#solver-settings)).
+
+See the [coupled-coil example](../nbs/palace_magnetostatic.md) for an IHP coil pair and
+an analytic check.
+
+## Inductance
+
+- [`InductanceMatrix`][gsim.palace.InductanceMatrix]
+- [`load_inductance`][gsim.palace.load_inductance]
 
 ## Saved fields and S-parameters
 
@@ -486,6 +657,85 @@ searches are limited to 500 um; cross-layer gaps and arbitrary tapered or curved
 widths are not measured. These limitations make the estimate useful for choosing
 an initial mesh, rather than establishing simulation accuracy. Compare results
 across refinements before relying on resonance frequencies, Q, or S-parameters.
+
+### Reuse a mesh
+
+An eigenmode solve and driven sweeps of the same device can run on one mesh, so
+the resonances and the S-parameters come from the same discretization and Gmsh
+runs once. Mesh one simulation, then call `reuse_mesh` on the others instead of
+`mesh()`. Here `component` has lumped ports `o1` and `o2` on `topmetal2`, and
+each driven sweep excites one of them:
+
+```python
+from gsim.palace import DrivenSim, EigenmodeSim
+
+eigen = EigenmodeSim(absorbing_boundary=False)
+eigen.set_output_dir("./eigen")
+eigen.set_geometry(component)
+eigen.set_stack(substrate_thickness=2.0)
+eigen.add_port("o1", layer="topmetal2", length=5.0)
+eigen.add_port("o2", layer="topmetal2", length=5.0)
+eigen.set_eigenmode(num_modes=4, target=8e9)
+eigen.mesh(preset="default")
+
+for port in ("o1", "o2"):
+    driven = DrivenSim(absorbing_boundary=False)
+    driven.set_output_dir(f"./driven_{port}")
+    driven.add_port(port, layer="topmetal2", length=5.0, excited=True)
+    driven.reuse_mesh(eigen)  # copies the mesh; no Gmsh run
+    driven.set_driven(fmin=7e9, fmax=10e9)
+    driven.write_config()
+```
+
+The receiver copies the source's geometry, stack, airbox, PEC blocks, symmetry
+plane and port declarations. A port it declares itself, with the source's
+geometry, keeps its own excitation, impedance and R/L/C; the other ports keep
+the source's settings but are not excited, whatever the source excites. A
+driven receiver needs at least one port it excites itself, declared with
+`excited=True` or set on the copied port config. The
+solver settings and the outer wall stay per simulation: with
+`absorbing_boundary=False` the outer boundary is Palace's natural magnetic wall
+(PMC), which reflects. Each simulation needs its own output directory, neither
+the source's nor nested with it; `reuse_mesh` copies the `.msh` into it.
+
+The copy is a snapshot. Re-meshing or editing the source does not reach the
+receiver; call `reuse_mesh(source)` again to pick up the new mesh. The receiver's
+layout is a flat copy of the source's: same polygons and ports, no instances.
+
+The mesh fixes what it was built from: the layout polygons and component ports,
+the stack layers and dielectric regions, which materials are air-like, the
+airbox, PEC blocks, the symmetry plane and the port geometry (kind, layers,
+length, offset). Each `write_config()` of a receiver checks these and raises
+`ValueError` naming what changed. Undo the change, call `mesh()` on the
+receiver to mesh its current state, or call `reuse_mesh(source)` again.
+A stack from `set_stack(pdk_authoritative=True)` is rebuilt from the active PDK
+at each check. Activating another PDK is refused if it changes any of these
+inputs, or fails with the PDK's own error if the stack cannot be rebuilt. Its
+material values are free, like any other material value, and reach the config.
+
+A mesh made with `mesh(periodic_axis=...)` keeps its periodic faces out of the
+absorbing boundary, and only a Floquet eigenmode solve conditions them. A receiver
+with an absorbing outer wall (`absorbing_boundary=True`, or left unset without
+wave ports) and no Floquet solve is refused at `write_config()`, because those
+faces would reflect. Use `absorbing_boundary=False`, a Floquet
+eigenmode, or `mesh()` on the receiver.
+On a receiver that already holds a reused mesh, `reuse_mesh` takes the port
+geometry and kind back from the source: each port the source declares keeps the
+receiver's excitation, impedance and R/L/C, and ports the source lacks are
+dropped. On a receiver without a reused mesh, a declared port that does not
+match the source is refused instead.
+Port settings, solver settings, mesh sizes and material values (permittivity,
+loss tangent, conductor conductivity) stay free. The receiver's `mesh_config`
+holds the settings the source's mesh was made with, after presets and
+auto-sizing. The mesh was sized for the source's values, so check that it still resolves the new ones,
+for example against a fresh `mesh()`.
+
+Only driven and eigenmode simulations share meshes, in either direction.
+`ElectrostaticSim` and `BoundaryModeSim` raise `ValueError`, and a mesh file or
+`MeshResult` raises `TypeError`: a file alone has no physical-group or port
+mappings. See
+[`DrivenSim.reuse_mesh`][gsim.palace.driven.DrivenSim.reuse_mesh] and
+[`EigenmodeSim.reuse_mesh`][gsim.palace.eigenmode.EigenmodeSim.reuse_mesh].
 
 ## Nets
 

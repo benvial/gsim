@@ -9,10 +9,22 @@ from __future__ import annotations
 
 import pytest
 
-from gsim.palace import BoundaryModeSim, DrivenSim, EigenmodeSim, ElectrostaticSim
+from gsim.palace import (
+    BoundaryModeSim,
+    DrivenSim,
+    EigenmodeSim,
+    ElectrostaticSim,
+    MagnetostaticSim,
+)
 from gsim.palace.models import MeshConfig
 
-SIM_CLASSES = [DrivenSim, EigenmodeSim, ElectrostaticSim, BoundaryModeSim]
+SIM_CLASSES = [
+    DrivenSim,
+    EigenmodeSim,
+    ElectrostaticSim,
+    MagnetostaticSim,
+    BoundaryModeSim,
+]
 
 
 @pytest.fixture(params=SIM_CLASSES, ids=lambda cls: cls.__name__)
@@ -68,8 +80,6 @@ def test_mesh_config_defaults_to_the_default_preset(sim):
 
 def test_private_state_is_per_instance(sim):
     other = type(sim)()
-    sim._hints["key"] = 1
     sim._pec_blocks.append(object())
-    assert other._hints == {}
     assert other._pec_blocks == []
     assert other._last_ports == []

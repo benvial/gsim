@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         CrossSectionPlaneConfig,
         DrivenConfig,
         EigenmodeConfig,
+        MeshGrading,
         NumericalConfig,
         SolverConfig,
     )
@@ -417,8 +418,12 @@ def _generate_native_boundarymode_groups(
 
     outer_parts = {tag for dim, tag in out_map[0] if dim == 2}
     layer_surfaces: dict[str, set[int]] = {}
+    # Pieces of each input rectangle, kept per entry (same order as
+    # ``layer_inputs``): ``layer_surfaces`` merges entries of one material.
+    entry_pieces: list[set[int]] = []
     for idx, (layer_name, _tag) in enumerate(layer_inputs, start=1):
         pieces = {tag for dim, tag in out_map[idx] if dim == 2}
+        entry_pieces.append(pieces)
         if pieces:
             layer_surfaces.setdefault(layer_name, set()).update(pieces)
 
@@ -509,6 +514,37 @@ def _generate_native_boundarymode_groups(
             claimed_pieces.update(unique)
         else:
             layer_surfaces.pop(layer_name, None)
+
+    # Step 3: background regions that overlap in z (e.g. a slab laid over part
+    # of the oxide) must not share pieces: a piece in two domain groups writes
+    # its triangles twice, and its edges end up in several interface groups and
+    # in ``absorbing``. Mirror the 3D rule (``build_entities`` order and the
+    # first-claim loop in ``run_boolean_pipeline``): the region listed first in
+    # the stack wins the overlap, the "air" background comes last.
+    #
+    # The claim runs per stack region, not per material: ``layer_inputs`` holds
+    # material names, and two regions of one material (an SiO2 box and an SiO2
+    # cladding) with another material listed between them must not be merged
+    # first, or the merged group would take an overlap that belongs to the
+    # region in between. Regions are merged into material groups afterwards.
+    bg_entries = [
+        (bg_name, entry_pieces[idx])
+        for idx, (bg_name, _tag) in enumerate(layer_inputs)
+        if _is_background_dielectric(bg_name)
+    ]
+    bg_entries.sort(key=lambda entry: entry[0] == "air")  # stable: stack order
+    claimed_bg: set[int] = set()
+    bg_owned: dict[str, set[int]] = {}
+    for bg_name, region_pieces in bg_entries:
+        # ``layer_surfaces`` already lost the patterned-dielectric pieces
+        unique = (region_pieces & layer_surfaces.get(bg_name, set())) - claimed_bg
+        claimed_bg |= unique
+        bg_owned.setdefault(bg_name, set()).update(unique)
+    for bg_name, owned in bg_owned.items():
+        if owned:
+            layer_surfaces[bg_name] = owned
+        else:
+            layer_surfaces.pop(bg_name, None)
 
     if metal_piece_tags:
         for layer_name, pieces in list(layer_surfaces.items()):
@@ -801,8 +837,12 @@ def _generate_native_boundarymode_groups(
             list(interface_specs or []), kind="Interface", key="interface_lines"
         )
 
+    # Only the meshed regions can carry the outer boundary. A conductor is a
+    # hole in the 2D mesh: the piece of the domain wall it covers is not an
+    # edge of any triangle, and a boundary element that is no edge of a
+    # triangle makes Palace crash (MFEM's GetBdrElementFace reads face -1).
     outer_curves: set[int] = set()
-    for stag in outer_parts:
+    for stag in sorted(outer_parts & vol_pg_surfaces):
         try:
             boundaries = gmsh.model.getBoundary(
                 [(2, stag)],
@@ -1072,7 +1112,7 @@ def _setup_mesh_fields(
 def _fine_size_targets(
     groups: dict,
     stack,
-    refined_mesh_size: float,
+    cutoff: float,
 ) -> dict[str, float]:
     """Map volume names to requested fine mesh sizes (no gmsh needed).
 
@@ -1088,7 +1128,7 @@ def _fine_size_targets(
         if isinstance(resolution, bool) or not isinstance(resolution, (int, float)):
             continue
         size_um = float(resolution)
-        if 0.0 < size_um < refined_mesh_size:
+        if 0.0 < size_um < cutoff:
             targets[name] = size_um
     return targets
 
@@ -1096,7 +1136,7 @@ def _fine_size_targets(
 def _collect_fine_size_requests(
     groups: dict,
     stack,
-    refined_mesh_size: float,
+    cutoff: float,
 ) -> list[tuple[list[int], float]]:
     """Collect per-volume fine mesh-size requests for native 2D meshing.
 
@@ -1109,7 +1149,7 @@ def _collect_fine_size_requests(
     """
     if not gmsh.isInitialized():
         return []
-    targets = _fine_size_targets(groups, stack, refined_mesh_size)
+    targets = _fine_size_targets(groups, stack, cutoff)
 
     internal_curves: set[int] = set()
     for iface in groups.get("interface_surfaces", {}).values():
@@ -1140,6 +1180,150 @@ def _collect_fine_size_requests(
         if curves:
             requests.append((sorted(curves), size_um))
     return requests
+
+
+def _curve_length_bound(curve_tags: Sequence[int]) -> float:
+    """Diagonal of the longest curve's bounding box (um), 0 when unknown."""
+    longest = 0.0
+    for ctag in curve_tags:
+        try:
+            bb = gmsh.model.getBoundingBox(1, int(ctag))
+        except Exception:
+            continue
+        longest = max(longest, math.hypot(bb[3] - bb[0], bb[4] - bb[1]))
+    return longest
+
+
+#: Most points Gmsh's Distance field samples on one curve.
+_MAX_CURVE_SAMPLING = 20000
+
+#: Largest excess of the graded size over the feature size on the curve,
+#: as a fraction of that size.
+_GRADED_SIZE_TOLERANCE = 0.1
+
+
+def _graded_curve_sampling(length: float, size: float, rate: float) -> int:
+    """Number of Distance-field samples on a graded curve of ``length`` um.
+
+    The Distance field measures to sample points, so a point on the curve
+    midway between two samples spaced ``h`` apart sits at ``h / 2`` from
+    them and gets the size ``size + rate * h / 2``. The spacing is chosen
+    so that this excess stays within ``_GRADED_SIZE_TOLERANCE * size``,
+    and is never above half the size. A warning is logged when the cap on
+    the number of samples lets the excess go beyond that tolerance.
+    """
+    if length <= 0:
+        return 2000
+    spacing = min(0.5 * size, 2.0 * _GRADED_SIZE_TOLERANCE * size / rate)
+    wanted = max(400, math.ceil(length / spacing))
+    if wanted <= _MAX_CURVE_SAMPLING:
+        return wanted
+    excess = rate * length / _MAX_CURVE_SAMPLING / 2.0
+    if excess <= _GRADED_SIZE_TOLERANCE * size:
+        return _MAX_CURVE_SAMPLING
+    logger.warning(
+        "Mesh grading samples a %.4g um curve at %d points, so the element "
+        "size on it may reach %.3g um instead of %.3g um. Lower "
+        "growth_per_um or raise the size on that feature.",
+        length,
+        _MAX_CURVE_SAMPLING,
+        size + excess,
+        size,
+    )
+    return _MAX_CURVE_SAMPLING
+
+
+def _setup_graded_fields(
+    groups: dict,
+    stack,
+    *,
+    grading: MeshGrading,
+    refined_mesh_size: float,
+    max_mesh_size: float,
+    refinement_boxes: Sequence[tuple[float, float, float, float, float]],
+) -> list[int]:
+    """Size fields growing linearly from the graded features (native 2D).
+
+    Each feature of size ``s`` gives ``min(max_mesh_size, s + rate * d)``
+    at distance ``d``: a Threshold on a Distance field for curves, a
+    MathEval of the Euclidean distance to the box for refinement boxes. A
+    box stays a step field when ``"fine_regions"`` is not graded, so it
+    still holds its size. Returns the field ids, ``[]`` when nothing is
+    graded.
+    """
+    rate = grading.growth_per_um
+    sources = set(grading.sources)
+    curve_sets: list[tuple[list[int], float]] = []
+    if "conductors" in sources:
+        tags = {
+            int(tag)
+            for key in ("conductor_surfaces", "pec_surfaces")
+            for info in groups.get(key, {}).values()
+            for tag in info.get("tags", [])
+        }
+        if tags:
+            curve_sets.append((sorted(tags), refined_mesh_size))
+    if "junctions" in sources:
+        tags = {
+            int(tag)
+            for info in groups.get("interface_lines", {}).values()
+            for tag in info.get("tags", [])
+        }
+        if tags:
+            curve_sets.append((sorted(tags), refined_mesh_size))
+    if "fine_regions" in sources:
+        # Without grading every internal curve is refined, so only layers
+        # finer than refined_mesh_size need their own field. With grading
+        # only the sources refine the mesh, so every numeric resolution
+        # below the cap is one; otherwise it would be silently dropped.
+        curve_sets.extend(_collect_fine_size_requests(groups, stack, max_mesh_size))
+
+    field_ids: list[int] = []
+    next_field_id = 1
+    for curve_tags, requested in curve_sets:
+        # A feature size above the cap would give an inverted Threshold.
+        size = min(requested, max_mesh_size)
+        sampling = _graded_curve_sampling(_curve_length_bound(curve_tags), size, rate)
+        field_ids.append(
+            gmsh_utils.setup_mesh_refinement(
+                curve_tags,
+                size,
+                max_mesh_size,
+                sampling=sampling,
+                dist_min=0.0,
+                dist_max=max(max_mesh_size - size, 0.0) / rate,
+                distance_id=next_field_id,
+                threshold_id=next_field_id + 1,
+            )
+        )
+        next_field_id += 2
+
+    first_box_id = max(_FIRST_BOX_FIELD_ID, next_field_id)
+    for offset, (h_min, h_max, z_min, z_max, size) in enumerate(refinement_boxes):
+        field_id = first_box_id + offset
+        if "fine_regions" in sources:
+            # The cross-section is meshed in its own (h, z) plane as (x, y).
+            dx = f"(Fabs(x-({h_min!r}))+Fabs(x-({h_max!r}))-({h_max - h_min!r}))/2"
+            dy = f"(Fabs(y-({z_min!r}))+Fabs(y-({z_max!r}))-({z_max - z_min!r}))/2"
+            gmsh.model.mesh.field.add("MathEval", field_id)
+            gmsh.model.mesh.field.setString(
+                field_id,
+                "F",
+                f"Min({max_mesh_size!r},{size!r}+{rate!r}*Sqrt(({dx})^2+({dy})^2))",
+            )
+        else:
+            gmsh_utils.setup_box_refinement(
+                field_id, h_min, z_min, -1.0, h_max, z_max, 1.0, size, max_mesh_size
+            )
+        field_ids.append(field_id)
+
+    if not field_ids:
+        logger.warning(
+            "Mesh grading found none of its sources %s in this cross-section; "
+            "the mesh is sized by refined_mesh_size and max_mesh_size alone.",
+            sorted(sources),
+        )
+    return field_ids
 
 
 _ALGORITHM_3D = {"delaunay": 1, "hxt": 10}
@@ -1238,6 +1422,7 @@ def generate_mesh(
     verbosity: int = 3,
     decimate_tolerance: float | None = None,
     refinement_boxes: Sequence[tuple[float, float, float, float, float]] = (),
+    mesh_grading: MeshGrading | None = None,
     algorithm_3d: Literal["delaunay", "hxt"] = "delaunay",
     threads: int = 1,
     surface_threads: int = 1,
@@ -1266,7 +1451,8 @@ def generate_mesh(
             ``"sio2"`` for a uniform-dielectric cladding with no air.
         fmax: Max frequency for config (Hz)
         show_gui: Show gmsh GUI during meshing
-        simulation_type: Type of simulation (driven, eigenmode or electrostatics)
+        simulation_type: Type of simulation (driven, eigenmode, electrostatic,
+            magnetostatic or boundarymode)
         driven_config: Optional DrivenConfig for frequency sweep settings
         eigenmode_config: Optional EigenmodeConfig for eigenmode problems
         numerical_config: Optional SolverConfig (or legacy NumericalConfig)
@@ -1280,7 +1466,9 @@ def generate_mesh(
             contacts (native BoundaryMode only)
         write_config: Whether to write config.json (default True)
         pec_blocks: PEC configuration
-        planar_conductors: If True, treat conductors as 2D PEC surfaces
+        planar_conductors: If True, treat conductors as 2D PEC surfaces.
+            Refused for magnetostatic: a current-source sheet must end on
+            conductor volumes.
         absorbing_boundary: If True, use absorbing boundary conditions on outer surfaces
         periodic_axis: ("x" or "y") for meshing constraints on opposite domain sides
         symmetry_plane: Optional PEC/PMC symmetry plane; only the kept half of
@@ -1311,6 +1499,10 @@ def generate_mesh(
         verbosity: Sets gmsh verbosity level
         refinement_boxes: Native-2D cross-section meshes only: boxes held to
             an element size, each ``(h_min, h_max, z_min, z_max, size)`` in um
+        mesh_grading: Native-2D cross-section meshes only: element size
+            growing from chosen features at a set rate (see
+            :class:`~gsim.palace.models.MeshGrading`). ``None`` keeps the
+            fixed growth from every internal curve.
         algorithm_3d: Gmsh 3D meshing algorithm, "delaunay" or "hxt"
         threads: Threads for 3D meshing
         surface_threads: Threads for 1D and 2D meshing; above 1 the mesh
@@ -1361,6 +1553,17 @@ def generate_mesh(
         raise ValueError(
             "refinement_boxes apply to native-2D cross-section meshes only."
         )
+    if planar_conductors and simulation_type == "magnetostatic":
+        # A vertical current-source sheet would touch zero-thickness metal only
+        # along a line, so the source could not close its loop on PEC.
+        raise ValueError(
+            "planar_conductors=True is not supported for magnetostatic "
+            "simulations: each current-source sheet must end on conductor "
+            "volumes. Mesh the conductors with their thickness "
+            "(planar_conductors=False)."
+        )
+    if mesh_grading is not None and simulation_type != "boundarymode":
+        raise ValueError("mesh_grading applies to native-2D cross-section meshes only.")
 
     # Terminals by net: find the nets and make sure that via merging keeps them
     # apart, before any meshing work is done.
@@ -1434,79 +1637,97 @@ def generate_mesh(
                 interface_specs=interface_specs,
             )
 
-            refinement_lines = sorted(
-                {
-                    int(tag)
-                    for info in groups.get("refinement_lines", {}).values()
-                    for tag in info.get("tags", [])
-                }
-            )
-            # Per-volume fine-size requests (e.g. the PN-junction depletion
-            # strip): each gets its own Threshold field keyed to the
-            # requested size so narrow features mesh with several
-            # well-shaped elements across instead of slivers.
-            fine_requests = _collect_fine_size_requests(
-                groups, stack, refined_mesh_size
-            )
-            field_ids: list[int] = []
-            next_field_id = 1
-            if refinement_lines:
-                aggressive_size = max(refined_mesh_size * 0.5, 1e-4)
-                field_ids.append(
-                    gmsh_utils.setup_mesh_refinement(
-                        refinement_lines,
-                        aggressive_size,
-                        max_mesh_size,
-                        sampling=400,
-                        dist_max=max_mesh_size * 0.5,
-                        distance_id=next_field_id,
-                        threshold_id=next_field_id + 1,
+            if mesh_grading is not None:
+                field_ids = _setup_graded_fields(
+                    groups,
+                    stack,
+                    grading=mesh_grading,
+                    refined_mesh_size=refined_mesh_size,
+                    max_mesh_size=max_mesh_size,
+                    refinement_boxes=refinement_boxes,
+                )
+            else:
+                refinement_lines = sorted(
+                    {
+                        int(tag)
+                        for info in groups.get("refinement_lines", {}).values()
+                        for tag in info.get("tags", [])
+                    }
+                )
+                # Per-volume fine-size requests (e.g. the PN-junction depletion
+                # strip): each gets its own Threshold field keyed to the
+                # requested size so narrow features mesh with several
+                # well-shaped elements across instead of slivers.
+                fine_requests = _collect_fine_size_requests(
+                    groups, stack, refined_mesh_size
+                )
+                field_ids: list[int] = []
+                next_field_id = 1
+                if refinement_lines:
+                    aggressive_size = max(refined_mesh_size * 0.5, 1e-4)
+                    field_ids.append(
+                        gmsh_utils.setup_mesh_refinement(
+                            refinement_lines,
+                            aggressive_size,
+                            max_mesh_size,
+                            sampling=400,
+                            dist_max=max_mesh_size * 0.5,
+                            distance_id=next_field_id,
+                            threshold_id=next_field_id + 1,
+                        )
                     )
-                )
-                next_field_id += 2
-            for curve_tags, size_um in fine_requests:
-                total_length = 0.0
-                for ctag in curve_tags:
-                    try:
-                        bb = gmsh.model.getBoundingBox(1, int(ctag))
-                        total_length += math.hypot(bb[3] - bb[0], bb[4] - bb[1])
-                    except Exception:
-                        pass
-                sampling = (
-                    min(20000, max(400, math.ceil(total_length / (size_um / 4.0))))
-                    if total_length > 0
-                    else 2000
-                )
-                logger.info(
-                    "Fine mesh request: %d curves at %.4g um (sampling %d)",
-                    len(curve_tags),
-                    size_um,
-                    sampling,
-                )
-                field_ids.append(
-                    gmsh_utils.setup_mesh_refinement(
-                        curve_tags,
+                    next_field_id += 2
+                for curve_tags, size_um in fine_requests:
+                    total_length = 0.0
+                    for ctag in curve_tags:
+                        try:
+                            bb = gmsh.model.getBoundingBox(1, int(ctag))
+                            total_length += math.hypot(bb[3] - bb[0], bb[4] - bb[1])
+                        except Exception:
+                            pass
+                    sampling = (
+                        min(20000, max(400, math.ceil(total_length / (size_um / 4.0))))
+                        if total_length > 0
+                        else 2000
+                    )
+                    logger.info(
+                        "Fine mesh request: %d curves at %.4g um (sampling %d)",
+                        len(curve_tags),
                         size_um,
-                        max_mesh_size,
-                        sampling=sampling,
-                        dist_min=2.0 * size_um,
-                        dist_max=max(1.0, 40.0 * size_um),
-                        distance_id=next_field_id,
-                        threshold_id=next_field_id + 1,
+                        sampling,
                     )
-                )
-                next_field_id += 2
-            # The cross-section is meshed in its own (h, z) plane. Box fields
-            # follow the line fields so the ids never collide.
-            first_box_id = max(_FIRST_BOX_FIELD_ID, next_field_id)
-            for offset, (h_min, h_max, z_min, z_max, size) in enumerate(
-                refinement_boxes
-            ):
-                field_id = first_box_id + offset
-                gmsh_utils.setup_box_refinement(
-                    field_id, h_min, z_min, -1.0, h_max, z_max, 1.0, size, max_mesh_size
-                )
-                field_ids.append(field_id)
+                    field_ids.append(
+                        gmsh_utils.setup_mesh_refinement(
+                            curve_tags,
+                            size_um,
+                            max_mesh_size,
+                            sampling=sampling,
+                            dist_min=2.0 * size_um,
+                            dist_max=max(1.0, 40.0 * size_um),
+                            distance_id=next_field_id,
+                            threshold_id=next_field_id + 1,
+                        )
+                    )
+                    next_field_id += 2
+                # The cross-section is meshed in its own (h, z) plane. Box fields
+                # follow the line fields so the ids never collide.
+                first_box_id = max(_FIRST_BOX_FIELD_ID, next_field_id)
+                for offset, (h_min, h_max, z_min, z_max, size) in enumerate(
+                    refinement_boxes
+                ):
+                    field_id = first_box_id + offset
+                    gmsh_utils.setup_box_refinement(
+                        field_id,
+                        h_min,
+                        z_min,
+                        -1.0,
+                        h_max,
+                        z_max,
+                        1.0,
+                        size,
+                        max_mesh_size,
+                    )
+                    field_ids.append(field_id)
             if field_ids:
                 gmsh_utils.finalize_mesh_fields(field_ids)
             else:
@@ -1537,6 +1758,18 @@ def generate_mesh(
                 problem_type=simulation_type,
             )
 
+            # No element may be written twice: a line or triangle in two physical
+            # groups gives Palace a face with several boundary elements. Contact
+            # and interface lines are named after declared layer pairs and may
+            # reuse the interface curves on purpose.
+            gmsh_utils.check_unique_group_membership(
+                dims=(1, 2),
+                ignore_names=(
+                    *groups.get("contact_lines", {}),
+                    *groups.get("interface_lines", {}),
+                ),
+            )
+
             gmsh.option.setNumber("Mesh.Binary", 0)
             gmsh.option.setNumber("Mesh.SaveAll", 0)
             gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
@@ -1560,7 +1793,7 @@ def generate_mesh(
                     periodic_axis,
                     absorbing_order=absorbing_order,
                     # tensors are written in the 2D mesh frame (_to_section_frame)
-                    hints={"_cross_section_axis": cross_section.axis},
+                    cross_section_axis=cross_section.axis,
                 )
 
             return MeshResult(
@@ -1616,6 +1849,9 @@ def generate_mesh(
             airbox_z_above=airbox_z_above,
             airbox_z_below=airbox_z_below,
             symmetry_plane=symmetry_plane,
+        )
+        logger.info(
+            "  Domain z-range: %.3f to %.3f um", domain_bounds[2], domain_bounds[5]
         )
         domain_bbox = (
             geometry.bbox[0] - margin_x,
@@ -1832,6 +2068,10 @@ def generate_mesh(
             field_order=numerical_config.order if numerical_config else 2,
             problem_type=simulation_type,
         )
+
+        # No element may be written twice: a face in two physical groups gives
+        # Palace a face with several boundary elements.
+        gmsh_utils.check_unique_group_membership(dims=(2, 3))
 
         # Save mesh
         gmsh.option.setNumber("Mesh.Binary", 0)

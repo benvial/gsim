@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from gsim.common.s_matrix import SMatrix, SMatrixRun, assemble_s_matrix
+from gsim.fdtd.field_results import (
+    ComplexFieldResult,
+    FieldCoordinates,
+    parse_complex_fields,
+)
+from gsim.fdtd.monitor_names import MonitorNameAliases
 
 _S_PARAMETER_PATTERN = re.compile(r"S\(([^,]+),([^\)]+)\)")
 
@@ -275,6 +283,21 @@ class PlaneMonitorResult:
     heatmaps: list[HeatmapResult] = field(default_factory=list)
     coupling_efficiency: ComplexTrace | None = None
     fiber_amplitude: ComplexTrace | None = None
+    fields: list[ComplexFieldResult] = field(default_factory=list)
+    field_coordinates: FieldCoordinates | None = None
+
+    def field(self, component: str, *, wavelength_um: float) -> ComplexFieldResult:
+        """Select a component at the closest available exported wavelength."""
+        if not np.isfinite(wavelength_um) or wavelength_um <= 0:
+            raise ValueError("field wavelength must be finite and positive")
+        candidates = [
+            value for value in self.fields if value.component == component.lower()
+        ]
+        if not candidates:
+            raise KeyError(f"monitor {self.name!r} has no complex field {component!r}")
+        return min(
+            candidates, key=lambda value: abs(value.wavelength_um - wavelength_um)
+        )
 
     def plot_flux(self, *, ax: Any = None) -> tuple[Any, Any]:
         """Plot signed outward flux against wavelength."""
@@ -333,7 +356,7 @@ class PlaneMonitorResult:
         return ax.figure, ax
 
 
-class MonitorResults(dict[str, PlaneMonitorResult]):
+class MonitorResults(MonitorNameAliases[PlaneMonitorResult]):
     """Plane-monitor results keyed by the names configured on the simulation."""
 
 
@@ -505,6 +528,9 @@ def _parse_monitor(
                 shape=tuple(metadata["shape"]),
             )
         )
+    fields, coordinates = parse_complex_fields(
+        data, output_dir, files, tuple(data["shape"])
+    )
     return PlaneMonitorResult(
         name=name,
         normal_axis=data["normal_axis"],
@@ -518,6 +544,8 @@ def _parse_monitor(
         wavelength_um=wavelengths,
         flux=np.asarray(data["flux"], dtype=float) if "flux" in data else None,
         heatmaps=heatmaps,
+        fields=fields,
+        field_coordinates=coordinates,
         coupling_efficiency=_optional_complex_trace(
             data.get("coupling_efficiency"), monitor_valid
         ),
@@ -534,6 +562,67 @@ def _optional_complex_trace(
     return None if samples is None else ComplexTrace.from_samples(samples, valid)
 
 
+def s_matrix(
+    results: FDTDResult | Sequence[FDTDResult],
+    *,
+    assume_reciprocal: bool = False,
+    assume_unmeasured_zero: bool = False,
+) -> SMatrix:
+    """Build an S-matrix from one result per excited port.
+
+    One eigenmode run measures one S-matrix column, so a matrix needs a run per
+    port or an explicit assumption for what no run measured. Samples below the
+    noise floor are dropped, with a WARNING giving the count. Values are taken as
+    exp(+jwt) without conversion. The solver does not state this convention. It was
+    checked on one real straight waveguide, and a WARNING fires if the strongest
+    transmission has a negative group delay. Another fires if the phase of a measured
+    entry moves by 3/4 pi or more between samples, for each entry with at least a tenth
+    of the strongest peak.
+
+    Phases are referenced where the solver's port monitors sit; gsim does not
+    de-embed them.
+
+    Args:
+        results: One result or a sequence, all with the same ports and wavelengths.
+        assume_reciprocal: Copy a missing S(a,b) from a measured S(b,a).
+        assume_unmeasured_zero: Set entries that are still missing to zero.
+
+    Returns:
+        The matrix, with ``sax_model()`` and ``write_touchstone()``. ``measured`` is
+        False for every entry filled by an assumption.
+
+    Raises:
+        ValueError: If there are no results; a result has no S-parameters (a
+            non-eigenmode source); port sets or wavelength grids differ; an entry
+            appears twice or names an unknown port; every sample is invalid; or an
+            entry is missing and neither flag fills it.
+    """
+    runs = [results] if isinstance(results, FDTDResult) else results
+    return assemble_s_matrix(
+        [_s_matrix_run(result) for result in runs],
+        assume_reciprocal=assume_reciprocal,
+        assume_unmeasured_zero=assume_unmeasured_zero,
+    )
+
+
+def _s_matrix_run(result: FDTDResult) -> SMatrixRun:
+    """Describe one result for assembly, flagging a sample if any trace does."""
+    traces = dict(result.s_parameters.items())
+    valid = result.valid.copy()
+    for trace in traces.values():
+        valid &= trace.valid
+    return SMatrixRun(
+        label=(
+            f"FDTD result {result.job_name or result.output_path.name!r} "
+            f"(excitation_type={result.excitation_type!r})"
+        ),
+        wavelength_um=result.wavelength_um,
+        ports=result.ports,
+        entries={key: trace.values for key, trace in traces.items()},  # noqa: PD011
+        valid=valid,
+    )
+
+
 __all__ = [
     "ComplexTrace",
     "FDTDResult",
@@ -542,4 +631,5 @@ __all__ = [
     "PlaneMonitorResult",
     "PortOutputResults",
     "SParameterResults",
+    "s_matrix",
 ]

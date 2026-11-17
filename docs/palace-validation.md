@@ -1,5 +1,8 @@
 # Validate Palace result evidence
 
+This page is about checking the solver evidence of a run you made. It does not compare results with analytic, measured or
+published references.
+
 [`validate_solution`][gsim.palace.validation.validate_solution] reports core solver convergence, optional error
 estimation, adaptive sampling, process exit and OOM evidence, mode checks, and input provenance independently. A zero
 exit code does not establish physical validity. The function reads supplied evidence and never changes tolerances or
@@ -146,6 +149,8 @@ result.mesh_stats["gmsh_options"]["Mesh.MaxNumThreads2D"]
 Equal hashes mean the same nodes (to 1e-4 um) and the same elements in each physical group. Compare hashes only between
 runs with the same Gmsh version on the same kind of host; the stats do not record the host. A different hash under
 reproducible settings points at a change in the geometry, the mesh settings or the Gmsh build.
+To run a second driven or eigenmode simulation on the identical mesh without relying on Gmsh being deterministic, give it
+the first one's mesh with [`reuse_mesh`](api/palace.md#reuse-a-mesh).
 
 ## Evidence and limits
 
@@ -153,9 +158,12 @@ Statuses describe supplied evidence, not a complete physical validation. In part
 least one recognized convergence message and no recognized core failure. It cannot establish complete log coverage, mesh
 convergence, or convergence of unreported eigenpairs. Unrecognized log formats and absent metrics are not proof of
 success. The log fixtures cover driven logs from archived `cfa430a` and `cfa430a-dirty` builds, and electrostatic,
-eigenmode and boundary-mode logs from Palace `v0.18.1`. Magnetostatic and transient log coverage is not established. The
-standard driven `It N/M: Index = ...` header resets the estimator section, but abridged or reformatted logs may omit that
-boundary. Later Palace formats may require additional parsing rules.
+eigenmode, boundary-mode and magnetostatic logs from Palace `v0.18.1`. Transient log coverage is not established. A
+magnetostatic solve that did not converge still exits 0 and writes a plausible inductance matrix, so `load_inductance`
+checks `palace.log` the same way and refuses a run whose core check failed; the cloud build's `Current source solve did
+not converge for port N!` counts as a core failure. The standard driven `It N/M: Index = ...` header resets the
+estimator section, but abridged or reformatted logs may omit that boundary. Later Palace formats may require additional
+parsing rules.
 
 `report.failures` contains explicit failures; an empty tuple can still leave unknown or omitted checks. Mode checks are
 omitted unless requested; the automatic port-mode continuity checks are separate (`report.port_mode_checks`, listed in

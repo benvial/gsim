@@ -17,6 +17,8 @@ from gsim.common.materials import (
     evaluate_material_card,
     tabulated_wavelengths_um,
 )
+from gsim.fdtd.field_requests import FieldsConfig
+from gsim.fdtd.mode_selection import ModeSelection
 from gsim.fdtd.models import FDTDConfigError, MeshManifest
 
 
@@ -213,6 +215,7 @@ class PlaneMonitorConfig(_StrictModel):
     wavelengths: list[float] | None = None
     heatmap: HeatmapConfig | None = None
     fiber_mode: FiberModeConfig | None = None
+    fields: FieldsConfig | None = None
 
     @model_validator(mode="after")
     def validate_plane(self) -> PlaneMonitorConfig:
@@ -242,6 +245,7 @@ class ExcitationConfig(_StrictModel):
     num_wavelengths: int = Field(ge=1)
     amplitude: float = 1.0
     default_port: str | None = Field(default=None, min_length=1)
+    mode: ModeSelection | None = None
     dipole: DipoleConfig | None = None
     line_current: LineCurrentConfig | None = None
     gaussian_beam: GaussianBeamConfig | None = None
@@ -268,6 +272,8 @@ class ExcitationConfig(_StrictModel):
             return self
         if self.default_port is not None:
             raise ValueError(f"{self.type} excitation cannot use default_port")
+        if self.mode is not None:
+            raise ValueError(f"{self.type} excitation cannot select a guided mode")
         for source_type, block in source_blocks.items():
             if (source_type == self.type) != (block is not None):
                 raise ValueError(
@@ -346,6 +352,16 @@ class FDTDConfig(_StrictModel):
             raise ValueError(
                 f"default_port {self.excitation.default_port!r} is not declared"
             )
+        mode = self.excitation.mode
+        if mode is not None and mode.te_axis is not None:
+            axis_index = "xyz".index(mode.te_axis)
+            for port_name, port in self.geometry.ports.items():
+                if port.normal[axis_index] != 0:
+                    raise ValueError(
+                        "Mode selection te_axis must be transverse to every "
+                        f"guided port: {mode.te_axis!r} is longitudinal "
+                        f"to port {port_name!r}."
+                    )
         monitor_names = [monitor.name for monitor in self.monitors]
         if len(monitor_names) != len(set(monitor_names)):
             raise ValueError("monitor names must be unique")
@@ -646,6 +662,7 @@ __all__ = [
     "ExcitationConfig",
     "FDTDConfig",
     "FiberModeConfig",
+    "FieldsConfig",
     "GaussianBeamConfig",
     "GeometryConfig",
     "GridConfig",

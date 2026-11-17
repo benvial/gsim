@@ -4,22 +4,26 @@ from gsim.fdtd.api import (
     DipoleSource,
     Domain,
     FiberMode,
+    Fields,
     GaussianBeamSource,
     Geometry,
     Heatmap,
     LineCurrentSource,
     Material,
     Materials,
+    ModeSelection,
     Monitors,
     PlaneMonitor,
     PortSource,
     Solver,
 )
 from gsim.fdtd.config import FDTDConfig
+from gsim.fdtd.field_results import ComplexFieldResult, FieldCoordinates
 from gsim.fdtd.models import (
     FDTDArtifactError,
     FDTDConfigError,
     FDTDGeometryError,
+    GeometryClippingWarning,
     MeshManifest,
     SimulationArtifacts,
 )
@@ -36,6 +40,7 @@ from gsim.fdtd.results import (
     PlaneMonitorResult,
     PortOutputResults,
     SParameterResults,
+    s_matrix,
 )
 from gsim.fdtd.viz import MeshViewer
 from gsim.fdtd.workflow import Simulation
@@ -50,6 +55,7 @@ def _parse_fdtd_result(run_result: RunResult) -> FDTDResult:
 register_result_parser("fdtd", _parse_fdtd_result)
 
 __all__ = [
+    "ComplexFieldResult",
     "ComplexTrace",
     "CouplingEfficiencyResult",
     "DipoleSource",
@@ -60,8 +66,11 @@ __all__ = [
     "FDTDGeometryError",
     "FDTDResult",
     "FiberMode",
+    "FieldCoordinates",
+    "Fields",
     "GaussianBeamSource",
     "Geometry",
+    "GeometryClippingWarning",
     "Heatmap",
     "HeatmapResult",
     "LineCurrentSource",
@@ -69,6 +78,7 @@ __all__ = [
     "Materials",
     "MeshManifest",
     "MeshViewer",
+    "ModeSelection",
     "MonitorResults",
     "Monitors",
     "PlaneMonitor",
@@ -81,4 +91,5 @@ __all__ = [
     "Solver",
     "fiber_coupling_efficiency",
     "gaussian_coupling_efficiency",
+    "s_matrix",
 ]

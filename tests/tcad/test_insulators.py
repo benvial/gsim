@@ -127,9 +127,10 @@ class TestPotentialOnlyRegion:
         oxide_sim._setup_device()
         assert [args[1] for args in sp.called("CreateOxidePotentialOnly")] == ["sio2"]
         [permittivity] = [
-            c for c in devsim.called("set_parameter") if c["name"] == "Permittivity"
+            c
+            for c in devsim.called("set_parameter")
+            if c["name"] == "Permittivity" and c["region"] == "sio2"
         ]
-        assert permittivity["region"] == "sio2"
         assert permittivity["value"] == pytest.approx(
             OXIDE_PERMITTIVITY * VACUUM_PERMITTIVITY_F_PER_CM
         )
@@ -137,7 +138,10 @@ class TestPotentialOnlyRegion:
     def test_it_holds_no_doping_mobility_or_carriers(self, oxide_sim, fake_devsim):
         devsim, sp = fake_devsim
         oxide_sim.solve(0.5, contact="cathode")
-        assert "sio2" not in {c["region"] for c in devsim.called("node_solution")}
+        # Its only node solution is the signed node volume of the assembly.
+        assert {
+            c["name"] for c in devsim.called("node_solution") if c["region"] == "sio2"
+        } <= {"SignedNodeVolume"}
         for model in ("CreateSiliconPotentialOnly", "CreateSiliconDriftDiffusion"):
             assert {args[1] for args in sp.called(model)} == set(DOPED)
 

@@ -35,7 +35,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast
 
 from gdsfactoryplus import sim
 
@@ -522,45 +522,64 @@ def get_status(job_id: str) -> str:
     return _status_value(job.status)
 
 
-def _fetch_logs(job_id: str, cursor: str | None) -> tuple[list[str], str | None]:
-    """Fetch a page of log messages. Returns (messages, next_cursor)."""
+class _LogPosition(NamedTuple):
+    """Where log streaming resumes: a page cursor and the items printed from it.
+
+    The logs API omits ``next_cursor`` on the last page, and that page keeps
+    growing while the job runs, so the cursor alone cannot mark the end of
+    what was already printed.
+    """
+
+    cursor: str | None = None
+    seen: int = 0
+
+
+def _fetch_logs(
+    job_id: str, position: _LogPosition, *, limit: int = 50
+) -> tuple[list[str], _LogPosition, bool]:
+    """Fetch unseen log messages from one page.
+
+    Returns ``(messages, next_position, has_more)``, where *has_more* says
+    whether a further page exists.
+    """
     _get_logs = _get_job_logs_callable()
     if _get_logs is None:
-        return [], cursor
-    _logs_unavailable = getattr(sim, "LogsNotAvailableError", Exception)
+        return [], position, False
     try:
-        page = _get_logs(job_id, cursor=cursor, limit=50)
-    except _logs_unavailable:
-        return [], cursor
-    except Exception:
-        return [], cursor
+        page = _get_logs(job_id, cursor=position.cursor, limit=limit)
+    except Exception:  # includes sim.LogsNotAvailableError; retry next poll
+        return [], position, False
     else:
         # Strip leading timestamps like "[2026-03-18T15:05:33.217Z] "
         msgs = [
             re.sub(r"^\[\d{4}-\d{2}-\d{2}T[\d:.]+Z\]\s*", "", entry.get("message", ""))
             for entry in page["items"]
         ]
-        next_cursor = page["page_info"].get("next_cursor") or cursor
-        return msgs, next_cursor
+        new_msgs = msgs[position.seen :]
+        next_cursor = page["page_info"].get("next_cursor")
+        if next_cursor:
+            return new_msgs, _LogPosition(next_cursor), True
+        return new_msgs, _LogPosition(position.cursor, len(msgs)), False
 
 
 def _fetch_and_print_logs(
     job_id: str,
-    cursor: str | None,
+    position: _LogPosition,
     *,
     drain: bool = False,
-) -> str | None:
-    """Fetch a page of logs and print them. Returns the next cursor.
+) -> _LogPosition:
+    """Print log messages not yet shown. Returns where to resume.
 
     When *drain* is True, fetch all remaining pages (for final flush).
     """
     while True:
-        msgs, cursor = _fetch_logs(job_id, cursor)
+        msgs, next_position, has_more = _fetch_logs(job_id, position)
         for msg in msgs:
             print(f"  {msg}")  # noqa: T201
-        if not drain or not msgs:
-            break
-    return cursor
+        # Stop on the last page, or if the API hands back the same cursor
+        if not drain or not has_more or next_position == position:
+            return next_position
+        position = next_position
 
 
 def estimate_runtime_seconds(input_dir: str | Path) -> float:
@@ -611,8 +630,8 @@ def wait_for_results(
         parent_dir: Where to create sim-data directories (default: cwd).
         poll_interval: Seconds between status polls (default 5.0).
         estimated_runtime_seconds: Expected solver runtime, excluding queue
-            time. When provided, status output includes an estimated percent
-            complete and remaining time.
+            time. When provided, the status bar uses the estimated elapsed
+            fraction and the description includes estimated remaining time.
 
     Returns:
         Parsed result (single job) or list of parsed results (multiple jobs).
@@ -654,8 +673,8 @@ def wait_for_results(
     # Highest percentage shown per job, so the bar never moves backwards
     shown_progress: dict[str, int] = {}
 
-    # Log cursors for streaming (one per job)
-    log_cursors: dict[str, str | None] = dict.fromkeys(job_ids, None)
+    # Log positions for streaming (one per job)
+    log_positions = {jid: _LogPosition() for jid in job_ids}
 
     # Poll until all jobs reach a terminal state
     while not all(_status_value(j.status) in terminal for j in jobs.values()):
@@ -684,7 +703,7 @@ def wait_for_results(
                 if verbose == "full" and _status_value(
                     jobs[jid].status
                 ) == _status_value(sim.SimStatus.RUNNING):
-                    log_cursors[jid] = _fetch_and_print_logs(jid, log_cursors[jid])
+                    log_positions[jid] = _fetch_and_print_logs(jid, log_positions[jid])
                 # Freeze timer when job reaches terminal state
                 if _status_value(jobs[jid].status) in terminal:
                     end_times[jid] = time.monotonic()
@@ -692,7 +711,7 @@ def wait_for_results(
     # Final log fetch — drain all remaining pages
     if verbose == "full":
         for jid in job_ids:
-            _fetch_and_print_logs(jid, log_cursors[jid], drain=True)
+            _fetch_and_print_logs(jid, log_positions[jid], drain=True)
 
     # Final status display — skip clear_output when logs were streamed
     if verbose == "status":
@@ -765,11 +784,12 @@ def _print_status_table(
     * **Jupyter / nbconvert** — uses ``clear_output(wait=True)`` so every
       poll replaces the previous output.  nbconvert only captures the
       *last* state, giving one clean line in rendered docs.
-    * **TTY (terminal)** — uses carriage-return / ANSI cursor-up to overwrite.
+    * **TTY (terminal)** — uses carriage-return / ANSI cursor-up and line erasure.
+      Rows are shortened to fit the terminal width without wrapping.
     * **Pipe / plain CI** — only prints the final status.
 
-    ``shown_progress`` maps job IDs to the highest percentage already
-    displayed. Pass the same dict on every poll so a job's bar never moves
+    ``shown_progress`` maps job IDs to the highest bar-fill percentage already
+    used. Pass the same dict on every poll so a job's bar never moves
     backwards; it is updated in place.
 
     Returns the number of lines printed (for the TTY path to erase).
@@ -778,6 +798,17 @@ def _print_status_table(
 
     _end_times = end_times or {}
     mode = _output_mode()
+    tty_width = (
+        max(0, shutil.get_terminal_size().columns - 1) if mode == "tty" else None
+    )
+
+    def _fit_tty(line: str) -> str:
+        # Leave the last column unused to avoid automatic terminal wrapping.
+        if tty_width is None or len(line) <= tty_width:
+            return line
+        if tty_width < 3:
+            return "." * tty_width
+        return line[: tty_width - 3] + "..."
 
     # Pipe: only print at the end
     if mode == "pipe" and not final:
@@ -790,7 +821,7 @@ def _print_status_table(
         clear_output(wait=True)
 
     # TTY: move cursor up to overwrite previous output
-    if mode == "tty" and prev_lines > 0:
+    if mode == "tty" and prev_lines > 0 and len(jobs) > 1:
         sys.stdout.write(f"\033[{prev_lines}A")
 
     def _elapsed(jid: str) -> str:
@@ -807,18 +838,19 @@ def _print_status_table(
         """
         status = _status_value(job.status).casefold()
         if status == "completed":
-            return 100, "complete"
+            return 100, "Job completed"
         if status == "failed":
-            return 100, "failed"
+            return 100, "Job failed"
         if status == "running":
             if estimated_runtime_seconds is not None:
                 elapsed = time.monotonic() - start_times[jid]
                 percent = min(99, round(100 * elapsed / estimated_runtime_seconds))
                 remaining = max(0, estimated_runtime_seconds - elapsed)
                 mins, secs = divmod(round(remaining), 60)
-                return percent, f"running, ETA {mins}m {secs:02d}s"
-            return 50, "running"
-        return _PRE_RUN_PROGRESS.get(status, 5), status or "starting"
+                return percent, f"Job in progress... ETA {mins}m {secs:02d}s"
+            return 50, "Job in progress..."
+        description = (status or "starting").replace("_", " ").replace("-", " ")
+        return _PRE_RUN_PROGRESS.get(status, 5), f"Job {description}..."
 
     def _progress(jid: str, job: Any) -> tuple[int, str]:
         percent, phase = _lifecycle_progress(jid, job)
@@ -831,7 +863,7 @@ def _print_status_table(
 
     def _bar(percent: int, width: int = 20) -> str:
         filled = round(width * percent / 100)
-        return f"[{'#' * filled}{'.' * (width - filled)}] {percent:3d}%"
+        return f"[{'#' * filled}{'.' * (width - filled)}]"
 
     lines_printed = 0
     n = len(jobs)
@@ -844,7 +876,7 @@ def _print_status_table(
             f"  elapsed {_elapsed(jid)}"
         )
         if mode == "tty":
-            sys.stdout.write(f"\r{msg:<80s}")
+            sys.stdout.write(f"\r\033[2K{_fit_tty(msg)}")
             if final:
                 sys.stdout.write("\n")
         else:
@@ -853,15 +885,24 @@ def _print_status_table(
         return 1
 
     # Multi-job: header + one line per job
-    print(f"Waiting for {n} jobs...")  # noqa: T201
+    rows = [(jid, job, *_progress(jid, job)) for jid, job in jobs.items()]
+    name_width = max(
+        30, max((len(job.job_name or jid) for jid, job in jobs.items()), default=30)
+    )
+    phase_width = max((len(phase) for _, _, _, phase in rows), default=0)
+    if mode == "tty":
+        sys.stdout.write("\r\033[2K")
+    print(_fit_tty(f"Waiting for {n} jobs..."))  # noqa: T201
     lines_printed += 1
-    for jid, job in jobs.items():
-        percent, phase = _progress(jid, job)
+    for jid, job, percent, phase in rows:
         line = (
-            f"  {job.job_name or jid:<30s} {_bar(percent)} {phase:<12s}"
+            f"  {job.job_name or jid:<{name_width}s} {_bar(percent)}"
+            f" {phase:<{phase_width}s}"
             f" elapsed {_elapsed(jid)}"
         )
-        print(line)  # noqa: T201
+        if mode == "tty":
+            sys.stdout.write("\r\033[2K")
+        print(_fit_tty(line))  # noqa: T201
         lines_printed += 1
 
     sys.stdout.flush()

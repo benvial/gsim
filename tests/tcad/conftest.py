@@ -32,7 +32,7 @@ class FakeDevsim(types.ModuleType):
         self.calls: list[tuple[str, dict]] = []
         self.node_coords = {
             "x": [0.0, 1e-4, 2e-4],
-            "y": [0.0, 0.5e-4, 1e-4],
+            "y": [0.0, 0.0, 1e-4],
         }
         self.node_values: dict[tuple[str, str], list[float]] = {}
         self.parameters: dict[str, float] = {}
@@ -94,6 +94,26 @@ class FakeDevsim(types.ModuleType):
             key = (kwargs["region"], kwargs["name"])
             self.node_values[key] = list(kwargs["values"])
 
+    def edge_solution(self, **kwargs):
+        self._record("edge_solution", **kwargs)
+
+    def set_edge_values(self, **kwargs):
+        self._record("set_edge_values", **kwargs)
+
+    def edge_from_node_model(self, **kwargs):
+        self._record("edge_from_node_model", **kwargs)
+
+    def get_element_node_list(self, **kwargs):
+        """One triangle on the first three nodes."""
+        self._record("get_element_node_list", **kwargs)
+        return [(0, 1, 2)]
+
+    def get_edge_model_values(self, **kwargs):
+        """The three edges of that triangle, by their end nodes."""
+        self._record("get_edge_model_values", **kwargs)
+        ends = {"node_index@n0": [0, 1, 0], "node_index@n1": [1, 2, 2]}
+        return list(ends.get(kwargs["name"], [0.0, 0.0, 0.0]))
+
     def node_model(self, **kwargs):
         self._record("node_model", **kwargs)
 
@@ -103,6 +123,16 @@ class FakeDevsim(types.ModuleType):
     def set_parameter(self, **kwargs):
         self._record("set_parameter", **kwargs)
         self.parameters[kwargs["name"]] = kwargs["value"]
+
+    def get_parameter(self, **kwargs):
+        self._record("get_parameter", **kwargs)
+        return self.parameters.get(kwargs["name"], 0.0259)
+
+    def contact_node_model(self, **kwargs):
+        self._record("contact_node_model", **kwargs)
+
+    def contact_equation(self, **kwargs):
+        self._record("contact_equation", **kwargs)
 
     def solve(self, **kwargs):
         self._record("solve", **kwargs)
@@ -155,12 +185,26 @@ class FakeDevsim(types.ModuleType):
 class FakeSimplePhysics(types.ModuleType):
     """Recording stand-in for ``devsim.python_packages.simple_physics``."""
 
+    #: DEVSIM's silicon permittivity and its rounded vacuum value (F/cm).
+    eps_si = 11.1
+    eps_0 = 8.85e-14
+
     def __init__(self):
         super().__init__("devsim.python_packages.simple_physics")
         self.calls: list[tuple[str, tuple]] = []
 
     def called(self, name):
         return [args for cname, args in self.calls if cname == name]
+
+    def SetSiliconParameters(self, device, region, temperature):  # noqa: N802
+        """Write the region's Permittivity, as DEVSIM's own does."""
+        self.calls.append(("SetSiliconParameters", (device, region, temperature)))
+        sys.modules["devsim"].set_parameter(
+            device=device,
+            region=region,
+            name="Permittivity",
+            value=self.eps_si * self.eps_0,
+        )
 
     def __getattr__(self, name):
         if name.startswith("_"):

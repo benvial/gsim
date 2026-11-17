@@ -15,6 +15,8 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from gsim.common.cloud import CloudJobMixin, submit
+from gsim.meep.layer_order import order_by_mesh_order
+from gsim.meep.mode_bounds import cell_extent, is_ideal_air, material_extent
 from gsim.meep.models.api import (
     FDTD,
     Domain,
@@ -30,6 +32,24 @@ logger = logging.getLogger(__name__)
 
 _AUTO_Z_PADDING = 0.5
 _FIBER_FLUX_OFFSET = 0.3
+_AIR_ONLY_STACK_WARNING = (
+    "PDK-authoritative stack has no bulk dielectric region; the FDTD background "
+    "outside drawn polygons is air, and PDK levels without polygons (such as "
+    "wafer-level box or cladding) add no FDTD material. {advice}"
+)
+_AIR_ONLY_ADVICE_SET_STACK = (
+    "Pass dielectrics=[...] to set_stack() to model them, or an explicit air "
+    "region if air is intended."
+)
+_AIR_ONLY_ADVICE_PREBUILT = (
+    "Add regions to the stack's dielectrics list, or call "
+    "set_stack(pdk_authoritative=True, dielectrics=[...]) instead of passing a "
+    "prebuilt stack. An explicit air region declares that air is intended."
+)
+_AIR_ONLY_ADVICE_CROPPED = (
+    "The stack declares dielectric regions, but domain.z_bounds removed all of "
+    "them. Expand domain.z_bounds to keep them."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +93,7 @@ def _precompute_cross_section_geometry(
     pml_thickness: float = 0.0,
     resolution: float = 32,
     material_data: dict[str, Any] | None = None,
-    background_material: str = "air",  # noqa: ARG001
+    background_material: str = "air",  # noqa: ARG001 - explicit regions are background-independent
 ) -> Any:
     """Pre-compute 2D cross-section cell geometry for cloud serialization.
 
@@ -136,8 +156,7 @@ def _precompute_cross_section_geometry(
     else:
         raise ValueError("Either port or position must be specified")
 
-    z_min = min(layer.zmin for layer in stack.layers.values())
-    z_max = max(layer.zmax for layer in stack.layers.values())
+    z_min, z_max = cell_extent(stack, component, material_data)
     if isinstance(z_margin, (tuple, list)):
         z_margin_bottom, z_margin_top = z_margin
     else:
@@ -157,8 +176,10 @@ def _precompute_cross_section_geometry(
     blocks: list[Any] = []
 
     layer_data: list[dict] = []
-    for layer in stack.layers.values():
-        if layer.material == "air":
+    for layer in order_by_mesh_order(stack.layers.values()):
+        if is_ideal_air(layer.material, material_data) and not _layer_has_any_polygon(
+            component, layer
+        ):
             continue
         if material_data and layer.material not in material_data:
             continue
@@ -179,6 +200,7 @@ def _precompute_cross_section_geometry(
                 "z_hi": layer.zmax - z_center,
                 "intervals": intervals,
                 "material": layer.material,
+                "mesh_order": getattr(layer, "mesh_order", None),
             }
         )
 
@@ -207,9 +229,12 @@ def _precompute_cross_section_geometry(
                         z_center=block_z_center,
                         z_size=block_z_size,
                         material=ld["material"],
+                        mesh_order=ld["mesh_order"],
                     )
                 )
 
+            if is_ideal_air(ld["material"], material_data):
+                continue
             bottom_free = _subtract_intervals((h0, h1), below_intervals)
             for bh0, bh1 in bottom_free:
                 bh_center = (bh0 + bh1) / 2.0
@@ -228,19 +253,23 @@ def _precompute_cross_section_geometry(
                         z_center=(ext_z_lo + ext_z_hi) / 2.0,
                         z_size=ext_z_size,
                         material=ld["material"],
+                        mesh_order=ld["mesh_order"],
                     )
                 )
 
     # Add dielectric slabs (uniform horizontal layers)
     for diel in stack.dielectrics:
-        if diel["material"] == "air":
+        if material_data and diel["material"] not in material_data:
             continue
         z_lo = diel["zmin"] - z_center
         z_hi = diel["zmax"] - z_center
         z_size = z_hi - z_lo
         if z_size <= 0:
             continue
-        if abs(diel["zmin"] - z_min) < 1e-12:
+        if (
+            not is_ideal_air(diel["material"], material_data)
+            and abs(diel["zmin"] - z_min) < 1e-12
+        ):
             z_lo = -z_span / 2.0
         z_size = z_hi - z_lo
         block_z_center = (z_lo + z_hi) / 2.0
@@ -251,12 +280,13 @@ def _precompute_cross_section_geometry(
                 z_center=block_z_center,
                 z_size=z_size,
                 material=diel["material"],
+                mesh_order=diel.get("mesh_order"),
             )
         )
 
     return CrossSectionGeometry(
         plane="yz" if _use_yz else "xz",
-        blocks=blocks,
+        blocks=order_by_mesh_order(blocks),
         cell_horizontal_span=horizontal_span,
         cell_z_span=z_span,
         z_center=z_center,
@@ -326,12 +356,16 @@ class Simulation(CloudJobMixin, BaseModel):
     # Private: kwargs captured from geometry.stack when it's a string/path
     _stack_kwargs: dict[str, Any] = PrivateAttr(default_factory=dict)
 
+    # Private: canonical stack resolved in pdk_authoritative mode.
+    _authoritative_resolved: Any | None = PrivateAttr(default=None)
+
     # Private: guards against double vertical-cropping when build_config()
     # is called more than once (e.g. plot_2d then run) on the same sim.
     _z_cropped: bool = PrivateAttr(default=False)
     _z_crop_source_stack: Any | None = PrivateAttr(default=None)
     _last_cropped_stack: Any | None = PrivateAttr(default=None)
     _resolved_z_bounds: tuple[float, float] | None = PrivateAttr(default=None)
+    _air_only_warned: bool = PrivateAttr(default=False)
 
     # Extra hints forwarded into the config JSON (not part of the schema).
     _hints: dict[str, Any] = PrivateAttr(default_factory=dict)
@@ -358,6 +392,98 @@ class Simulation(CloudJobMixin, BaseModel):
         from gsim.common.stack.overlays import load_overlay
 
         self._pdk_overlay = load_overlay(path)
+
+    def set_stack(
+        self,
+        stack: Any | None = None,
+        *,
+        pdk_authoritative: bool = False,
+        pdk: Any | None = None,
+        dielectrics: list[dict[str, Any]] | None = None,
+        role_overrides: dict[str, str] | None = None,
+        use_pdk_overlay: bool = True,
+        yaml_path: str | Path | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Configure the layer stack used by this simulation.
+
+        The default path keeps the legacy inferred-stack extractor.  With
+        ``pdk_authoritative=True`` the active (or explicit) PDK LayerStack is
+        used verbatim through :func:`gsim.common.pdk.resolve_layer_stack`:
+        every declared layer keeps its PDK z-extent/material/mesh_order, no
+        synthetic oxide or substrate is inserted, and unknown materials raise.
+
+        In FDTD the background outside drawn polygons is air, and PDK levels
+        without polygons, such as a wafer-level box or cladding, add no material,
+        so a PDK with no reviewed overlay leaves drawn features in air unless
+        ``dielectrics`` declares the bulk regions.  :meth:`build_config` logs a
+        warning for such a stack; an explicit air region declares that air is
+        intended and silences it.  The check only looks for at least one
+        region: a stack with only a box region does not warn, even though
+        everything above that region is air.  Mode solves fill levels without
+        polygons across the cell, so this does not apply to them.
+
+        Args:
+            stack: Pre-built :class:`gsim.common.stack.LayerStack`.  When given,
+                it is used directly and the remaining keyword arguments are
+                ignored.
+            pdk_authoritative: Resolve the stack from the PDK LayerStack.
+            pdk: PDK object or module.  Defaults to the active PDK.
+            dielectrics: Explicit bulk dielectric regions, each with
+                ``name``/``material``/``zmin``/``zmax``.  Only valid with
+                ``pdk_authoritative=True``.
+            role_overrides: Explicit ``{layer_key: role}`` declarations.  Only
+                valid with ``pdk_authoritative=True``.
+            use_pdk_overlay: Apply the reviewed per-PDK overlay.  Only valid
+                with ``pdk_authoritative=True``.
+            yaml_path: Legacy custom YAML stack path.
+            **kwargs: Legacy ``get_stack`` options.
+
+        Returns:
+            The configured stack, or this simulation when resolution is lazy.
+        """
+        if stack is not None:
+            if pdk_authoritative or dielectrics or role_overrides or yaml_path:
+                raise ValueError(
+                    "set_stack(stack=...) cannot be combined with authoritative "
+                    "or legacy stack-building options."
+                )
+            self.geometry.stack = stack
+            self._stack_kwargs = {}
+            self._authoritative_resolved = None
+            self._air_only_warned = False
+            return stack
+
+        if pdk_authoritative:
+            if yaml_path is not None:
+                raise ValueError(
+                    "set_stack(pdk_authoritative=True) cannot be combined with "
+                    "yaml_path."
+                )
+            if kwargs:
+                raise ValueError(
+                    "set_stack(pdk_authoritative=True) ignores legacy stack "
+                    f"options ({', '.join(sorted(kwargs))}); use explicit "
+                    "dielectrics=/role_overrides= instead."
+                )
+            self._stack_kwargs = {
+                "pdk_authoritative": True,
+                "pdk": pdk,
+                "dielectrics": dielectrics,
+                "role_overrides": role_overrides,
+                "use_pdk_overlay": use_pdk_overlay,
+            }
+        else:
+            if dielectrics or role_overrides:
+                raise ValueError(
+                    "dielectrics=/role_overrides= require pdk_authoritative=True."
+                )
+            self._stack_kwargs = {"yaml_path": yaml_path, **kwargs}
+
+        self.geometry.stack = None
+        self._authoritative_resolved = None
+        self._air_only_warned = False
+        return self
 
     @field_validator("materials", mode="before")
     @classmethod
@@ -501,10 +627,14 @@ class Simulation(CloudJobMixin, BaseModel):
                 "drives the sim — unset source.port, or drop the fiber source."
             )
 
-        if self.geometry.stack is None:
+        if self.geometry.stack is None and not self._stack_kwargs.get(
+            "pdk_authoritative"
+        ):
             warnings_list.append(
                 "No stack configured. Will use active PDK with defaults."
             )
+        if self._has_air_only_stack():
+            warnings_list.append(self._air_only_stack_warning())
 
         # The active stopping mode is information, not a problem
         info: list[str] = []
@@ -539,9 +669,48 @@ class Simulation(CloudJobMixin, BaseModel):
     # Internal: stack resolution
     # -------------------------------------------------------------------------
 
+    def _has_air_only_stack(self) -> bool:
+        """Return whether the active stack is PDK-authoritative with no regions."""
+        stack = self.geometry.stack
+        if stack is None:
+            return False
+        return bool(stack.simulation.get("pdk_authoritative")) and not stack.dielectrics
+
+    def _air_only_stack_warning(self) -> str:
+        """Return the air-only warning with advice that fits how the stack was set."""
+        stack = self.geometry.stack
+        if (
+            self._z_cropped
+            and stack is self._last_cropped_stack
+            and self._z_crop_source_stack is not None
+            and self._z_crop_source_stack.dielectrics
+        ):
+            advice = _AIR_ONLY_ADVICE_CROPPED
+        elif self._stack_kwargs.get("pdk_authoritative"):
+            advice = _AIR_ONLY_ADVICE_SET_STACK
+        else:
+            advice = _AIR_ONLY_ADVICE_PREBUILT
+        return _AIR_ONLY_STACK_WARNING.format(advice=advice)
+
     def _ensure_stack(self) -> None:
         """Lazily resolve the layer stack if not yet built."""
         if self.geometry.stack is not None:
+            return
+
+        if self._stack_kwargs.get("pdk_authoritative"):
+            from gsim.common.pdk import build_layer_stack, resolve_layer_stack
+
+            options = self._stack_kwargs
+            resolved = resolve_layer_stack(
+                self.geometry.component,
+                pdk=options.get("pdk"),
+                wavelength_um=self.source.wavelength,
+                dielectrics=options.get("dielectrics"),
+                role_overrides=options.get("role_overrides"),
+                use_pdk_overlay=bool(options.get("use_pdk_overlay", True)),
+            )
+            self._authoritative_resolved = resolved
+            self.geometry.stack = build_layer_stack(resolved, backend="meep")
             return
 
         from gsim.common.stack import get_stack
@@ -561,7 +730,7 @@ class Simulation(CloudJobMixin, BaseModel):
     def _stack_material_extent(
         self, stack: Any | None = None
     ) -> tuple[float, float] | None:
-        """Return (zmin, zmax) spanning all non-air layers and dielectrics.
+        """Return (zmin, zmax) spanning the modeled layers and dielectrics.
 
         This is the reference used by auto z-crop and by the fiber-aware
         margin expansion: it preserves the full fabricated stack (BOX,
@@ -571,19 +740,33 @@ class Simulation(CloudJobMixin, BaseModel):
         stack = stack if stack is not None else self.geometry.stack
         if stack is None:
             return None
-        zmins: list[float] = []
-        zmaxs: list[float] = []
-        for layer in stack.layers.values():
-            if layer.material != "air":
-                zmins.append(layer.zmin)
-                zmaxs.append(layer.zmax)
-        for diel in stack.dielectrics:
-            if diel.get("material") != "air":
-                zmins.append(diel["zmin"])
-                zmaxs.append(diel["zmax"])
-        if not zmins:
-            return None
-        return min(zmins), max(zmaxs)
+        return material_extent(
+            stack, self.geometry.component, self._air_material_data(stack)
+        )
+
+    def _air_material_data(self, stack: Any) -> dict[str, Any]:
+        """Resolve Air overrides before deciding whether a region is padding."""
+        from gsim.meep.materials import resolve_materials
+
+        if stack is None:
+            return {}
+        names = {layer.material for layer in stack.layers.values()}
+        names.update(dielectric["material"] for dielectric in stack.dielectrics)
+        names &= {"Air", "air"}
+        if not names:
+            return {}
+        return resolve_materials(
+            names,
+            overrides={
+                name: material
+                for name, material in self._material_overrides().items()
+                if name in {"Air", "air"}
+            },
+            wavelength_um=self.mode_solver.wavelengths[0]
+            if self.mode_solver.wavelengths
+            else self.source.wavelength,
+            overlay=self._pdk_overlay,
+        )
 
     def _resolve_xy_background_material(self, component: Any, stack: Any) -> str:
         """Resolve the blanket medium represented by a collapsed XY Z cut."""
@@ -608,8 +791,7 @@ class Simulation(CloudJobMixin, BaseModel):
         containing_dielectrics = [
             dielectric
             for dielectric in stack.dielectrics
-            if dielectric.get("material") != "air"
-            and float(dielectric["zmin"]) <= cut_z <= float(dielectric["zmax"])
+            if float(dielectric["zmin"]) <= cut_z <= float(dielectric["zmax"])
         ]
         if not containing_dielectrics:
             return "air"
@@ -625,9 +807,18 @@ class Simulation(CloudJobMixin, BaseModel):
         self,
     ) -> tuple[tuple[float, float], tuple[float, float]]:
         """Resolve mode-solver bounds and equivalent internal margins."""
-        extent = self._stack_material_extent()
+        component = self.geometry.component
+        if self.mode_solver.where == "slab" or (
+            self.mode_solver.where == "auto"
+            and self.mode_solver.port is None
+            and self.mode_solver.position is None
+        ):
+            component = None
+        extent = material_extent(
+            self.geometry.stack, component, self._air_material_data(self.geometry.stack)
+        )
         if extent is None:
-            raise ValueError("Could not resolve a non-air Z extent for mode solving.")
+            raise ValueError("Could not resolve a modeled Z extent for mode solving.")
         stack_low, stack_high = extent
 
         if self.domain.z_bounds != "auto":
@@ -1037,11 +1228,12 @@ class Simulation(CloudJobMixin, BaseModel):
 
         # Collect material names from stack layers and dielectrics.
         used_materials: set[str] = set()
-        for layer in stack.layers.values():
+        for layer in order_by_mesh_order(stack.layers.values()):
             used_materials.add(layer.material)
         for diel in stack.dielectrics:
             used_materials.add(diel["material"])
 
+        used_materials.add(self.mode_solver.background_material)
         material_data = resolve_materials(
             used_materials,
             overrides=self._material_overrides(),
@@ -1214,7 +1406,14 @@ class Simulation(CloudJobMixin, BaseModel):
             else None
         )
         field_z_grid = (
-            mode_z_grid(stack, n_field_z, z_margin, pml_thickness)
+            mode_z_grid(
+                stack,
+                n_field_z,
+                z_margin,
+                pml_thickness,
+                component=component if where_effective == "cross_section" else None,
+                materials=_materials,
+            )
             if n_field_z > 0
             else None
         )
@@ -1234,6 +1433,8 @@ class Simulation(CloudJobMixin, BaseModel):
                     eigensolver_tol=ms.eigensolver_tol,
                     field_z_grid=field_z_grid,
                     background_material=background_material,
+                    overrides=self._material_overrides(),
+                    overlay=self._pdk_overlay,
                 )
                 results.extend(sweep_results.values())
             elif len(ms.wavelengths) == 1 and len(band_nums) > 1:
@@ -1248,6 +1449,8 @@ class Simulation(CloudJobMixin, BaseModel):
                     eigensolver_tol=ms.eigensolver_tol,
                     field_z_grid=field_z_grid,
                     background_material=background_material,
+                    overrides=self._material_overrides(),
+                    overlay=self._pdk_overlay,
                 )
                 results.extend(band_results.values())
             else:
@@ -1264,6 +1467,8 @@ class Simulation(CloudJobMixin, BaseModel):
                             eigensolver_tol=ms.eigensolver_tol,
                             field_z_grid=field_z_grid,
                             background_material=background_material,
+                            overrides=self._material_overrides(),
+                            overlay=self._pdk_overlay,
                         )
                         results.append(mode_result)
         else:
@@ -1287,6 +1492,8 @@ class Simulation(CloudJobMixin, BaseModel):
                         field_y_grid=field_y_grid,
                         field_z_grid=field_z_grid,
                         background_material=background_material,
+                        overrides=self._material_overrides(),
+                        overlay=self._pdk_overlay,
                     )
                     results.append(mode_result)
 
@@ -1396,6 +1603,12 @@ class Simulation(CloudJobMixin, BaseModel):
                     "XZ 2D). Use solver.z_cut to choose an XY slice."
                 )
 
+        # Here, not in _ensure_stack: mode solves share that path but fill levels
+        # without polygons, and a crop can remove the last region.
+        if self._has_air_only_stack() and not self._air_only_warned:
+            logger.warning(self._air_only_stack_warning())
+            self._air_only_warned = True
+
         import gdsfactory as gf
 
         # Resolve the XZ cut Y-coordinate ('auto'/None -> bbox center).
@@ -1436,6 +1649,7 @@ class Simulation(CloudJobMixin, BaseModel):
                 self.geometry.stack,
                 source_port=source_cfg.port,
                 is_3d=is_3d,
+                stack_is_cropped=self.geometry.stack is not port_layer_stack,
             )
             if plane == "xz":
                 validation_port_infos = filter_ports_for_xz(
@@ -1507,6 +1721,7 @@ class Simulation(CloudJobMixin, BaseModel):
                     zmax=layer.zmax,
                     material=layer.material,
                     sidewall_angle=layer.sidewall_angle,
+                    mesh_order=layer.mesh_order,
                 )
             )
             used_materials.add(layer.material)
@@ -1667,6 +1882,23 @@ class Simulation(CloudJobMixin, BaseModel):
                 meep_verbosity = 1
             else:
                 meep_verbosity = 2
+
+        if stack.simulation.get("pdk_authoritative"):
+            # Record the full PDK interpretation next to the resolved optical
+            # materials so a recorded run can be audited without replaying the
+            # PDK lookup.
+            self._hints.update(
+                {
+                    "pdk_authoritative": True,
+                    "pdk_name": stack.pdk_name,
+                    "pdk_overlay": stack.simulation.get("pdk_overlay"),
+                    "pdk_stack_hash": stack.simulation.get("stack_hash"),
+                    "pdk_provenance": stack.simulation.get("pdk_provenance"),
+                    "material_provenance": {
+                        name: data.model_dump() for name, data in material_data.items()
+                    },
+                }
+            )
 
         # Build SimConfig
         sim_config = SimConfig(
@@ -1871,6 +2103,18 @@ class Simulation(CloudJobMixin, BaseModel):
                 background_material=ms.background_material,
             )
 
+        layer_mesh_orders = {
+            layer.name: layer.mesh_order
+            for layer in stack.layers.values()
+            if layer.mesh_order is not None
+        }
+        layer_mesh_orders.update(
+            {
+                diel["name"]: diel["mesh_order"]
+                for diel in stack.dielectrics
+                if diel.get("mesh_order") is not None
+            }
+        )
         config = ModeSolverConfig(
             wavelengths=ms.wavelengths,
             bands=bands,
@@ -1882,6 +2126,7 @@ class Simulation(CloudJobMixin, BaseModel):
             eigensolver_tol=ms.eigensolver_tol,
             n_field_z=ms.n_field_z,
             layer_stack=dielectrics,
+            layer_mesh_orders=layer_mesh_orders,
             materials=material_data,
             cross_section_geometry=cross_section_geometry,
             n_field_x=n_field_x,
@@ -1989,7 +2234,10 @@ class Simulation(CloudJobMixin, BaseModel):
         self._run_verbose = "quiet" if not verbose else "status"
         if output_dir is None:
             output_dir = Path(tempfile.mkdtemp(prefix="meep_local_"))
-        output_dir = Path(output_dir)
+        # ``run_local`` executes the runner with cwd=output_dir.  Resolve once
+        # so a relative output path does not turn the script argument into
+        # ``<output_dir>/<output_dir>/run_meep.py``.
+        output_dir = Path(output_dir).resolve()
         self.write_config(output_dir)
 
         script_path = output_dir / "run_meep.py"

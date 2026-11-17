@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import nbformat
 import pytest
 
 from scripts.list_docs_notebooks import (
@@ -19,11 +20,12 @@ EXPECTED_NOTEBOOKS = [
     "nbs/fdtd_directional_coupler.ipynb",
     "nbs/fdtd_waveguide_crossing.ipynb",
     "nbs/fdtd_broadband_directional_coupler.ipynb",
+    "nbs/fdtd_lu_broadband_coupler.ipynb",
+    "nbs/fdtd_sattari_suspended_coupler.ipynb",
+    "nbs/fdtd_romero_visible_mmi.ipynb",
+    "nbs/fdtd_sacher_visible_mmi.ipynb",
     "nbs/meep_dc.ipynb",
-    "nbs/meep_2d.ipynb",
     "nbs/meep_2d_xz_gc.ipynb",
-    "nbs/meep_2d_xz_gc_wavelength_sweep.ipynb",
-    "nbs/meep_ybranch.ipynb",
     "nbs/palace_cpw_lumped.ipynb",
     "nbs/palace_cpw_waveport.ipynb",
     "nbs/palace_microstrip.ipynb",
@@ -33,10 +35,15 @@ EXPECTED_NOTEBOOKS = [
     "nbs/palace_qpdk_filled_qubit_test_chip.ipynb",
     "nbs/palace_inductor.ipynb",
     "nbs/palace_inductor_port_comparison.ipynb",
+    "nbs/palace_magnetostatic.ipynb",
     "nbs/palace_cpw_via.ipynb",
     "nbs/palace_cpw_fields.ipynb",
     "nbs/palace_cpw_deembedding.ipynb",
+    "nbs/palace_signal_integrity.ipynb",
+    "nbs/palace_terminal_waveport.ipynb",
+    "nbs/palace_terminal_waveport_gssg.ipynb",
     "nbs/tcad_pn_junction.ipynb",
+    "nbs/tcad_twmzm.ipynb",
 ]
 
 
@@ -56,6 +63,22 @@ def _write_notebook(root: Path, name: str = "example") -> None:
 def test_lists_current_docs_notebooks_in_navigation_order():
     """The checked-in config resolves to every published source notebook."""
     assert list_docs_notebooks(DEFAULT_CONFIG_PATH) == EXPECTED_NOTEBOOKS
+
+
+@pytest.mark.parametrize(
+    "name", ["meep_2d", "meep_2d_xz_gc_wavelength_sweep", "meep_ybranch"]
+)
+def test_archived_notebooks_keep_download_links_without_being_built(name):
+    root = Path(__file__).resolve().parents[1]
+    legacy = root / "nbs" / f"{name}.ipynb"
+    notebook = nbformat.read(legacy, as_version=4)
+    nbformat.validate(notebook)
+    assert all(cell.cell_type == "markdown" for cell in notebook.cells)
+    assert f"(_{name}.ipynb)" in notebook.cells[0].source
+    assert (legacy.parent / f"_{name}.ipynb").is_file()
+    assert legacy.relative_to(root).as_posix() not in list_docs_notebooks(
+        DEFAULT_CONFIG_PATH
+    )
 
 
 def test_recurses_nav_and_ignores_non_notebook_pages(tmp_path):

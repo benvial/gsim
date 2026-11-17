@@ -1,0 +1,257 @@
+"""Compatibility and pre-mesh validation for public FDTD preview APIs."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+
+from gsim import fdtd
+from gsim.fdtd.viz import MeshViewer
+from tests.fdtd.test_viz import _write_mesh
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"height": 500},
+        {"zoom_to_cursor": False},
+        {"height": 500, "zoom_to_cursor": False},
+    ],
+)
+def test_explicit_interactive_plot_keeps_viewer_options(tmp_path, options, monkeypatch):
+    simulation = fdtd.Simulation()
+    cast(Any, simulation)._last_artifacts = SimpleNamespace(
+        mesh_path=_write_mesh(tmp_path / "mesh.msh")
+    )
+    monkeypatch.setattr(
+        simulation, "write", lambda _directory: simulation._last_artifacts
+    )
+    viewer = simulation.plot_2d_interactive(
+        axis="y",
+        position_um=0.25,
+        show_mesh=True,
+        show_groups=["core"],
+        hide_groups=["port_o2"],
+        **options,
+    )
+    assert isinstance(viewer, MeshViewer)
+    assert '"mode":"mesh_slice"' in viewer.html
+    assert '"axis":"y"' in viewer.html
+    assert '"positionUm":0.25' in viewer.html
+    assert '"showGroups":["core"]' in viewer.html
+    assert '"hideGroups":["port_o2"]' in viewer.html
+    assert f'height="{options.get("height", 600)}"' in viewer._repr_html_()
+    zoom = "true" if options.get("zoom_to_cursor", True) else "false"
+    assert f'"zoomToCursor":{zoom}' in viewer.html
+    output = viewer.save(tmp_path / "interactive.html")
+    assert output.read_text(encoding="utf8") == viewer.html
+
+
+def test_explicit_interactive_plot_keeps_default_slice_mode(tmp_path, monkeypatch):
+    simulation = fdtd.Simulation()
+    cast(Any, simulation)._last_artifacts = SimpleNamespace(
+        mesh_path=_write_mesh(tmp_path / "mesh.msh")
+    )
+    monkeypatch.setattr(
+        simulation, "write", lambda _directory: simulation._last_artifacts
+    )
+    viewer = simulation.plot_2d_interactive()
+    assert isinstance(viewer, MeshViewer)
+    assert '"mode":"slice"' in viewer.html
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"height": 500},
+        {"zoom_to_cursor": False},
+        {"zoom_to_cursor": True},
+        {"height": 500, "zoom_to_cursor": False},
+    ],
+)
+@pytest.mark.parametrize("show_mesh", [False, True])
+def test_legacy_viewer_keywords_warn_and_keep_html_behavior(
+    tmp_path, monkeypatch, options, show_mesh
+):
+    simulation = fdtd.Simulation()
+    cast(Any, simulation)._last_artifacts = SimpleNamespace(
+        mesh_path=_write_mesh(tmp_path / "mesh.msh")
+    )
+    monkeypatch.setattr(
+        simulation, "write", lambda _directory: simulation._last_artifacts
+    )
+    with pytest.warns(DeprecationWarning, match="plot_2d_interactive") as captured:
+        viewer = simulation.plot_2d(
+            axis="y",
+            position_um=0.25,
+            show_mesh=show_mesh,
+            show_groups=["core"],
+            hide_groups=["port_o2"],
+            **options,
+        )
+    warning = str(captured[0].message)
+    assert "0.12.0 or later" in warning
+    assert "two feature releases" in warning
+    assert "at least three months" in warning
+    assert "first released warning in 0.10.0" in warning
+    assert isinstance(viewer, MeshViewer)
+    mode = "mesh_slice" if show_mesh else "slice"
+    assert f'"mode":"{mode}"' in viewer.html
+    assert '"axis":"y"' in viewer.html
+    assert '"positionUm":0.25' in viewer.html
+    assert '"showGroups":["core"]' in viewer.html
+    assert '"hideGroups":["port_o2"]' in viewer.html
+    assert f'height="{options.get("height", 600)}"' in viewer._repr_html_()
+    zoom = "true" if options.get("zoom_to_cursor", True) else "false"
+    assert f'"zoomToCursor":{zoom}' in viewer.html
+
+
+@pytest.mark.parametrize(
+    "static_options",
+    [
+        {"outline_only": True},
+        {"ax": object()},
+        {"cmap": "viridis"},
+        {"legend": False},
+        {"aspect": "auto"},
+        {"figsize": (8, 3)},
+    ],
+)
+def test_legacy_viewer_keywords_reject_static_options_before_meshing(
+    monkeypatch, static_options
+):
+    from gsim.fdtd import visualization
+
+    monkeypatch.setattr(
+        visualization, "generate_mesh", lambda *_args, **_kwargs: pytest.fail("meshed")
+    )
+    with pytest.raises(TypeError, match="cannot be combined"):
+        fdtd.Simulation().plot_2d(height=500, **static_options)
+
+
+def test_static_preview_rejects_unknown_selected_port_before_meshing(
+    fdtd_pdk_module, monkeypatch
+):
+    from gsim.fdtd import visualization
+
+    simulation = fdtd.Simulation(pdk=fdtd_pdk_module)
+    simulation.geometry("straight")
+    simulation.source(port="nope")
+    monkeypatch.setattr(
+        visualization, "generate_mesh", lambda *_args, **_kwargs: pytest.fail("meshed")
+    )
+    with pytest.raises(fdtd.FDTDConfigError, match="source port 'nope' is not present"):
+        simulation.plot_2d_static()
+
+
+@pytest.mark.parametrize("region", ["dipole", "line_current", "gaussian"])
+def test_static_preview_rejects_regions_outside_explicit_domain(
+    fdtd_pdk_module, monkeypatch, region
+):
+    from gsim.fdtd import visualization
+
+    simulation = fdtd.Simulation(pdk=fdtd_pdk_module)
+    simulation.geometry("straight")
+    simulation.domain(y_bounds=(-1, 1))
+    if region == "dipole":
+        simulation.source = fdtd.DipoleSource(
+            position_um=(1, 1.1, 0.11), current_axis="z"
+        )
+    elif region == "line_current":
+        simulation.source = fdtd.LineCurrentSource(
+            position_um=(1, 0.9, 0.11), line_axis="y", current_axis="z", length_um=0.4
+        )
+    else:
+        simulation.source = fdtd.GaussianBeamSource(
+            center_um=(1, 1.1, 0.11),
+            size_um=(1, 0.4, 0),
+            aperture_normal="-z",
+            propagation_direction=(0, 0, -1),
+            e_polarization=(1, 0, 0),
+            focal_point_um=(1, 0, 0),
+            waist_radius_um=0.1,
+        )
+    monkeypatch.setattr(
+        visualization, "generate_mesh", lambda *_args, **_kwargs: pytest.fail("meshed")
+    )
+    with pytest.raises(fdtd.FDTDConfigError, match=r"exceeds domain.y_bounds"):
+        simulation.plot_2d_static()
+
+
+def test_static_preview_shows_cropped_monitor_with_warning(fdtd_pdk_module):
+    from matplotlib import pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    simulation = fdtd.Simulation(pdk=fdtd_pdk_module)
+    simulation.geometry("straight")
+    simulation.domain(y_bounds=(-1, 1))
+    simulation.monitors.add_plane(
+        "image", center_um=(1, 1.1, 0.11), size_um=(1, 0.4, 0), normal="+z"
+    )
+    with pytest.warns(UserWarning, match="Monitor 'image' cropped") as caught:
+        axes = simulation.plot_2d_static()
+    assert (
+        sum("Monitor 'image' cropped" in str(warning.message) for warning in caught)
+        == 1
+    )
+    patch = next(
+        patch for patch in axes.patches if patch.get_label() == "Monitor image"
+    )
+    assert isinstance(patch, Rectangle)
+    assert patch.get_bbox().bounds == pytest.approx((0.5, 0.9, 1, 0.1))
+    assert simulation.monitors["image"].size_um == (1, 0.4, 0)
+    plt.close(axes.figure)
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_static_preview_rejects_outside_plane_before_meshing(
+    fdtd_pdk_module, monkeypatch, explicit
+):
+    from gsim.fdtd import visualization
+
+    simulation = fdtd.Simulation(pdk=fdtd_pdk_module)
+    simulation.geometry("straight")
+    if explicit:
+        simulation.domain(z_bounds=(-1, 1))
+    simulation.monitors.add_plane(
+        "outside", center_um=(1, 0, 100), size_um=(1, 1, 0), normal="+z"
+    )
+    monkeypatch.setattr(
+        visualization, "generate_mesh", lambda *_args, **_kwargs: pytest.fail("meshed")
+    )
+    with pytest.raises(fdtd.FDTDConfigError, match=r"z-position.*outside"):
+        simulation.plot_2d_static()
+
+
+@pytest.mark.parametrize("source_port", [None, "o1", "o2"])
+def test_preview_rejects_monitor_shadowing_vertical_port_before_meshing(
+    fdtd_pdk_module, monkeypatch, source_port
+):
+    from gsim.fdtd import visualization
+
+    simulation = fdtd.Simulation(pdk=fdtd_pdk_module)
+    simulation.geometry("vertical_coupler")
+    if source_port is not None:
+        simulation.source(port=source_port)
+    simulation.monitors.add_plane(
+        name="o2", center_um=(1, 0, 0.11), size_um=(1, 1, 0), normal="+z"
+    )
+    monkeypatch.setattr(
+        visualization, "generate_mesh", lambda *_args, **_kwargs: pytest.fail("meshed")
+    )
+    with pytest.raises(fdtd.FDTDConfigError, match="cannot shadow vertical ports"):
+        simulation.plot_2d_static()
+
+
+def test_write_rejects_monitor_shadowing_vertical_port(fdtd_pdk_module, tmp_path):
+    simulation = fdtd.Simulation(pdk=fdtd_pdk_module)
+    simulation.geometry("vertical_coupler")
+    simulation.source(port="o1")
+    simulation.monitors.add_plane(
+        name="o2", center_um=(1, 0, 0.11), size_um=(1, 1, 0), normal="+z"
+    )
+    with pytest.raises(fdtd.FDTDConfigError, match="cannot shadow vertical ports"):
+        simulation.write(tmp_path / "run")

@@ -152,7 +152,8 @@ def test_existing_log_survives_a_launch_that_never_starts(tmp_path, failure):
         launch = PalaceLaunch((sys.executable,), {})
         cwd = tmp_path / "missing"
 
-    with pytest.raises(RuntimeError, match="Palace executable not found"):
+    # A missing cwd raises NotADirectoryError on Windows, not FileNotFoundError.
+    with pytest.raises((RuntimeError, NotADirectoryError)):
         run_palace(launch, cwd=cwd, num_processes=1, verbose=True, log_path=target)
 
     assert target.read_text(encoding="utf-8") == "previous run\n"

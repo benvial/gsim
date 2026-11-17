@@ -4,7 +4,8 @@ This module provides a comprehensive API for setting up and running
 electromagnetic simulations using the Palace solver with gdsfactory components.
 
 Features:
-    - Problem-specific simulation classes (DrivenSim, EigenmodeSim, ElectrostaticSim)
+    - Problem-specific simulation classes (DrivenSim, EigenmodeSim,
+      ElectrostaticSim, MagnetostaticSim, BoundaryModeSim)
     - Layer stack extraction from PDK
     - Lumped-port geometry (inplane, gap, interlayer, CPW)
     - Mesh generation with quality presets
@@ -110,6 +111,12 @@ from gsim.palace.fields import (
     resolve_scalar_field,
 )
 
+# Inductance matrix of magnetostatic runs
+from gsim.palace.inductance import InductanceMatrix, load_inductance
+
+# Inductance extraction (magnetostatic)
+from gsim.palace.magnetostatic import MagnetostaticSim
+
 # Material resolution with dispersion
 from gsim.palace.materials import resolve_palace_materials_at_frequency
 
@@ -135,6 +142,7 @@ from gsim.palace.models import (
     BoundaryModeSolverConfig,
     CPWPortConfig,
     CrossSectionPlaneConfig,
+    CurrentSourceConfig,
     DrivenConfig,
     DrivenSolverConfig,
     EigenmodeConfig,
@@ -144,7 +152,9 @@ from gsim.palace.models import (
     GeometryConfig,
     LinearSolverConfig,
     MagnetostaticConfig,
+    MagnetostaticSolverConfig,
     MaterialConfig,
+    MeshGrading,
     NumericalConfig,
     PECBlockConfig,
     PortConfig,
@@ -194,6 +204,17 @@ from gsim.palace.runtime import (
     resolve_palace_library_dir,
 )
 
+# Mixed-mode and time-domain analysis for multi-port networks
+from gsim.palace.signal_integrity import (
+    check_network,
+    complete_network,
+    differential_delay,
+    gap_arrival,
+    interpolate_complex,
+    line_network,
+    tdr,
+)
+
 # Terminal (multi-pin) port S-parameters from modal S-parameters
 from gsim.palace.terminal import (
     currents_from_reaction,
@@ -201,6 +222,26 @@ from gsim.palace.terminal import (
     modal_to_terminal_s,
     terminal_to_modal_s,
     uniform_line_modal_s,
+)
+
+# Terminal (multi-pin) wave ports: layout, modal S assembly, terminal S
+from gsim.palace.terminal_ports import (
+    LumpedTerminal,
+    ModalRun,
+    PortModes2D,
+    TerminalPortSpec,
+    align_gauge,
+    build_terminal_s,
+    declare_terminal_paths,
+    load_modal_run,
+    mixed_mode,
+    modal_s_from_runs,
+    port_mode_reference_voltages,
+    port_modes_2d,
+    port_terminal_matrices,
+    short_terminals,
+    terminal_paths,
+    terminal_s,
 )
 from gsim.viz import (
     close_interactive_view,
@@ -223,6 +264,7 @@ __all__ = [
     "CapacitanceMatrices",
     "CircuitSynthesis",
     "CrossSectionPlaneConfig",
+    "CurrentSourceConfig",
     "DrivenConfig",
     "DrivenSim",
     "DrivenSolverConfig",
@@ -234,14 +276,20 @@ __all__ = [
     "ElectrostaticSolverConfig",
     "Geometry",
     "GeometryConfig",
+    "InductanceMatrix",
     "Layer",
     "LayerStack",
     "LinearSolverConfig",
+    "LumpedTerminal",
     "MagnetostaticConfig",
+    "MagnetostaticSim",
+    "MagnetostaticSolverConfig",
     "MaterialConfig",
     "MaterialProperties",
     "MeshConfig",
+    "MeshGrading",
     "MeshResult",
+    "ModalRun",
     "Net",
     "Nets",
     "NumericalConfig",
@@ -249,6 +297,7 @@ __all__ = [
     "PalacePort",
     "PortConfig",
     "PortGeometry",
+    "PortModes2D",
     "PortType",
     "RLCFit",
     "SParam",
@@ -260,6 +309,7 @@ __all__ = [
     "StackLayer",
     "SymmetryPlaneConfig",
     "TerminalConfig",
+    "TerminalPortSpec",
     "TransientConfig",
     "TwoTerminalPortConfig",
     "ValidationResult",
@@ -268,10 +318,14 @@ __all__ = [
     "WavePortConfig",
     "activate_vector_component",
     "add_domain_energy_postprocessing",
+    "align_gauge",
     "build_selector_context",
+    "build_terminal_s",
     "check_lumped_port_contact",
+    "check_network",
     "close_interactive_view",
     "close_interactive_views",
+    "complete_network",
     "configure_cpw_port",
     "configure_gap_port",
     "configure_inplane_port",
@@ -279,7 +333,9 @@ __all__ = [
     "configure_two_terminal_port",
     "configure_via_port",
     "currents_from_reaction",
+    "declare_terminal_paths",
     "degenerate_mode_groups",
+    "differential_delay",
     "differential_impedance",
     "extract_axis_slice",
     "extract_boundary_cells",
@@ -291,6 +347,7 @@ __all__ = [
     "extract_slice_contours",
     "extract_streamplot_inputs_2d",
     "fit_rlc",
+    "gap_arrival",
     "generate_mesh",
     "get_material_properties",
     "get_port_map",
@@ -298,19 +355,25 @@ __all__ = [
     "initial_guess_rlc",
     "install_palace_runtime",
     "interactive_mode",
+    "interpolate_complex",
     "is_complete",
+    "line_network",
     "load_boundary_field_data",
     "load_boundary_mode_field",
     "load_capacitance",
     "load_circuit_synthesis",
     "load_field_context",
     "load_fields",
+    "load_inductance",
+    "load_modal_run",
     "load_port_mode_fields",
     "load_refinement_history",
     "load_sparams",
     "load_stack_yaml",
     "load_volume_field_data",
     "local_abort_report",
+    "mixed_mode",
+    "modal_s_from_runs",
     "modal_to_terminal_s",
     "parse_layer_stack",
     "plot_boundary_field",
@@ -321,6 +384,9 @@ __all__ = [
     "plot_stack",
     "plot_volume_contours",
     "plot_volume_slice",
+    "port_mode_reference_voltages",
+    "port_modes_2d",
+    "port_terminal_matrices",
     "print_job_summary",
     "print_stack",
     "print_stack_table",
@@ -338,6 +404,10 @@ __all__ = [
     "s_to_z",
     "set_interactive_mode",
     "set_trame_backend",
+    "short_terminals",
+    "tdr",
+    "terminal_paths",
+    "terminal_s",
     "terminal_to_modal_s",
     "uniform_line_modal_s",
     "y_to_s",

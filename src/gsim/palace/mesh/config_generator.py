@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import gmsh
 import numpy as np
@@ -23,11 +24,17 @@ from gsim.palace.mesh.metadata import (
 from gsim.palace.mesh.quality import tetrahedron_distortion
 from gsim.palace.models.solver import _ESTIMATOR_KEYS
 from gsim.palace.ports.config import PortType
+from gsim.palace.ports.modes import (
+    PORT_MODES_FILENAME,
+    PortModeEntry,
+    same_face_pairs,
+    write_port_modes,
+)
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from gsim.common.stack import LayerStack
     from gsim.palace.models import (
@@ -35,20 +42,60 @@ if TYPE_CHECKING:
         DrivenConfig,
         EigenmodeConfig,
         ElectrostaticConfig,
+        MagnetostaticConfig,
         NumericalConfig,
         RefinementConfig,
         SolverConfig,
     )
-    from gsim.palace.models.ports import TerminalConfig
+    from gsim.palace.models.ports import ImpedanceBoundaryConfig, TerminalConfig
     from gsim.palace.ports.config import PalacePort
     from gsim.palace.terminals import ResolvedTerminal
 
 
-def _resolve_impedance_boundaries(
+# Deprecated ``hints`` keys and the keyword argument that replaced each.
+_DEPRECATED_HINT_KEYWORDS = {
+    "_impedance_boundaries": "impedance_boundaries",
+    "_metallic_boundaries": "metallic_boundaries",
+    "_conductor_boundary": "conductor_boundary",
+    "_mode_postprocessing": "mode_postprocessing",
+    "_cross_section_axis": "cross_section_axis",
+}
+
+
+def _split_hints(
     hints: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split hints into JSON entries and values for deprecated private keys.
+
+    Other ``_``-prefixed keys were never read and are still dropped.
+
+    Returns:
+        The entries to merge into the JSON, and the deprecated values by the
+        name of the keyword argument that replaced them.
+    """
+    extras = {k: v for k, v in (hints or {}).items() if not k.startswith("_")}
+    deprecated = {
+        keyword: hints[key]
+        for key, keyword in _DEPRECATED_HINT_KEYWORDS.items()
+        if hints and key in hints
+    }
+    if deprecated:
+        names = ", ".join(sorted(deprecated))
+        warnings.warn(
+            f"Passing private keys in hints is deprecated; use the keyword "
+            f"arguments {names}.",
+            DeprecationWarning,
+            # Name the caller, through write_config or not.
+            skip_file_prefixes=(str(Path(__file__).parent),),
+        )
+    return extras, deprecated
+
+
+def _resolve_impedance_boundaries(
+    raw: list[ImpedanceBoundaryConfig] | None,
     groups: dict,
 ) -> list[dict[str, object]]:
-    """Resolve impedance boundary configs from hints into Palace format entries.
+    """Resolve impedance boundary configs into Palace format entries.
 
     For interface-based entries (layer_a + layer_b), looks up the interface
     physical group and divides absolute values by the stored curve length.
@@ -59,7 +106,6 @@ def _resolve_impedance_boundaries(
     """
     from gsim.palace.models.ports import ImpedanceBoundaryConfig
 
-    raw = (hints or {}).get("_impedance_boundaries")
     if not raw:
         return []
 
@@ -269,6 +315,115 @@ def _to_section_frame(props: dict[str, Any], axis: str) -> dict[str, Any]:
     return out
 
 
+def _voltage_path(points: Sequence[Sequence[float]]) -> list[list[float]]:
+    """A wave-port ``VoltagePath`` in mesh units (um, as the 2D mode paths are)."""
+    return [[float(c) for c in point] for point in points]
+
+
+def _multimode_entries(
+    multimode: list[tuple[int, PalacePort, int]],
+    first_free_index: int,
+    wave_ports: list[dict[str, object]],
+    ports: list[PalacePort],
+    stack: LayerStack | None = None,
+) -> list[PortModeEntry]:
+    """Add the observation entries of the multimode wave ports to ``wave_ports``.
+
+    The active entry of every multimode port is already in ``wave_ports`` with
+    the port's own index. Each further mode of the port becomes an entry on
+    the same boundary attribute with ``"Active": false`` and an index after
+    all the ports, so the active entry has the lowest index of its face
+    (Palace refuses an active port on an attribute an earlier entry took).
+
+    Args:
+        multimode: ``(port index, port, boundary attribute)`` of each multimode
+            port, in port order.
+        first_free_index: The first index after all ports.
+        wave_ports: The ``WavePort`` entries so far; extended in place.
+        ports: Every port of the simulation.
+        stack: The layer stack. With it, ports at one centre and
+            orientation are on one face only where their generated faces
+            overlap, so ports on layers that do not overlap in z are
+            separate faces. Without it the centre and orientation decide.
+
+    Returns:
+        The map from Palace index to (port, mode, active), in index order.
+
+    Raises:
+        ValueError: If two wave ports are on one face.
+    """
+    if not multimode:
+        return []
+    if stack is None:
+        faces = [
+            (p.name, (float(p.center[0]), float(p.center[1])), float(p.orientation))
+            for p in ports
+            if p.port_type == PortType.WAVEPORT
+        ]
+        pairs = same_face_pairs(faces)
+    else:
+        from gsim.palace.mesh.geometry import same_surface_pairs
+
+        pairs = same_surface_pairs(ports, stack)
+    if pairs:
+        first, second = pairs[0]
+        raise ValueError(
+            f"Wave ports {first!r} and {second!r} are on the same face. A "
+            "multimode wave port holds all the modes of its face; declare one "
+            "port per face and list the modes with modes=..."
+        )
+    rows: list[PortModeEntry] = []
+    attrs_by_port = {number: attr for number, _, attr in multimode}
+    next_index = first_free_index
+    extras: list[PortModeEntry] = []
+    for number, port, attribute in multimode:
+        rows.append(
+            PortModeEntry(
+                index=number,
+                port=port.name,
+                portnumber=number,
+                mode=port.mode,
+                active=True,
+                excited=port.excited,
+                attributes=(attribute,),
+            )
+        )
+        template = next(
+            e for e in wave_ports if e["Index"] == number and e.get("Mode") == port.mode
+        )
+        for mode in port.modes:
+            if mode == port.mode:
+                continue
+            excited = bool(port.excited and port.excite_modes == "all")
+            entry: dict[str, object] = {
+                "Index": next_index,
+                "Mode": mode,
+                "Offset": port.offset,
+                "Excitation": next_index if excited else False,
+                "Attributes": [attrs_by_port[number]],
+                "Active": False,
+            }
+            for key in ("SolverType", "EigenTol", "KSPTol", "MaxSize", "Verbose"):
+                if key in template:
+                    entry[key] = template[key]
+            if pilot := port.pilot_paths.get(mode):
+                entry["VoltagePath"] = _voltage_path(pilot)
+            wave_ports.append(entry)
+            extras.append(
+                PortModeEntry(
+                    index=next_index,
+                    port=port.name,
+                    portnumber=number,
+                    mode=mode,
+                    active=False,
+                    excited=excited,
+                    attributes=(attrs_by_port[number],),
+                )
+            )
+            next_index += 1
+    return sorted([*rows, *extras], key=lambda row: row.index)
+
+
 # Without AMR nothing reads the indicator precisely, so a loose tolerance is
 # enough. With AMR it drives refinement, so Palace's defaults apply.
 _ESTIMATOR_DEFAULTS_AMR_OFF: Mapping[str, float | int | bool] = {"EstimatorTol": 1e-2}
@@ -298,6 +453,64 @@ def _resolve_estimator_settings(
         )
 
 
+def _surface_current_direction(port: PalacePort) -> str:
+    """The signed cardinal Palace ``Direction`` of a source sheet (``+X``...)."""
+    direction = port.direction.upper()
+    return direction if direction.startswith("-") else f"+{direction}"
+
+
+def _magnetostatic_boundaries(
+    groups: dict,
+    ports: list[PalacePort],
+    conductor_attrs: list[int],
+    pec_attrs: list[int],
+) -> dict[str, Any]:
+    """``PEC`` and ``SurfaceCurrent`` boundaries of a magnetostatic solve.
+
+    Palace models conductors only as perfect conductors here, so every
+    conductor surface, PEC surface and via side wall is PEC: without the via
+    walls a loop that drops through a via would be open. Each current source
+    is one ``SurfaceCurrent`` sheet, with ``Index`` in the order the sources
+    were added. The outer wall is left to the ``_metallic_boundaries`` hint.
+
+    Raises:
+        ValueError: If a port is not a current source, a source has no sheet
+            in the mesh, or a sheet is also a PEC attribute.
+    """
+    pec = set(conductor_attrs) | set(pec_attrs)
+    for via_groups in groups.get("via_boundary_surfaces", {}).values():
+        pec.update(via_groups)
+
+    surface_currents: list[dict[str, object]] = []
+    for index, port in enumerate(ports, start=1):
+        if port.port_type != PortType.SURFACE_CURRENT:
+            raise ValueError(
+                f"Port {port.name!r} is not a current source; a magnetostatic "
+                "solve takes only current sources (add_current_source)."
+            )
+        sheet = groups["port_surfaces"].get(f"P{index}")
+        if sheet is None:
+            raise ValueError(
+                f"Current source {port.name!r} has no sheet in the mesh; run "
+                "mesh() again."
+            )
+        attribute = sheet["phys_group"]
+        if attribute in pec:
+            raise ValueError(
+                f"The sheet of current source {port.name!r} (attribute "
+                f"{attribute}) is also a PEC surface; a source sheet must not "
+                "be PEC."
+            )
+        surface_currents.append(
+            {
+                "Index": index,
+                "Attributes": [attribute],
+                "Direction": _surface_current_direction(port),
+            }
+        )
+    return {"PEC": {"Attributes": sorted(pec)}, "SurfaceCurrent": surface_currents}
+
+
 def generate_palace_config(
     groups: dict,
     ports: list[PalacePort],
@@ -320,6 +533,13 @@ def generate_palace_config(
     periodic_translation: tuple[float, float, float] | None = None,
     resolved_terminals: list[ResolvedTerminal] | None = None,
     absorbing_order: int = 2,
+    *,
+    impedance_boundaries: list[ImpedanceBoundaryConfig] | None = None,
+    metallic_boundaries: bool | None = None,
+    conductor_boundary: Literal["conductivity", "pec"] | None = None,
+    mode_postprocessing: dict[str, list[dict[str, object]]] | None = None,
+    cross_section_axis: str | None = None,
+    magnetostatic_config: MagnetostaticConfig | None = None,
 ) -> Path:
     """Generate Palace config.json file.
 
@@ -339,12 +559,26 @@ def generate_palace_config(
         absorbing_order: Order (1 or 2) of that absorbing boundary condition
         periodic_axis: Optional periodic axis identifier
         periodic_translation: Actual donor-to-receiver translation in mesh units
-        hints: Additional config hints merged into the JSON
+        hints: Additional entries merged into the top level of the JSON.
+            Private ``_``-prefixed keys for the options below are deprecated;
+            a keyword passed explicitly wins over its private key.
+        impedance_boundaries: Impedance boundaries to add to the config
+        metallic_boundaries: Put a perfect conductor on the outer wall.
+            ``None`` (the default) means ``False``.
+        conductor_boundary: ``"pec"`` makes a boundary-mode run's conductor
+            surfaces perfect conductors instead of finite-conductivity ones.
+            ``None`` (the default) means ``"conductivity"``.
+        mode_postprocessing: A boundary-mode run's voltage and impedance paths,
+            written as ``Boundaries.Postprocessing``
+        cross_section_axis: Normal axis of a boundary-mode cross-section; the
+            material tensors are written in the frame of its 2D mesh
         refinement_config: Optional RefinementConfig for adaptive mesh
             refinement. Defaults to AMR off.
         resolved_terminals: Electrostatic terminals resolved to nets; needed
             when the mesh has one group per net (``"nets"`` in ``groups``),
             where they replace ``terminals``.
+        magnetostatic_config: Optional MagnetostaticConfig for the
+            magnetostatic problem settings; ``Save: 0`` without it.
 
     Returns:
         Path to the generated config.json
@@ -355,12 +589,27 @@ def generate_palace_config(
     if refinement_config is None:
         refinement_config = RefinementConfig()
 
+    hints, deprecated = _split_hints(hints)
+    # A keyword the caller passed wins over its deprecated hint, even a falsy
+    # one; ``None`` means the keyword was not passed.
+    if impedance_boundaries is None:
+        impedance_boundaries = deprecated.get("impedance_boundaries")
+    if metallic_boundaries is None:
+        metallic_boundaries = bool(deprecated.get("metallic_boundaries", False))
+    if conductor_boundary is None:
+        conductor_boundary = deprecated.get("conductor_boundary", "conductivity")
+    if mode_postprocessing is None:
+        mode_postprocessing = deprecated.get("mode_postprocessing")
+    if cross_section_axis is None:
+        cross_section_axis = deprecated.get("cross_section_axis")
+
     if simulation_type not in (
         "driven",
         "eigenmode",
         "boundarymode",
         "electrostatic",
         "electrostatics",
+        "magnetostatic",
     ):
         raise ValueError(f"Unsupported simulation type: {simulation_type}")
 
@@ -417,11 +666,17 @@ def generate_palace_config(
     if numerical_config is not None:
         solver_conf = dict(numerical_config.to_solver_config())
     else:
-        from gsim.palace.models.solver import EigenmodeSolverConfig, SolverConfig
+        from gsim.palace.models.solver import (
+            EigenmodeSolverConfig,
+            MagnetostaticSolverConfig,
+            SolverConfig,
+        )
 
         defaults = (
             EigenmodeSolverConfig()
             if simulation_type == "eigenmode"
+            else MagnetostaticSolverConfig()
+            if simulation_type == "magnetostatic"
             else SolverConfig()
         )
         solver_conf = defaults.to_solver_config()
@@ -440,6 +695,12 @@ def generate_palace_config(
             solver_conf["Electrostatic"] = {"Save": 0}
     elif simulation_type == "boundarymode":
         solver_conf["BoundaryMode"] = solver_boundarymode
+    elif simulation_type == "magnetostatic":
+        solver_conf["Magnetostatic"] = (
+            magnetostatic_config.to_palace_config()
+            if magnetostatic_config is not None
+            else {"Save": 0}
+        )
     else:
         raise NotImplementedError
 
@@ -449,6 +710,7 @@ def generate_palace_config(
         "boundarymode": "BoundaryMode",
         "electrostatic": "Electrostatic",
         "electrostatics": "Electrostatic",
+        "magnetostatic": "Magnetostatic",
     }
 
     model_l0 = 1e-6
@@ -489,7 +751,7 @@ def generate_palace_config(
         )
         # The 2D mesh has its own axes (see _to_section_frame); the tensors
         # of the materials in the mesh are written in them, not in the layout's.
-        section_axis = (hints or {}).get("_cross_section_axis")
+        section_axis = cross_section_axis
 
     # Support material keys with different capitalization conventions
     # between stack layers and material dictionaries.
@@ -590,6 +852,13 @@ def generate_palace_config(
     conductors: list[dict[str, object]] = []
     conductor_attrs: list[int] = []
 
+    # Palace >= 0.19 reads an interior Conductivity boundary as a thin film
+    # unless it is cracked. A 3D conductor is meshed as a shell with the
+    # dielectric inside, so its boundary is interior and "Crack" keeps it a
+    # thick conductor. A native 2D conductor is a hole in the mesh, so its
+    # boundary is exterior and takes no key.
+    crack_conductors = simulation_type in ("driven", "eigenmode")
+
     for name, info in groups["conductor_surfaces"].items():
         # Extract layer name from "layer_xy" / "layer_z" (3D) or use
         # the raw key directly for native 2D conductor boundaries.
@@ -597,13 +866,14 @@ def generate_palace_config(
         layer = stack.layers.get(layer_name)
         if layer:
             mat_props = stack_materials.get(layer.material, {})
-            conductors.append(
-                {
-                    "Attributes": [info["phys_group"]],
-                    "Conductivity": mat_props.get("conductivity", 5.8e7),
-                    "Thickness": layer.zmax - layer.zmin,
-                }
-            )
+            conductor: dict[str, object] = {
+                "Attributes": [info["phys_group"]],
+                "Conductivity": mat_props.get("conductivity", 5.8e7),
+                "Thickness": layer.zmax - layer.zmin,
+            }
+            if crack_conductors:
+                conductor["Crack"] = True
+            conductors.append(conductor)
             conductor_attrs.append(info["phys_group"])
 
     # Handle PEC surfaces (planar conductors + PEC blocks)
@@ -611,6 +881,7 @@ def generate_palace_config(
         info["phys_group"] for info in groups.get("pec_surfaces", {}).values()
     ]
     boundaries: dict[str, Any]
+    mode_rows: list[PortModeEntry] = []
 
     is_electrostatic = simulation_type in ("electrostatic", "electrostatics")
 
@@ -706,7 +977,7 @@ def generate_palace_config(
         # are perfect conductors, as in the 3D wave-port eigenproblem
         # (WavePortPEC). Exactly those attributes move from Conductivity to
         # PEC; nothing else in the configuration changes.
-        conductors_as_pec = (hints or {}).get("_conductor_boundary") == "pec"
+        conductors_as_pec = conductor_boundary == "pec"
         if conductors and not conductors_as_pec:
             boundaries["Conductivity"] = conductors
         boundary_pec = set(pec_attrs)
@@ -716,13 +987,24 @@ def generate_palace_config(
             boundaries["PEC"] = {"Attributes": sorted(boundary_pec)}
         # Postprocessing-only voltage/impedance paths (mode-V.csv / mode-Z.csv).
         # These do not load the 2D eigenproblem.
-        mode_postprocessing = (hints or {}).get("_mode_postprocessing")
         if mode_postprocessing:
             boundaries["Postprocessing"] = mode_postprocessing
+
+    elif simulation_type == "magnetostatic":
+        if absorbing_boundary:
+            raise ValueError(
+                "Palace ignores an Absorbing boundary in a magnetostatic solve "
+                "and leaves the outer wall PMC; use metallic_boundaries to "
+                "choose a PEC (True) or PMC (False) outer wall instead."
+            )
+        boundaries = _magnetostatic_boundaries(
+            groups, ports, conductor_attrs, pec_attrs
+        )
 
     else:
         lumped_ports: list[dict[str, object]] = []
         wave_ports: list[dict[str, object]] = []
+        multimode: list[tuple[int, PalacePort, int]] = []
         port_idx = 1
 
         for port in ports:
@@ -820,8 +1102,16 @@ def generate_palace_config(
                             wave_port_entry["MaxSize"] = port.eigensolver_max_size
                         if port.eigensolver_verbose is not None:
                             wave_port_entry["Verbose"] = port.eigensolver_verbose
+                        if pilot := port.pilot_paths.get(port.mode):
+                            wave_port_entry["VoltagePath"] = _voltage_path(pilot)
                         wave_ports.append(wave_port_entry)
+                        if port.modes:
+                            multimode.append((port_idx, port, port_group["phys_group"]))
             port_idx += 1
+
+        # The other modes of a multimode port: entries on the same face, after
+        # every port, so the active entry keeps the lowest index of its face.
+        mode_rows = _multimode_entries(multimode, port_idx, wave_ports, ports, stack)
 
         boundaries: dict[str, Any] = {
             "Conductivity": conductors,
@@ -862,7 +1152,7 @@ def generate_palace_config(
             )
             boundaries["PEC"] = {"Attributes": sorted(merged)}
 
-    if (hints or {}).get("_metallic_boundaries"):
+    if metallic_boundaries:
         # A metallic window: the outer wall of the domain carries a
         # perfect-conductor condition, so the solve is a shielded one.
         # Without it Palace assigns its own default to an unconditioned
@@ -893,8 +1183,8 @@ def generate_palace_config(
             groups, eigenmode_config, periodic_axis, periodic_translation
         )
 
-    # Process impedance boundaries from hints (interface-based or attribute-based)
-    impedance_entries = _resolve_impedance_boundaries(hints, groups)
+    # Process impedance boundaries (interface-based or attribute-based)
+    impedance_entries = _resolve_impedance_boundaries(impedance_boundaries, groups)
     if impedance_entries:
         boundaries.setdefault("Impedance", []).extend(impedance_entries)
 
@@ -925,10 +1215,8 @@ def generate_palace_config(
 
     config["Boundaries"] = boundaries
 
-    # Merge any extra hints into the config (strip internal keys first)
-    if hints:
-        clean_hints = {k: v for k, v in hints.items() if not k.startswith("_")}
-        config.update(clean_hints)
+    # Merge any extra hints into the config
+    config.update(hints)
 
     # Write config file
     config_path = output_path / "config.json"
@@ -956,6 +1244,14 @@ def generate_palace_config(
         }
     with port_info_path.open("w") as f:
         json.dump(port_info_struct, f, indent=4)
+
+    # Which Palace index is which (face, mode, active) of a multimode port.
+    # A sidecar left by an earlier run in this folder must not outlive a
+    # config without multimode ports.
+    if mode_rows:
+        write_port_modes(output_path, mode_rows)
+    else:
+        (output_path / PORT_MODES_FILENAME).unlink(missing_ok=True)
 
     return config_path
 
@@ -1172,6 +1468,13 @@ def write_config(
     refinement_config: RefinementConfig | None = None,
     resolved_terminals: list[ResolvedTerminal] | None = None,
     absorbing_order: int = 2,
+    *,
+    impedance_boundaries: list[ImpedanceBoundaryConfig] | None = None,
+    metallic_boundaries: bool | None = None,
+    conductor_boundary: Literal["conductivity", "pec"] | None = None,
+    mode_postprocessing: dict[str, list[dict[str, object]]] | None = None,
+    cross_section_axis: str | None = None,
+    magnetostatic_config: MagnetostaticConfig | None = None,
 ) -> Path:
     """Write Palace config.json from a MeshResult.
 
@@ -1187,9 +1490,23 @@ def write_config(
         eigenmode_config: Optional EigenmodeConfig for eigenproblems settings
         absorbing_boundary: Whether to add an absorbing boundary on the outer walls
         absorbing_order: Order (1 or 2) of that absorbing boundary condition
-        hints: Additional config hints merged into the JSON
+        hints: Additional entries merged into the top level of the JSON.
+            Private ``_``-prefixed keys for the options below are deprecated;
+            a keyword passed explicitly wins over its private key.
+        impedance_boundaries: Impedance boundaries to add to the config
+        metallic_boundaries: Put a perfect conductor on the outer wall.
+            ``None`` (the default) means ``False``.
+        conductor_boundary: ``"pec"`` makes a boundary-mode run's conductor
+            surfaces perfect conductors instead of finite-conductivity ones.
+            ``None`` (the default) means ``"conductivity"``.
+        mode_postprocessing: A boundary-mode run's voltage and impedance paths,
+            written as ``Boundaries.Postprocessing``
+        cross_section_axis: Normal axis of a boundary-mode cross-section; the
+            material tensors are written in the frame of its 2D mesh
         resolved_terminals: Electrostatic terminals resolved to nets, for a
             mesh with one physical group per net
+        magnetostatic_config: Optional MagnetostaticConfig for the
+            magnetostatic problem settings
 
     Returns:
         Path to the generated config.json
@@ -1228,6 +1545,12 @@ def write_config(
         refinement_config=refinement_config,
         resolved_terminals=resolved_terminals,
         absorbing_order=absorbing_order,
+        impedance_boundaries=impedance_boundaries,
+        metallic_boundaries=metallic_boundaries,
+        conductor_boundary=conductor_boundary,
+        mode_postprocessing=mode_postprocessing,
+        cross_section_axis=cross_section_axis,
+        magnetostatic_config=magnetostatic_config,
     )
 
     # Update the mesh_result with the config path
